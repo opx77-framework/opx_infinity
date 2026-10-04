@@ -35305,6 +35305,973 @@ do
 	end
 end
 
+-- ── the wider creator surface ────────────────────────────────────────────────
+-- Everything the API-power pass added: the roster and catalogue reads, runtime
+-- items and use handlers, stashes, vehicles and keys, toasts, a server-judged
+-- bar, crafting benches, offline metadata, the new public events, and the
+-- client's eye, strip, panel and reads. Each is held to the same three things
+-- the first surface was: the allowlist, the validation, and the audit -- and on
+-- the client, to the budget and to the caller's own stop.
+
+--- The first client event of a name sent after `from`, or nil.
+local function sentAfter(control, from, name)
+	for index = from + 1, #control.clientEvents do
+		local entry = control.clientEvents[index]
+		if entry.name == name then return entry end
+	end
+	return nil
+end
+
+section('creator exports: who is in the city, the catalogue, runtime items and use handlers')
+do
+	local state = {}
+	local env, control, why = boot('server', creatorBridge(state))
+	check('the server boots for the wider creator surface', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		local ADDED = { 'GetPlayers', 'GetJobs', 'GetGangs', 'GetItem', 'GetItems', 'GetInventory',
+			'CanCarryItem', 'RegisterItem', 'RegisterUsableItem', 'UnregisterUsableItem', 'OpenStash',
+			'GetVehicle', 'GetOwnedVehicles', 'AddVehicle', 'HasKeys', 'GiveKeys', 'Notify',
+			'StartProgress', 'StopProgress', 'RegisterCraftingBench', 'UnregisterCraftingBench' }
+		local missing = {}
+		for _, name in ipairs(ADDED) do
+			if type(control.exports[name]) ~= 'function' then missing[#missing + 1] = name end
+		end
+		check('every added server export is published', #missing == 0, table.concat(missing, ', '))
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_shop = true, rival = true }
+
+		-- ── the roster ────────────────────────────────────────────────────────
+		local A, B = 701, 702
+		standCharacter(env, control, A, OPX.CitizenId.Generate())
+		local cidB = OPX.CitizenId.Generate()
+		local b = standCharacter(env, control, B, cidB)
+		b.PlayerData.job = { name = 'maxtac', onDuty = false, grade = { name = 'x', level = 0 } }
+		local all = call('my_hud', 'GetPlayers')
+		check('GetPlayers lists every loaded character, by player id',
+			all ~= nil and all.ok and #all.value == 2 and all.value[1].source == A
+				and all.value[2].citizenId == cidB, all and tostring(all.error))
+		check('as a roster row: names and groups, never a balance or metadata',
+			all.ok and all.value[1].money == nil and all.value[1].metadata == nil
+				and all.value[1].firstName == 'Vik' and all.value[1].job.name == 'ncpd')
+		local cops = call('my_hud', 'GetPlayers', { job = 'ncpd', onDuty = true })
+		check('a filter keeps the officers on duty', cops.ok and #cops.value == 1
+			and cops.value[1].source == A)
+		local off = call('my_hud', 'GetPlayers', { onDuty = false })
+		check('and onDuty = false the ones off it', off.ok and #off.value == 1
+			and off.value[1].source == B)
+		check('a filter that is not a table is refused',
+			call('my_hud', 'GetPlayers', 'ncpd').error == 'export.badArgument')
+		check('and a duty flag that is not a boolean',
+			call('my_hud', 'GetPlayers', { onDuty = 'yes' }).error == 'export.badArgument')
+		local jobs = call('my_hud', 'GetJobs')
+		local unemployed
+		for _, job in ipairs(jobs.ok and jobs.value or {}) do
+			if job.name == 'unemployed' then unemployed = job end
+		end
+		check('GetJobs lists the configured jobs, each with its grades as a list from level 0',
+			unemployed ~= nil and unemployed.grades[1].level == 0
+				and unemployed.grades[1].name == 'Freelancer' and unemployed.defaultDuty == true)
+		check('sorted by name', jobs.ok and #jobs.value > 1 and jobs.value[1].name < jobs.value[2].name)
+		check('GetGangs answers a list too', call('my_hud', 'GetGangs').ok)
+
+		-- ── the catalogue and a bag ───────────────────────────────────────────
+		local water = call('my_hud', 'GetItem', 'water')
+		check('GetItem answers a catalogue entry as a screen reads it',
+			water.ok and type(water.value) == 'table' and type(water.value.weight) == 'number')
+		local none = call('my_hud', 'GetItem', 'no_such_item')
+		check('and nil for a name the catalogue does not carry', none.ok and none.value == nil)
+		check('GetItems answers every entry by name', call('my_hud', 'GetItems').value.water ~= nil)
+		local api = OPX.Api.Get('inventory')
+		local realInv, realCarry = api.GetInventory, api.CanCarry
+		api.GetInventory = function()
+			return OPX.Result.Ok({ id = 1, items = { { slot = 1, name = 'water', count = 2 } } })
+		end
+		api.CanCarry = function(_, _, count) return OPX.Result.Ok(count <= 5) end
+		local inv = call('my_hud', 'GetInventory', A)
+		check('GetInventory answers the bag through the contract',
+			inv.ok and inv.value.items[1].name == 'water', inv and tostring(inv.error))
+		check('a target that is neither a player nor a citizen id is refused',
+			call('my_hud', 'GetInventory', 'nobody').error == 'export.badArgument')
+		check('CanCarryItem asks the contract with the count',
+			call('my_hud', 'CanCarryItem', A, 'water', 3).value == true
+				and call('my_hud', 'CanCarryItem', A, 'water', 9).value == false)
+		api.GetInventory, api.CanCarry = realInv, realCarry
+
+		-- ── an item registered at runtime ─────────────────────────────────────
+		check('a reader may not add to the catalogue',
+			call('my_hud', 'RegisterItem', 'my_burger', { label = 'Burger' }).error
+				== 'export.callerDenied')
+		local before = #control.clientEvents
+		local auditFrom = #control.log.info
+		local reg = call('my_shop', 'RegisterItem', 'my_burger', {
+			label = 'Burger', weight = 250, category = 'food',
+			use = { consume = 1, status = { hunger = 20 } },
+		})
+		check('a writer registers an item, and is answered its screen entry',
+			reg.ok and reg.value.label == 'Burger' and reg.value.usable == true,
+			reg and tostring(reg.error))
+		check('which the catalogue now carries', call('my_hud', 'GetItem', 'my_burger').value.weight == 250)
+		local sent = sentAfter(control, before, 'opx:net:inventory:catalog')
+		check('and which is sent to every client, owner and definition',
+			sent ~= nil and sent.source == -1 and sent[1][1].name == 'my_burger'
+				and sent[1][1].owner == 'ext:my_shop' and sent[1][1].definition.label == 'Burger')
+		check('the registration is audited under its caller',
+			table.concat(control.log.info, '\n', auditFrom + 1)
+				:find('event=export.RegisterItem', 1, true) ~= nil)
+		check('a name config already carries is refused',
+			call('my_shop', 'RegisterItem', 'water', { label = 'x' }).error == 'item_taken')
+		check('and so is one another resource registered',
+			call('rival', 'RegisterItem', 'my_burger', { label = 'Mine' }).error == 'item_taken')
+		local again = call('my_shop', 'RegisterItem', 'my_burger', { label = 'Better Burger' })
+		check('its own owner registers it again, which replaces it',
+			again.ok and call('my_hud', 'GetItem', 'my_burger').value.label == 'Better Burger')
+		check('a field the catalogue does not know is refused by name',
+			call('my_shop', 'RegisterItem', 'my_soda', { label = 'Soda', colour = 'red' }).error
+				== 'bad_definition:field:colour')
+		check('a weapon is never a runtime item',
+			call('my_shop', 'RegisterItem', 'my_gun', { category = 'weapon' }).error
+				== 'bad_definition:category')
+		check('nor a raw mesh for a model',
+			call('my_shop', 'RegisterItem', 'my_box', { model = 'base/x.mesh' }).error
+				== 'bad_definition:model')
+		check('nor a weight that is not whole grams',
+			call('my_shop', 'RegisterItem', 'my_box', { weight = 1.5 }).error == 'bad_definition:weight')
+		check('a name the catalogue cannot store is refused',
+			call('my_shop', 'RegisterItem', 'bad name', {}).error == 'bad_name')
+		OPX.Config.SERVER.EXPORTS.ITEMS = { MAX_PER_CALLER = 1 }
+		check('and past the caller\'s cap a new item is refused',
+			call('my_shop', 'RegisterItem', 'my_soda', { label = 'Soda' }).error == 'item_cap')
+		OPX.Config.SERVER.EXPORTS.ITEMS = { MAX_PER_CALLER = 64 }
+
+		control.Admit(703, 'account-703')
+		env.source = 703
+		local beforeHello = #control.clientEvents
+		control.netEvents['opx:net:inventory:hello']()
+		local late = sentAfter(control, beforeHello, 'opx:net:inventory:catalog')
+		check('a client that says hello later is sent every runtime item',
+			late ~= nil and late.source == 703 and late[1][1].name == 'my_burger')
+		-- The hello sends the whole runtime list, and no event may carry more
+		-- than a client can validate in one resume: at eight a part, a part of
+		-- items at the validator's bounds overran the budget and was lost.
+		for index = 1, 9 do
+			call('my_shop', 'RegisterItem', 'my_part_' .. index, { label = 'Part ' .. index })
+		end
+		control.Admit(704, 'account-704')
+		env.source = 704
+		local beforeParts = #control.clientEvents
+		control.netEvents['opx:net:inventory:hello']()
+		local parts, carried, widest = 0, 0, 0
+		for index = beforeParts + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == 'opx:net:inventory:catalog' and event.source == 704 then
+				parts = parts + 1
+				carried = carried + #event[1]
+				widest = math.max(widest, #event[1])
+			end
+		end
+		check('a late client is sent every runtime item in parts of at most four',
+			carried == 10 and widest <= 4 and parts >= 3,
+			('%d items in %d parts, widest %d'):format(carried, parts, widest))
+
+		-- ── a use handler in another resource ─────────────────────────────────
+		local inventory = OPX.Modules.Get('inventory')
+		local Actions = inventory.Actions
+		check('an item the catalogue does not carry cannot be made usable',
+			call('my_shop', 'RegisterUsableItem', 'no_such_item', 'UseIt').error == 'unknown_item')
+		check('an export name that is not one is refused',
+			call('my_shop', 'RegisterUsableItem', 'my_burger', 'Use It!').error == 'export.badArgument')
+		Actions.RegisterUsable('lockpick', function() return { ok = true } end, 'heists_module')
+		check('an item another owner handles is never taken from it',
+			call('my_shop', 'RegisterUsableItem', 'lockpick', 'UseIt').error == 'export.usableTaken')
+		check('a reader may not register a use',
+			call('my_hud', 'RegisterUsableItem', 'my_burger', 'UseIt').error == 'export.callerDenied')
+		local usable = call('my_shop', 'RegisterUsableItem', 'my_burger', 'UseBurger')
+		check('a writer registers its export as the use of its item',
+			usable.ok and Actions.UsableOwner('my_burger') == 'ext:my_shop',
+			usable and tostring(usable.error))
+
+		local asked = {}
+		local realCall = env.Open77.exports.call
+		local verdict = { ok = true, consume = 0 }
+		env.Open77.exports.call = function(resource, name, ...)
+			asked[#asked + 1] = { resource = resource, name = name, args = { ... } }
+			return { await = function() return verdict end }
+		end
+		local Containers, Players = inventory.Containers, inventory.Players
+		local bag = Containers.Transient('stash', 'burger_bag', 10, 100000)
+		bag.items[1] = { name = 'my_burger', count = 2 }
+		local realBag, realMayAct = Players.Bag, Players.MayAct
+		Players.Bag = function() return bag end
+		Players.MayAct = function() return true end
+		local used
+		env.CreateThread(function() used = { Actions.Use(A, 1) } end)
+		settle(control, function() return used ~= nil end, 40)
+		check('a use calls the caller\'s export with the player and the stack',
+			asked[1] ~= nil and asked[1].resource == 'my_shop' and asked[1].name == 'UseBurger'
+				and asked[1].args[1] == A and asked[1].args[2].name == 'my_burger')
+		check('and its answer decides: consume = 0 keeps the stack',
+			used ~= nil and used[1] == true and bag.items[1] ~= nil and bag.items[1].count == 2,
+			used and tostring(used[2]))
+		verdict = { ok = false, error = 'not_hungry' }
+		-- Past the use cooldown, which is a fairness window and not under test.
+		control.Pump(20)
+		used = nil
+		env.CreateThread(function() used = { Actions.Use(A, 1) } end)
+		settle(control, function() return used ~= nil end, 40)
+		check('a refusal from the export refuses the use with its code',
+			used ~= nil and used[1] == false and used[2] == 'not_hungry'
+				and bag.items[1].count == 2, used and tostring(used[2]))
+		env.Open77.exports.call = realCall
+		Players.Bag, Players.MayAct = realBag, realMayAct
+		Containers.Discard(bag.id)
+
+		check('another resource cannot unregister it',
+			call('rival', 'UnregisterUsableItem', 'my_burger').value == false
+				and Actions.UsableOwner('my_burger') == 'ext:my_shop')
+		-- A stop that reaches this VM after the caller came back (a restart: the
+		-- stop is queued, the new instance registered first) or a stop another
+		-- resource raised by name must not wipe a RUNNING caller's handlers.
+		local realState = env.GetResourceState
+		env.GetResourceState = function(name) return name == 'my_shop' and 'running' or 'stopped' end
+		control.Fire('onResourceStop', 'my_shop')
+		check('a stop naming a caller that is running again leaves its use handlers',
+			Actions.UsableOwner('my_burger') == 'ext:my_shop')
+		env.GetResourceState = realState
+		control.Fire('onResourceStop', 'my_shop')
+		check('the caller stopping takes its use handlers with it, and nobody else\'s',
+			Actions.UsableOwner('my_burger') == nil and Actions.UsableOwner('lockpick') == 'heists_module')
+		check('while its item stays in the catalogue, for the stacks already in bags',
+			call('my_hud', 'GetItem', 'my_burger').value ~= nil)
+		Actions.UnregisterUsable('lockpick', 'heists_module')
+
+		-- ── a stash in front of a player ──────────────────────────────────────
+		local realOpen = api.OpenStash
+		local opened
+		api.OpenStash = function(id, name, options)
+			opened = { id = id, name = name, options = options }
+			return OPX.Result.Ok(5)
+		end
+		local stash = call('my_shop', 'OpenStash', A, 'my_shop.box', { slots = 10 })
+		check('OpenStash opens through the contract, naming the caller as the creator',
+			stash.ok and opened.id == A and opened.name == 'my_shop.box'
+				and opened.options.creator == 'my_shop' and opened.options.slots == 10,
+			stash and tostring(stash.error))
+		check('a reader may not open one', call('my_hud', 'OpenStash', A, 'x').error == 'export.callerDenied')
+		check('nor anybody for a player who is not connected',
+			call('my_shop', 'OpenStash', 99999, 'my_shop.box').error == 'export.badArgument')
+		api.OpenStash = realOpen
+		local realGate, realBag2 = Players.GateOpen, Players.Bag
+		Players.GateOpen = function() return true end
+		Players.Bag = function() return {} end
+		local foreign = inventory.OpenStash(A, 'police.armory', { creator = 'my_shop' })
+		check('the contract refuses another resource a stash outside its namespace',
+			foreign.ok == false and foreign.error == 'stash_namespace', tostring(foreign.error))
+		-- A configured stash is created at the size the operator gave it: the
+		-- size goes into the row on creation and is kept, so a creator's first
+		-- open (or the default 50) replaced the configured one for good.
+		local Options = inventory.Options
+		local listed = { name = 'ncpd_lockers', slots = 120, maxWeight = 900000,
+			position = { x = 0, y = 0, z = 0 }, bucket = 0 }
+		Options.STASHES.ncpd_lockers = listed
+		local World = inventory.World
+		local realStash, realFind, realView = World.Stash, inventory.Containers.Find,
+			inventory.Containers.View
+		local madeAt
+		World.Stash = function(name, size)
+			madeAt = size
+			return { id = 9, kind = 'stash', owner = name, items = {} }, nil
+		end
+		inventory.Containers.Find = function() return { id = 9 } end
+		inventory.Containers.View = function() end
+		local configuredOpen = inventory.OpenStash(A, 'ncpd_lockers', { creator = 'my_shop', slots = 5 })
+		check('a configured stash a creator opens is made at its configured size',
+			configuredOpen.ok and madeAt ~= nil and madeAt.slots == 120 and madeAt.maxWeight == 900000,
+			madeAt and ('%s/%s'):format(tostring(madeAt.slots), tostring(madeAt.maxWeight))
+				or tostring(configuredOpen.error))
+		World.Stash, inventory.Containers.Find, inventory.Containers.View = realStash, realFind, realView
+		Options.STASHES.ncpd_lockers = nil
+		Players.GateOpen, Players.Bag = realGate, realBag2
+	end
+end
+
+section('creator exports: vehicles, keys and a toast')
+do
+	local env, control, why = boot('server', creatorBridge({}))
+	check('the server boots for the vehicle exports', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_shop = true }
+		local A = 711
+		local cid = OPX.CitizenId.Generate()
+		standCharacter(env, control, A, cid)
+
+		local vehicles = OPX.Api.Get('vehicles')
+		local realGet, realList, realReg = vehicles.Get, vehicles.List, vehicles.Register
+		vehicles.Get = function(plate)
+			if plate == 'ABC123' then
+				return OPX.Result.Ok({ plate = 'ABC123', citizenId = cid, record = 'Vehicle.v_sport',
+					garage = 'city', state = 2, health = 0.5, metadata = { secret = 1 } })
+			end
+			return OPX.Result.Err('vehicle.notFound')
+		end
+		vehicles.List = function(owner)
+			return OPX.Result.Ok({ { plate = 'ABC123', citizenId = owner, record = 'r',
+				garage = 'city', state = 0, health = 1 } })
+		end
+		local given
+		vehicles.Register = function(owner, record, options)
+			given = { owner = owner, record = record, options = options }
+			return OPX.Result.Ok({ plate = 'NEW001', citizenId = owner, record = record,
+				garage = options.garage or 'city', state = 0, health = 1 })
+		end
+		local v = call('my_hud', 'GetVehicle', 'ABC123')
+		check('GetVehicle answers who owns a plate, where it is and in what state, in words',
+			v.ok and v.value.state == 'impounded' and v.value.citizenId == cid
+				and v.value.garage == 'city', v and tostring(v.error))
+		check('and nothing a caller was not promised', v.ok and v.value.metadata == nil)
+		check('a plate nobody owns answers the module\'s code',
+			call('my_hud', 'GetVehicle', 'ZZZ').error == 'vehicle.notFound')
+		check('a plate that is not one is refused before the read',
+			call('my_hud', 'GetVehicle', 'bad plate!').error == 'export.badArgument')
+		local owned = call('my_hud', 'GetOwnedVehicles', A)
+		check('GetOwnedVehicles lists a loaded player\'s vehicles',
+			owned.ok and #owned.value == 1 and owned.value[1].state == 'stored')
+		check('and an offline character\'s, by citizen id', call('my_hud', 'GetOwnedVehicles', cid).ok)
+		local added = call('my_shop', 'AddVehicle', A, 'Vehicle.v_sport2_quadra', { garage = 'city' })
+		check('AddVehicle makes a vehicle row for the character, through the module',
+			added.ok and added.value.plate == 'NEW001' and given.owner == cid
+				and given.options.garage == 'city', added and tostring(added.error))
+		check('a record that is not one is refused',
+			call('my_shop', 'AddVehicle', A, 'bad record!').error == 'export.badArgument')
+		check('and a reader may not add one', call('my_hud', 'AddVehicle', A, 'r').error
+			== 'export.callerDenied')
+		vehicles.Get, vehicles.List, vehicles.Register = realGet, realList, realReg
+
+		local keys = OPX.Api.Get('vehiclekeys')
+		local realCount, realGive = keys.Count, keys.Give
+		keys.Count = function(_, plate) return plate == 'ABC123' and 1 or 0 end
+		local cut
+		keys.Give = function(target, plate) cut = { target = target, plate = plate }
+			return OPX.Result.Ok({ plate = plate, label = 'key' }) end
+		check('HasKeys answers whether the bag holds a key to the plate',
+			call('my_hud', 'HasKeys', A, 'ABC123').value == true
+				and call('my_hud', 'HasKeys', A, 'XYZ999').value == false)
+		local gave = call('my_shop', 'GiveKeys', A, 'ABC123')
+		check('GiveKeys cuts one through the keys module', gave.ok and cut.target == A
+			and cut.plate == 'ABC123', gave and tostring(gave.error))
+		check('and is a write', call('my_hud', 'GiveKeys', A, 'ABC123').error == 'export.callerDenied')
+		keys.Count, keys.Give = realCount, realGive
+
+		local told = call('my_shop', 'Notify', A, 'Your order is ready', 'success')
+		local notice = control.notices[#control.notices]
+		check('Notify puts a toast on that player\'s screen',
+			told.ok and notice ~= nil and notice.playerId == A and notice.message == 'Your order is ready'
+				and notice.type == 'success', told and tostring(told.error))
+		check('the same toast again at once is answered as a duplicate',
+			call('my_shop', 'Notify', A, 'Your order is ready', 'success').error == 'export.duplicate')
+		check('a kind that is not one is refused', call('my_shop', 'Notify', A, 'x', 'loud').error
+			== 'export.badArgument')
+		check('and an empty message', call('my_shop', 'Notify', A, '').error == 'export.badArgument')
+		check('a reader may not', call('my_hud', 'Notify', A, 'x').error == 'export.callerDenied')
+	end
+end
+
+section('creator exports: a caller\'s metadata on a character nobody is playing')
+do
+	local rows, writes = {}, {}
+	local codec = nil
+	local bridge = Host.Database({
+		single = function(sql, params)
+			params = params or {}
+			if sql:find('FROM opx77_characters', 1, true) and params.citizen and rows[params.citizen] then
+				return { citizen_id = params.citizen, user_id = 'account-x', cid = 1, name = 'x',
+					char_info = '{}', money = '{}', job = '{}', gang = '{}',
+					metadata = codec.encode(rows[params.citizen]) }
+			end
+			return nil
+		end,
+		update = function(sql, params)
+			params = params or {}
+			writes[#writes + 1] = { sql = sql, params = params }
+			if not params.citizen or not rows[params.citizen] then return 0 end
+			local key = params.path and params.path:match('^%$%."(.*)"$')
+			if sql:find('JSON_REMOVE', 1, true) then
+				rows[params.citizen][key] = nil
+			elseif sql:find('JSON_SET(metadata', 1, true) then
+				rows[params.citizen][key] = codec.decode(params.value)
+			end
+			return 1
+		end,
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		insert = function() return 1 end,
+		transaction = function() return true end,
+	})
+	local env, control, why = boot('server', bridge)
+	check('the server boots for offline metadata', why == nil, why)
+
+	if why == nil then
+		codec = env.json
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_jobs = true }
+		local AWAY = OPX.CitizenId.Generate()
+		rows[AWAY] = { ['ext.my_jobs.rep'] = 3, ['ext.other.secret'] = 'x', health = 100 }
+
+		local one = call('my_jobs', 'GetMetadata', AWAY, 'rep')
+		check('GetMetadata reads a caller\'s key off an offline character\'s row',
+			one ~= nil and one.ok and one.value == 3, one and tostring(one.error))
+		local own = call('my_jobs', 'GetMetadata', AWAY)
+		check('and every key of its own, and nobody else\'s',
+			own.ok and own.value.rep == 3 and own.value.secret == nil and own.value.health == nil)
+		local set = call('my_jobs', 'SetMetadata', AWAY, 'rep', 4)
+		check('SetMetadata writes one key of the row',
+			set.ok and rows[AWAY]['ext.my_jobs.rep'] == 4, set and tostring(set.error))
+		check('by a quoted JSON path, so the dots in it are the key and not steps',
+			writes[#writes].params.path == '$."ext.my_jobs.rep"')
+		check('leaving every other key as the row holds it',
+			rows[AWAY].health == 100 and rows[AWAY]['ext.other.secret'] == 'x')
+		local journal = table.concat(control.log.info, '\n')
+		check('audited under its caller', journal:find('event=export.SetMetadata', 1, true) ~= nil)
+		check('nil removes the key', call('my_jobs', 'SetMetadata', AWAY, 'rep', nil).ok
+			and rows[AWAY]['ext.my_jobs.rep'] == nil)
+		OPX.Config.SERVER.EXPORTS.METADATA = { MAX_BYTES = 8 }
+		local written = #writes
+		check('the size bounds hold offline too, before anything is written',
+			call('my_jobs', 'SetMetadata', AWAY, 'big', string.rep('a', 40)).error == 'export.tooLarge'
+				and #writes == written)
+		OPX.Config.SERVER.EXPORTS.METADATA = nil
+		check('a citizen id the database does not hold is not found',
+			call('my_jobs', 'SetMetadata', OPX.CitizenId.Generate(), 'rep', 1).error
+				== 'character.notFound')
+		check('a citizen id that does not parse is refused',
+			call('my_jobs', 'GetMetadata', 'H7K', 'rep').error == 'export.badArgument')
+		check('a reader may still not write', call('my_hud', 'SetMetadata', AWAY, 'rep', 1).error
+			== 'export.callerDenied')
+
+		local abandoned, abandonWhy = control.AbandonExport('my_jobs', 1, 'SetMetadata', AWAY, 'rep', 9)
+		check('a synchronous call naming a citizen id fails before it writes',
+			abandoned == nil and abandonWhy == 'export_yielded' and rows[AWAY]['ext.my_jobs.rep'] == nil)
+
+		character.Ledger.Enter(AWAY)
+		local busy = call('my_jobs', 'SetMetadata', AWAY, 'rep', 5)
+		check('a write waits for another writer on the row, and gives up bounded',
+			busy ~= nil and busy.error == 'error.unavailable' and rows[AWAY]['ext.my_jobs.rep'] == nil,
+			busy and tostring(busy.error))
+		character.Ledger.Leave(AWAY)
+
+		local HERE = OPX.CitizenId.Generate()
+		local live = standCharacter(env, control, 741, HERE)
+		live.Functions.SetMetaData = function(key, value) live.PlayerData.metadata[key] = value end
+		local writesBefore = #writes
+		local online = call('my_jobs', 'SetMetadata', HERE, 'rep', 7)
+		check('a character online is written in memory, never under its row',
+			online.ok and live.PlayerData.metadata['ext.my_jobs.rep'] == 7 and #writes == writesBefore,
+			online and tostring(online.error))
+		check('and read back by citizen id from memory too',
+			call('my_jobs', 'GetMetadata', HERE, 'rep').value == 7)
+	end
+end
+
+section('creator exports: a bar the server starts, and the server judges')
+do
+	local env, control, why = boot('server', creatorBridge({}))
+	check('the server boots for server-started bars', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_jobs = true, rival = true }
+		local P, Q = 721, 722
+		control.Admit(P, 'account-721')
+		control.Admit(Q, 'account-722')
+		local heard = {}
+		env.AddEventHandler('opx:on:progress:finished', function(who, payload)
+			heard[#heard + 1] = { source = who, payload = payload }
+		end)
+
+		check('a reader may not start one',
+			call('my_hud', 'StartProgress', P, { label = 'x', durationMs = 1000 }).error
+				== 'export.callerDenied')
+		local before = #control.clientEvents
+		local bar = call('my_jobs', 'StartProgress', P, { label = 'Picking', durationMs = 2000,
+			cancelable = true })
+		check('a writer puts a numbered bar on a player\'s screen',
+			bar ~= nil and bar.ok and math.type(bar.value.id) == 'integer', bar and tostring(bar.error))
+		local sent = sentAfter(control, before, 'opx:net:progress:start')
+		check('sent to that player alone, with its id and duration',
+			sent ~= nil and sent.source == P and sent[1].id == bar.value.id
+				and sent[1].durationMs == 2000 and sent[1].label == 'Picking')
+		check('one bar per player: a second is refused up front',
+			call('my_jobs', 'StartProgress', P, { label = 'Again', durationMs = 2000 }).error
+				== 'progress_busy')
+		check('a duration outside the bounds is refused',
+			call('my_jobs', 'StartProgress', Q, { label = 'x', durationMs = 10 }).error
+				== 'invalid_duration')
+		check('and a bar with nothing to say',
+			call('my_jobs', 'StartProgress', Q, { label = '', durationMs = 1000 }).error
+				== 'invalid_label')
+
+		env.source = P
+		local security = #control.log.warn
+		control.netEvents['opx:net:progress:report'](bar.value.id, 'finished')
+		check('a client that says finished before the clock is answered rejected, not completed',
+			#heard == 1 and heard[1].source == P and heard[1].payload.ending == 'rejected'
+				and heard[1].payload.completed == false and heard[1].payload.owner == 'my_jobs')
+		check('and written to the security journal',
+			table.concat(control.log.warn, '\n', security + 1):find('progress.early', 1, true) ~= nil)
+
+		local honest = call('my_jobs', 'StartProgress', P, { label = 'Picking', durationMs = 1000 })
+		control.Pump(12)
+		env.source = Q
+		control.netEvents['opx:net:progress:report'](honest.value.id, 'finished')
+		check('another player\'s report about it is not heard', #heard == 1)
+		env.source = P
+		control.netEvents['opx:net:progress:report'](honest.value.id + 50, 'finished')
+		check('nor a report naming another id', #heard == 1)
+		control.netEvents['opx:net:progress:report'](honest.value.id, 'finished')
+		check('a finish after the clock is completed',
+			#heard == 2 and heard[2].payload.ending == 'finished' and heard[2].payload.completed == true
+				and heard[2].payload.id == honest.value.id and heard[2].payload.elapsedMs >= 1000)
+
+		local cancelled = call('my_jobs', 'StartProgress', P, { label = 'x', durationMs = 1000 })
+		control.netEvents['opx:net:progress:report'](cancelled.value.id, 'cancelled')
+		check('a cancel is an ending, not a completion',
+			heard[3].payload.ending == 'cancelled' and heard[3].payload.completed == false)
+
+		local silent = call('my_jobs', 'StartProgress', P, { label = 'x', durationMs = 1000 })
+		control.Pump(70)
+		check('a client that never answers never completes anything',
+			#heard == 4 and heard[4].payload.id == silent.value.id
+				and heard[4].payload.ending == 'no_answer' and heard[4].payload.completed == false)
+
+		local stopping = call('my_jobs', 'StartProgress', P, { label = 'x', durationMs = 5000 })
+		check('another resource cannot stop it', call('rival', 'StopProgress', P).error == 'not_owner')
+		local cancelFrom = #control.clientEvents
+		check('its own caller can', call('my_jobs', 'StopProgress', P, stopping.value.id).ok
+			and heard[5].payload.ending == 'stopped')
+		local cancel = sentAfter(control, cancelFrom, 'opx:net:progress:cancel')
+		check('and the client is told which bar to take down',
+			cancel ~= nil and cancel.source == P and cancel[1] == stopping.value.id)
+
+		call('my_jobs', 'StartProgress', P, { label = 'x', durationMs = 5000 })
+		control.Fire('onPlayerDisconnected', P, 'quit')
+		check('a player leaving ends it as left', heard[6].payload.ending == 'left')
+
+		control.Admit(P, 'account-721')
+		call('my_jobs', 'StartProgress', P, { label = 'x', durationMs = 5000 })
+		control.Fire('onResourceStop', 'my_jobs')
+		check('the caller stopping takes its bar down, not completed',
+			heard[7] ~= nil and heard[7].payload.ending == 'stopped'
+				and heard[7].payload.completed == false)
+	end
+end
+
+section('creator exports: a crafting bench another resource owns')
+do
+	local env, control, why = boot('server', creatorBridge({}))
+	check('the server boots for creator benches', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_bar = true, rival = true }
+		local crafting = OPX.Api.Get('crafting')
+		local Refusal = OPX.Modules.Get('crafting').Refusal
+		local P = 751
+		local cop = standCharacter(env, control, P, OPX.CitizenId.Generate())
+
+		local function listed(key)
+			for _, bench in ipairs(crafting.Benches().value) do
+				if bench.key == key then return bench end
+			end
+			return nil
+		end
+		local definition = {
+			label = 'Bar counter',
+			jobs = { ncpd = 1 }, onDuty = true,
+			recipes = { { KEY = 'mojito', OUTPUT = 'water', COUNT = 1, SECONDS = 5,
+				INPUTS = { chips = 1 } } },
+		}
+		check('a reader may not register a bench',
+			call('my_hud', 'RegisterCraftingBench', 'counter', definition).error == 'export.callerDenied')
+		local reg = call('my_bar', 'RegisterCraftingBench', 'counter', definition)
+		check('a writer registers a bench, kept under its own name',
+			reg.ok and reg.value.key == 'my_bar:counter' and reg.value.recipes == 1,
+			reg and tostring(reg.error))
+		check('owned by the caller', listed('my_bar:counter') ~= nil
+			and listed('my_bar:counter').owner == 'ext:my_bar')
+		local seen = crafting.View(P, 'my_bar:counter')
+		check('a player in the job, on duty, at the grade, gets the screen', seen.ok,
+			tostring(seen.error))
+		cop.PlayerData.job.onDuty = false
+		check('off duty, the job gate refuses',
+			crafting.View(P, 'my_bar:counter').error == Refusal.NOT_FOR_YOU)
+		cop.PlayerData.job.onDuty = true
+		check('registering the same key again replaces its own bench',
+			call('my_bar', 'RegisterCraftingBench', 'counter', definition).ok)
+		check('another resource\'s unregister names its own key, never this one',
+			call('rival', 'UnregisterCraftingBench', 'counter').value == false
+				and listed('my_bar:counter') ~= nil)
+		check('a gate grade that is not a whole number is refused',
+			call('my_bar', 'RegisterCraftingBench', 'x', { jobs = { ncpd = 'high' },
+				recipes = definition.recipes }).error == 'export.badArgument')
+		check('a bench with no usable recipe answers the module\'s own code',
+			call('my_bar', 'RegisterCraftingBench', 'y', { recipes = {} }).error == 'invalid_bench')
+		check('a key that is not one is refused',
+			call('my_bar', 'RegisterCraftingBench', 'a:b', definition).error == 'export.badArgument')
+		control.Fire('onResourceStop', 'my_bar')
+		check('the caller stopping takes its benches with it', listed('my_bar:counter') == nil)
+		local source = io.open('modules/crafting/server/main.lua'):read('a')
+		check('an order placed and one handed over are announced on the public bus',
+			source:find('OPX.Publish(M.Event.ON_ORDERED', 1, true) ~= nil
+				and source:find('OPX.Publish(M.Event.ON_COLLECTED', 1, true) ~= nil)
+	end
+end
+
+section('public events: what a bag gained, a character made and deleted, a car registered and impounded')
+do
+	local vehicleRow = nil
+	local bridge = Host.Database({
+		single = function(sql, params)
+			params = params or {}
+			if sql:find('COUNT(*) AS total', 1, true) then return { total = 0 } end
+			if sql:find('FROM opx77_vehicles', 1, true) then return vehicleRow end
+			if sql:find('FROM opx77_characters', 1, true) and params.citizen then
+				return { citizen_id = params.citizen, user_id = 'account-761', cid = 1, name = 'x',
+					char_info = '{}', money = '{}', job = '{}', gang = '{}', metadata = '{}' }
+			end
+			if sql:find('FROM opx77_inventories', 1, true) then
+				return { id = 900, kind = params.kind, owner = params.owner, slots = 50,
+					max_weight = 100000 }
+			end
+			return nil
+		end,
+		update = function() return 1 end,
+		scalar = function() return 0 end,
+		query = function() return {} end,
+		insert = function() return 1 end,
+		transaction = function() return true end,
+	})
+	local env, control, why = boot('server', bridge)
+	check('the server boots for the public events', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local heard = {}
+		for _, name in ipairs({ 'opx:on:inventory:items', 'opx:on:character:created',
+			'opx:on:character:deleted', 'opx:on:vehicles:registered', 'opx:on:vehicles:state' }) do
+			heard[name] = {}
+			env.AddEventHandler(name, function(who, payload)
+				table.insert(heard[name], { source = who, payload = payload })
+			end)
+		end
+
+		-- ── a bag, by item name ───────────────────────────────────────────────
+		local inventory = OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local CID = OPX.CitizenId.Generate()
+		local bag = Containers.Transient('character', CID, 20, 100000)
+		Containers.Add(bag, 'water', 3)
+		local items = heard['opx:on:inventory:items']
+		check('an item entering a bag is announced by name, with what moved and what is held',
+			#items == 1 and items[1].payload.citizenId == CID
+				and items[1].payload.changes[1].name == 'water'
+				and items[1].payload.changes[1].delta == 3 and items[1].payload.changes[1].count == 3,
+			#items)
+		Containers.Remove(bag, 'water', 1)
+		check('and one leaving it', #items == 2 and items[2].payload.changes[1].delta == -1
+			and items[2].payload.changes[1].count == 2)
+		Containers.Sort(bag, 'name')
+		check('a sort inside the bag moved nothing in or out, and says nothing', #items == 2)
+		Containers.Add(bag, 'chips', 1)
+		Containers.Remove(bag, 'water', 2)
+		local last = items[#items].payload.changes
+		check('an item gone entirely is announced with a count of 0',
+			#items == 4 and last[1].name == 'water' and last[1].delta == -2 and last[1].count == 0)
+		local stash = Containers.Transient('stash', 'events_stash', 20, 100000)
+		Containers.Add(stash, 'water', 1)
+		check('a stash is not a bag, and is not announced by item', #items == 4)
+		Containers.Discard(bag.id)
+		Containers.Discard(stash.id)
+
+		-- ── a character made and deleted ──────────────────────────────────────
+		local character = OPX.Modules.Get('character')
+		control.Admit(761, 'account-761')
+		local created
+		env.CreateThread(function() created = character.CreateCharacter(761) end)
+		settle(control, function() return created ~= nil end, 80)
+		local made = heard['opx:on:character:created']
+		check('a character made is announced, with its citizen id and account',
+			created ~= nil and created.ok and #made == 1 and made[1].source == 761
+				and made[1].payload.citizenId == created.value.citizenId
+				and made[1].payload.userId == 'account-761',
+			created and tostring(created.error))
+		local removed
+		local DOOMED = OPX.CitizenId.Generate()
+		env.CreateThread(function() removed = character.RemoveCharacter(DOOMED, 762) end)
+		settle(control, function() return removed ~= nil end, 80)
+		local gone = heard['opx:on:character:deleted']
+		check('a character deleted is announced, naming who asked',
+			removed ~= nil and removed.ok and #gone == 1 and gone[1].payload.citizenId == DOOMED
+				and gone[1].payload.userId == 'account-761' and gone[1].payload.by == 762,
+			removed and tostring(removed.error))
+
+		-- ── a car registered and impounded ────────────────────────────────────
+		local vehicles = OPX.Api.Get('vehicles')
+		local OWNER = OPX.CitizenId.Generate()
+		local registered
+		env.CreateThread(function() registered = vehicles.Register(OWNER, 'Vehicle.v_sport') end)
+		settle(control, function() return registered ~= nil end, 40)
+		local rows = heard['opx:on:vehicles:registered']
+		check('a vehicle row made is announced with its plate',
+			registered ~= nil and registered.ok and #rows == 1 and rows[1].payload.citizenId == OWNER
+				and rows[1].payload.plate == registered.value.plate
+				and rows[1].payload.record == 'Vehicle.v_sport',
+			registered and tostring(registered.error))
+		vehicleRow = { plate = 'IMP0001', citizen_id = OWNER, record = 'Vehicle.v_sport',
+			garage = 'city', state = 0, health = 1 }
+		local moved
+		env.CreateThread(function() moved = vehicles.SetState('IMP0001', 'impounded', 'impound') end)
+		settle(control, function() return moved ~= nil end, 40)
+		local states = heard['opx:on:vehicles:state']
+		check('an impound is announced, with the state and the garage',
+			moved ~= nil and moved.ok and #states == 1 and states[1].payload.state == 'impounded'
+				and states[1].payload.plate == 'IMP0001' and states[1].payload.garage == 'impound'
+				and states[1].payload.citizenId == OWNER, moved and tostring(moved.error))
+	end
+end
+
+section('creator exports: the eye, the key strip, the panel and the reads, on the client')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the wider client surface', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		local ADDED = { 'AddTarget', 'UpdateTarget', 'RemoveTarget', 'ClearTargets', 'ShowPrompt',
+			'UpdatePrompt', 'HidePrompt', 'HideAllPrompts', 'OpenPanel', 'UpdatePanel', 'AppendPanel',
+			'ClosePanel', 'OpenCraftingBench', 'GetPlayerData', 'GetItemCount', 'HasItem', 'GetItem',
+			'IsDown', 'GetNeeds' }
+		local missing = {}
+		for _, name in ipairs(ADDED) do
+			if type(control.exports[name]) ~= 'function' then missing[#missing + 1] = name end
+		end
+		check('every added client export is published', #missing == 0, table.concat(missing, ', '))
+
+		local ME = 'my_shop'
+		env.GetResourceState = function(name)
+			return (name == ME or name == 'other_res') and 'running' or 'stopped'
+		end
+		control.generations[ME] = 3
+		local target = OPX.Modules.Get('target')
+		local Registry = target.Registry
+
+		-- ── the eye ───────────────────────────────────────────────────────────
+		local row = { id = 'buy', label = 'Buy a burger', onSelect = 'OnBuy', canInteract = 'CanBuy' }
+		local added = call(ME, 'AddTarget', 'npcs', row)
+		check('a resource puts a row on the eye, owned under its own name',
+			added ~= nil and added.ok and type(added.value.token) == 'string'
+				and #Registry.List(ME) == 1, added and tostring(added.error))
+		local stored = Registry.Get(added.value.token)
+		check('its callbacks are its own exports, never anybody else\'s',
+			stored ~= nil and stored.onSelect.resource == ME and stored.onSelect.export == 'OnBuy'
+				and stored.canInteract.resource == ME)
+		check('a callback naming another resource is refused',
+			call(ME, 'AddTarget', 'npcs', { id = 'x', label = 'X',
+				onSelect = { resource = 'other_res', export = 'Steal' } }).error == 'export.badArgument')
+		check('a kind the eye does not have is refused',
+			call(ME, 'AddTarget', 'planets', row).error == 'export.badArgument')
+		check('a kind that needs a where is refused without one',
+			call(ME, 'AddTarget', 'models', row).error == 'export.badArgument')
+		local batch = call(ME, 'AddTarget', 'vehicles', {
+			{ id = 'a', label = 'A', onSelect = 'OnA' }, { id = 'b', label = 'B', onSelect = 'OnB' },
+		})
+		check('a batch registers whole', batch.ok and #batch.value.tokens == 2 and #Registry.List(ME) == 3)
+		local updated = call(ME, 'UpdateTarget', added.value.token, { label = 'Buy two burgers' })
+		check('it updates its own row', updated.ok, updated and tostring(updated.error))
+		check('another resource cannot remove it',
+			call('other_res', 'RemoveTarget', added.value.token).ok == false
+				and #Registry.List(ME) == 3)
+		check('its owner removes a batch by token', call(ME, 'RemoveTarget', batch.value.tokens).ok
+			and #Registry.List(ME) == 1)
+		check('a resource named like a module of this runtime is refused, never sharing its rows',
+			call('target', 'AddTarget', 'npcs', row).error == 'export.ownerTaken'
+				and call('inventory', 'ClearTargets').error == 'export.ownerTaken')
+		local cost = callCost(control.exports.AddTarget, 'props', row)
+		check('registering a row stays well inside one resume', cost < 3000,
+			('%d instructions'):format(cost))
+
+		-- ── the key strip ─────────────────────────────────────────────────────
+		local prompts = OPX.Api.Get('prompts')
+		local shown = call(ME, 'ShowPrompt', 'shop', { title = 'SHOP', rows = {
+			{ id = 'buy', label = 'Buy', keys = 'E' } } })
+		check('a resource puts a group on the key strip', shown.ok, shown and tostring(shown.error))
+		check('under its own name', prompts.List(ME).value.count == 1)
+		check('a malformed group answers the module\'s code',
+			call(ME, 'ShowPrompt', 'bad', { rows = {} }).error == 'prompts.rowsRequired')
+		check('it updates and hides its own',
+			call(ME, 'UpdatePrompt', 'shop', { title = 'STORE' }).ok
+				and call(ME, 'HidePrompt', 'shop').ok and prompts.List(ME).value.count == 0)
+		call(ME, 'ShowPrompt', 'a', { rows = { { label = 'A', keys = 'E' } } })
+		call(ME, 'ShowPrompt', 'b', { rows = { { label = 'B', keys = 'F' } } })
+		check('and all of them at once', call(ME, 'HideAllPrompts').ok
+			and prompts.List(ME).value.count == 0)
+
+		-- ── the panel ─────────────────────────────────────────────────────────
+		local function replies(resource)
+			local out = {}
+			for _, entry in ipairs(control.exportCalls) do
+				if entry.resource == resource then out[#out + 1] = entry end
+			end
+			return out
+		end
+		local panel = OPX.Api.Get('panel')
+		local opened = call(ME, 'OpenPanel', { id = 'shop', title = 'SHOP',
+			actions = { { id = 'buy', label = 'Buy' } } })
+		check('a resource opens the panel', opened ~= nil and opened.ok,
+			opened and tostring(opened.error))
+		check('owned ext:<caller>', panel.State().value.owner == 'ext:' .. ME)
+		check('another resource cannot touch it',
+			call('other_res', 'UpdatePanel', opened.value.handle, { title = 'X' }).error == 'stale_handle'
+				and call('other_res', 'ClosePanel', opened.value.handle).error == 'stale_handle')
+		check('nor open its own over it', call('other_res', 'OpenPanel', { id = 'x', title = 'X' }).ok
+			== false)
+		check('its owner updates it', call(ME, 'UpdatePanel', opened.value.handle, { title = 'STORE' }).ok)
+		check('a spec the panel does not know is refused',
+			call(ME, 'UpdatePanel', opened.value.handle, { colour = 'red' }).ok == false)
+		call(ME, 'ClosePanel', opened.value.handle)
+		control.Pump(4)
+		local back = replies(ME)
+		check('and its close comes back as opx:on:panel:action on the reply export',
+			back[#back] ~= nil and back[#back].args[1] == 'opx:on:panel:action'
+				and back[#back].args[2].action == 'close' and back[#back].args[2].owner == ME)
+
+		-- ── a crafting bench ──────────────────────────────────────────────────
+		local asked = #control.serverEvents
+		local bench = call(ME, 'OpenCraftingBench', 'counter')
+		local event = control.serverEvents[#control.serverEvents]
+		check('OpenCraftingBench asks the server for the caller\'s own bench',
+			bench.ok and #control.serverEvents == asked + 1 and event.name == 'opx:net:crafting:open'
+				and event[1] == ME .. ':counter', bench and tostring(bench.error))
+		check('and a key that could name another resource\'s is refused',
+			call(ME, 'OpenCraftingBench', 'other:counter').error == 'export.badArgument')
+
+		-- ── the reads ─────────────────────────────────────────────────────────
+		check('GetPlayerData before a character is loaded answers notLoggedIn',
+			call(ME, 'GetPlayerData').error == 'error.notLoggedIn')
+		check('GetItemCount answers the local bag', call(ME, 'GetItemCount', 'water').value == 0)
+		check('HasItem compares it', call(ME, 'HasItem', 'water').value == false)
+		check('and refuses a count that is not one', call(ME, 'HasItem', 'water', 0).error
+			== 'export.badArgument')
+		check('GetItem answers a catalogue entry', type(call(ME, 'GetItem', 'water').value) == 'table')
+		check('IsDown answers the down state', call(ME, 'IsDown').value.down == false)
+		check('GetNeeds answers the module\'s own refusal with no character',
+			call(ME, 'GetNeeds').ok == false)
+
+		-- ── a caller that stops ───────────────────────────────────────────────
+		call(ME, 'ShowPrompt', 'left', { rows = { { label = 'L', keys = 'E' } } })
+		local leftOpen = call(ME, 'OpenPanel', { id = 'left', title = 'LEFT' })
+		control.Fire('onClientResourceStop', ME)
+		check('the caller stopping takes its rows, its strip and its panel with it',
+			#Registry.List(ME) == 0 and prompts.List(ME).value.count == 0
+				and panel.State().value.open == false, leftOpen and tostring(leftOpen.error))
+	end
+end
+
+section('runtime items and server bars reach the client within the budget')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the catalogue and bar wiring', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Api.Get('inventory')
+		local receive = control.netEvents['opx:net:inventory:catalog']
+		check('the client listens for runtime items', type(receive) == 'function')
+		receive({ { name = 'my_burger', owner = 'ext:my_shop',
+			definition = { label = 'Burger', weight = 250, use = { consume = 1 } } } })
+		local burger = inventory.GetItem('my_burger')
+		check('a runtime item the server sent is in the client catalogue too',
+			burger ~= nil and burger.label == 'Burger' and burger.usable == true)
+		receive({ { name = 'water', owner = 'ext:my_shop', definition = { label = 'Mine' } } })
+		check('and the client refuses what the server would, by the same function',
+			inventory.GetItem('water').label ~= 'Mine')
+		local flood = {}
+		for index = 1, 5 do
+			flood[index] = { name = 'flood_' .. index, owner = 'ext:x', definition = {} }
+		end
+		receive(flood)
+		check('a part longer than the server ever sends is refused whole',
+			inventory.GetItem('flood_1') == nil)
+		local part = {}
+		for index = 1, 4 do
+			part[index] = { name = 'bulk_' .. index, owner = 'ext:my_shop', definition = {
+				label = 'Bulk ' .. index, weight = 100, category = 'food',
+				use = { consume = 1, status = { hunger = 5 } } } }
+		end
+		local cost = callCost(receive, part)
+		check('the four items one event carries are taken in well inside one resume', cost < 7000,
+			('%d instructions'):format(cost))
+		check('every one of them', inventory.GetItem('bulk_4') ~= nil)
+
+		-- A use.status is walked twice per item on the client: unbounded, one
+		-- event of heavy items spent the whole resume and was killed, so
+		-- an item the server accepted never reached that client.
+		local heavy = {}
+		for key = 1, 300 do heavy['need_' .. key] = key end
+		local heavyPart = {}
+		for index = 1, 4 do
+			heavyPart[index] = { name = 'heavy_' .. index, owner = 'ext:my_shop', definition = {
+				label = 'Heavy ' .. index, use = { status = heavy } } }
+		end
+		local heavyCost = callCost(receive, heavyPart)
+		check('an item moving hundreds of needs is refused by the shared validator',
+			inventory.GetItem('heavy_1') == nil)
+		check('and refusing a part of them stays inside one resume', heavyCost < 10000,
+			('%d instructions'):format(heavyCost))
+		local widest = {}
+		for key = 1, 8 do widest['need_' .. key] = key end
+		local widePart = {}
+		for index = 1, 4 do
+			widePart[index] = { name = 'wide_' .. index, owner = 'ext:my_shop', definition = {
+				label = ('W'):rep(160), description = ('D'):rep(160), weight = 100, stack = true,
+				drop = true, category = 'food', image = 'wide.png', model = 'crate',
+				use = { consume = 1, close = true, status = widest,
+					animation = { name = 'drink', variant = 1, durationMs = 3000 } } } }
+		end
+		local wideCost = callCost(receive, widePart)
+		check('a full part of items at every bound the validator allows fits inside one resume',
+			wideCost < 8000 and inventory.GetItem('wide_4') ~= nil,
+			('%d instructions'):format(wideCost))
+
+		local progress = OPX.Api.Get('progress')
+		local start = control.netEvents['opx:net:progress:start']
+		local cancel = control.netEvents['opx:net:progress:cancel']
+		start({ id = 7, label = 'Picking', durationMs = 2000 })
+		check('a numbered server bar goes up', progress.State().value.open == true)
+		cancel(6)
+		check('a stop for an older bar leaves it up', progress.State().value.open == true)
+		cancel(7)
+		local report = control.serverEvents[#control.serverEvents]
+		check('its own stop takes it down and the ending is reported, with its id',
+			progress.State().value.open == false and report.name == 'opx:net:progress:report'
+				and report[1] == 7 and report[2] == 'stopped')
+		progress.Start('tests', { label = 'Busy', durationMs = 2000 })
+		start({ id = 8, label = 'Picking', durationMs = 2000 })
+		report = control.serverEvents[#control.serverEvents]
+		check('a bar the client cannot draw is reported refused at once',
+			report.name == 'opx:net:progress:report' and report[1] == 8 and report[2] == 'refused')
+		progress.Stop('tests')
+	end
+end
+
 -- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
 -- client call site whose worst single resume cost more than the figure, the
 -- dearest first. Read it, do not gate on it -- a site here is a resume the

@@ -28,9 +28,10 @@ OPX.Config.CLIENT = {
 	TOASTS = { position = 'top_right', width = 340 },
 
 	-- WHO MAY CALL THE CLIENT CREATOR EXPORTS, `core/client/exports.lua`: open a
-	-- menu, a form, a toast or a progress bar, or play an animation, on THIS
-	-- player's own screen, or subscribe to the public client events
-	-- (`Subscribe`). '*' is every client resource the server sends, or a set:
+	-- menu, a form, a panel, a toast or a progress bar, put a row on the eye or a
+	-- group on the key strip, play an animation, open a crafting bench, read the
+	-- local player, on THIS player's own screen, or subscribe to the public
+	-- client events (`Subscribe`). '*' is every client resource the server sends, or a set:
 	-- { my_shop = true }. Open by default because everything behind it acts
 	-- on the local player alone and the server re-derives anything that matters;
 	-- a client config is advice in any case, not a lock.

@@ -33,6 +33,9 @@ OPX.Locale.Register('en', {
 	['export.badValue'] = 'That value is not plain data: booleans, numbers, text and tables of them.',
 	['export.tooLarge'] = 'That value is over the size this server allows a resource to store.',
 	['export.notSubscribable'] = 'That event is not one another resource may subscribe to.',
+	['export.ownerTaken'] = 'That resource is named like a module of this server, whose rows it would share.',
+	['export.duplicate'] = 'That exact message was just shown to that player.',
+	['export.usableTaken'] = 'Another owner already handles the use of that item.',
 })
 
 -- Weather: the status line a player reads, the command usage lines and every

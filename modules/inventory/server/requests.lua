@@ -291,6 +291,7 @@ function Requests.Wire()
 		lastHello[player] = now
 
 		World.SendDrops(player)
+		M.SendRuntimeItems(player)
 		CreateThread(function()
 			Players.Attach(player)
 			local held = M.Weapons.Held(player)

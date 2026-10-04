@@ -58,6 +58,30 @@ function Actions.UnregisterUsable(name, owner)
 	return true
 end
 
+--- Who handles the use of an item, or nil.
+-- @author dop42
+-- @param name string
+-- @return string|nil the owner given at registration
+function Actions.UsableOwner(name)
+	local current = usables[name]
+	return current and current.owner or nil
+end
+
+--- Removes every use handler one owner registered. For an owner that stopped.
+-- @author dop42
+-- @param owner string
+-- @return integer how many went
+function Actions.UnregisterOwner(owner)
+	local gone = 0
+	for name, current in pairs(usables) do
+		if current.owner == owner then
+			usables[name] = nil
+			gone = gone + 1
+		end
+	end
+	return gone
+end
+
 --- Asks a use handler whether the use goes ahead, inside its deadline.
 --
 -- The handler runs on a thread of its own and NOT under a pcall: it may reach the

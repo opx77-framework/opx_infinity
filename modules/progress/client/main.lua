@@ -45,6 +45,10 @@ local locked = nil
 
 local job = nil
 
+-- The id the server gave the bar that is up, when the server started it and
+-- wants to hear how it ended. Nil for every other bar.
+local serverBar = nil
+
 -- Whether the cancel key was declared to the host.
 local cancelKeyRegistered = false
 
@@ -284,7 +288,7 @@ end
 --- Resets the state. Never yields.
 -- @author dop42
 function M.Init()
-	live, locked, job, cancelKeyRegistered = nil, nil, nil, false
+	live, locked, job, cancelKeyRegistered, serverBar = nil, nil, nil, false, nil
 end
 
 --- Publishes the contract.
@@ -329,11 +333,35 @@ function M.Start()
 		-- A server-sent bar is owned by the SERVER and not by whatever module
 		-- happens to be listening, so a client caller's `Stop` cannot take it
 		-- down. Same shape and same reason as the prompts module's prefix.
-		Runtime.Start('@server', spec)
+		local id = math.tointeger(spec.id)
+		local started = Runtime.Start('@server', {
+			label = spec.label, durationMs = spec.durationMs, cancelable = spec.cancelable,
+			animation = spec.animation,
+		})
+		-- A BAR THE SERVER NUMBERED IS ANSWERED, however it goes: refused here
+		-- (another bar is up, a bad duration), or ended later on `ON_DONE`. The
+		-- server times the answer itself and believes nothing in it but the
+		-- ending; see `modules/progress/server/main.lua`.
+		if id == nil then return end
+		if started.ok then
+			serverBar = id
+		else
+			TriggerServerEvent(M.Event.REPORT, id, 'refused')
+		end
 	end)
 
-	RegisterNetEvent(M.Event.CANCEL, function()
-		if live ~= nil and live.owner == '@server' then finish(Ending.STOPPED) end
+	RegisterNetEvent(M.Event.CANCEL, function(id)
+		if live == nil or live.owner ~= '@server' then return end
+		-- A stop for an older bar must not take down the one up now.
+		if id ~= nil and math.tointeger(id) ~= serverBar then return end
+		finish(Ending.STOPPED)
+	end)
+
+	AddEventHandler(M.Event.ON_DONE, function(payload)
+		if serverBar == nil or type(payload) ~= 'table' or payload.owner ~= '@server' then return end
+		local id = serverBar
+		serverBar = nil
+		TriggerServerEvent(M.Event.REPORT, id, payload.ending)
 	end)
 
 	-- A CHARACTER LEAVING TAKES THE BAR, and this is the path that would
