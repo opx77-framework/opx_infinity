@@ -172,7 +172,7 @@ const ready = computed(() => hasLeaves(props.draft))
           </label>
           <label class="field">
             <span class="op-eyebrow">{{ t('doorlock.ui.passcode') }}</span>
-            <input v-model="draft.passcode" class="input op-copy" type="password" autocomplete="off"
+            <input v-model="draft.passcode" class="input op-copy" type="text" autocomplete="off"
               :maxlength="defaults.passcodeMax" :disabled="!editable || draft.clearPasscode"
               :placeholder="draft.hasPasscode ? t('doorlock.ui.passcodeKept') : ''" />
             <button v-if="draft.hasPasscode" class="mini" :class="{ on: draft.clearPasscode }" :disabled="!editable"

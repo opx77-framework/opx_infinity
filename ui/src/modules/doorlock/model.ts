@@ -239,7 +239,10 @@ export function readDetail(defaults: Defaults, value: unknown): Draft {
   const draft = emptyDraft(defaults)
   draft.id = num(raw.id, -1) > 0 ? num(raw.id) : null
   draft.name = text(raw.name)
-  draft.hasPasscode = bool(raw.hasPasscode)
+  // Staff who may edit the door are sent the code itself, to read it here;
+  // anybody else gets only whether there is one.
+  draft.passcode = text(raw.passcode)
+  draft.hasPasscode = bool(raw.hasPasscode) || draft.passcode !== ''
   draft.autolock = num(raw.autolock, 0)
   draft.maxDistance = num(raw.maxDistance, defaults.maxDistance)
   draft.state = num(raw.state, 1) === 1
