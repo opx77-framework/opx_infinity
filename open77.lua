@@ -410,6 +410,9 @@ shared_script "modules/animations/shared/common.lua"
 shared_script "modules/animations/shared/catalogue.lua"
 shared_script "modules/animations/shared/settings.lua"
 server_script "modules/animations/server/service.lua"
+-- After `service.lua`, whose offer and rate window it uses; before `commands.lua`,
+-- which answers `/e accept` through it.
+server_script "modules/animations/server/duo.lua"
 server_script "modules/animations/server/commands.lua"
 server_script "modules/animations/server/main.lua"
 client_script "modules/animations/client/walk.lua"
@@ -417,6 +420,7 @@ client_script "modules/animations/client/presenter.lua"
 client_script "modules/animations/client/main.lua"
 client_script "modules/animations/client/keys.lua"
 client_script "modules/animations/client/picker.lua"
+client_script "modules/animations/client/duo.lua"
 client_script "modules/animations/client/prompt.lua"
 client_script "modules/animations/client/exports.lua"
 
@@ -832,6 +836,15 @@ permissions {
 
   "players.animations.control",
   "animations.presentation",
+
+  -- `Open77.playerInteractions.request` and `cancel`, the platform's two-player
+  -- coordinator, in `modules/animations/server/duo.lua` alone: an emote with a
+  -- nearby player, started once the invited player has accepted. The card for
+  -- `request` (since 2.31.13+op77.63) names this exact permission for both
+  -- calls. The reads (`get`, `current`) would need `players.interactions.read`;
+  -- nothing here calls them. Needs `open77_player_interactions` running on the
+  -- server; without it the native is absent and the feature says so once.
+  "players.interactions.control",
 
   "world.elevators",
   "elevators.read",
