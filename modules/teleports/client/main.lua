@@ -176,10 +176,19 @@ local function removeMarker(id)
 	pcall(api.remove, id)
 end
 
+-- Markers created in one pass, at most. A marker is an engine call and a pass
+-- runs in one resume: the first list, or a change of bucket, created every
+-- marker in range at once -- the "dozens of engine calls in one resume" shape
+-- `modules/blips` caps for the platform's per-resume instruction budget, which
+-- ends the coroutine without a word. The rest come on the next passes, SCAN_MS
+-- apart; a removal is never deferred.
+local MARKER_CREATES_PER_PASS = 8
+
 -- Brings the drawn set in line with what is in range and what its lock state is.
 local function reconcile(at)
 	local limit = Access.MaxDistance()
 	local reach = limit * limit
+	local creates = 0
 
 	for id, entrance in pairs(entrances) do
 		local flat = nil
@@ -193,7 +202,8 @@ local function reconcile(at)
 			removeMarker(markers[id])
 			markers[id], drawn[id] = nil, nil
 		end
-		if wanted and markers[id] == nil then
+		if wanted and markers[id] == nil and creates < MARKER_CREATES_PER_PASS then
+			creates = creates + 1
 			local created, failure = createMarker(entrance)
 			if created == nil then
 				if not reportedMarkers then

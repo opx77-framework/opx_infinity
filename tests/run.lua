@@ -7301,6 +7301,24 @@ do
 		check('and nothing is sent', #cctl.serverEvents == mark)
 		check('and the verdict is published on the local bus',
 			#decisions == 1 and decisions[1].error == 'garages.noSuchSpot')
+
+		-- ── a crowded lot is drawn over several passes, not one resume ────
+		-- A pass runs in one resume and a marker is an engine call. The first
+		-- list created every marker in range at once; on a lot dense enough that
+		-- is the shape the per-resume instruction budget ends silently.
+		local crowd = {}
+		for index = 1, 20 do
+			crowd[index] = { key = ('lot#%d'):format(index), label = 'LOT', kind = 'garage',
+				garage = 'lot', role = 'menu', location = index,
+				x = index * 0.5, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+		cctl.netEvents[garages.Event.SYNC]({ spots = crowd })
+		local firstPass = #cenv.Open77.markers.list()
+		check('the list that arrives creates a bounded number of markers in its own resume',
+			firstPass > 0 and firstPass <= 8, firstPass)
+		cctl.Pump(30)
+		check('and the rest follow on the next passes', #cenv.Open77.markers.list() == 20,
+			#cenv.Open77.markers.list())
 	end
 end
 
