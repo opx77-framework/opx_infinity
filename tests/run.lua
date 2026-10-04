@@ -29451,6 +29451,47 @@ do
 end
 
 
+-- ── the HUD's effect strip is bounded before it reaches the page ────────────
+-- The strip arrives on the client's local bus, which every resource on the host
+-- shares. A chip needed only a string id and was then forwarded as given, so one
+-- oversized or malformed strip was a HUD payload the host refuses whole.
+section('the HUD effect strip is bounded before it reaches the page')
+do
+	local env, control, why = boot('client')
+	check('client boots for the effect strip', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then page = candidate end
+		end
+		check('the HUD page is there', page ~= nil)
+		if page ~= nil then
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(2)
+			local offered = {}
+			for index = 1, 40 do
+				offered[index] = { id = 'test:' .. index, label = index == 1 and { 'not', 'text' } or ('Effect ' .. index),
+					icon = 'heal', tone = 'good', progress = 7, extra = { deep = { deeper = true } } }
+			end
+			env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'needs', 'effects'),
+				{ chips = offered, hidden = 2 })
+			control.Pump(2)
+			local status
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:hud:status' then status = page.sent[index].payload break end
+			end
+			local chips = status and status.chips or {}
+			check('at most twelve chips cross', status ~= nil and #chips == 12, #chips)
+			check('and the rest are counted as hidden', status ~= nil and status.hidden == 2 + 28,
+				status and status.hidden)
+			check('and a chip crosses with only the fields the page reads, bounded',
+				chips[1] ~= nil and chips[1].label == nil and chips[1].extra == nil
+					and chips[1].progress == 1 and chips[2].label == 'Effect 2')
+		end
+	end
+end
+
+
 -- ── doorlock ─────────────────────────────────────────────────────────────────
 -- The door locks. The server is booted against a bridge that keeps what it was
 -- given, with three config doors patched in after `config/doorlock.lua` loads,
