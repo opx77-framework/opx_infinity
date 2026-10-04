@@ -90,16 +90,68 @@ end
 
 --- Catalogue names the operator switched off.
 Opt.DISABLED = {}
+
+--- DISABLED names no written row carries. They may be platform profiles, which
+--- are only known once the server has read the platform's catalogue: it checks
+--- them then, and says which matched nothing.
+Opt.DISABLED_UNWRITTEN = {}
 if Config.DISABLED ~= nil and type(Config.DISABLED) ~= 'table' then
 	problem('DISABLED must be a list of catalogue names')
 elseif type(Config.DISABLED) == 'table' then
 	for _, name in pairs(Config.DISABLED) do
 		local entry = Catalogue.Entry(name)
-		if entry == nil then
-			problem(('DISABLED names %q, which is not in the catalogue'):format(tostring(name)))
-		else
+		if entry ~= nil then
 			Opt.DISABLED[entry.name] = true
+		elseif type(name) == 'string' and name:lower():match('^[%l%d_]+$') and #name <= 64 then
+			Opt.DISABLED[name:lower()] = true
+			Opt.DISABLED_UNWRITTEN[#Opt.DISABLED_UNWRITTEN + 1] = name:lower()
+		else
+			problem(('DISABLED names %q, which cannot be a profile id'):format(tostring(name)))
 		end
+	end
+end
+
+--- Whether the platform's own catalogue is offered beside the written rows.
+Opt.PLATFORM = Config.PLATFORM ~= false
+
+-- ── emotes with a nearby player ──
+local shared = type(Config.SHARED) == 'table' and Config.SHARED or {}
+if Config.SHARED ~= nil and type(Config.SHARED) ~= 'table' then
+	problem('SHARED must be a table; no emote with a nearby player is offered')
+end
+Opt.SHARED = shared.ENABLED ~= false and type(Config.SHARED) == 'table'
+Opt.SHARED_INVITE_MS = Opt.SHARED
+	and bounded('SHARED.INVITE_MS', shared.INVITE_MS, 1000, 60000, 15000) or 15000
+
+-- The coordinator accepts 0.25 to 10 metres; a decimal, so not `bounded`.
+local range = tonumber(shared.RANGE)
+if range == nil or range ~= range or range < 0.25 or range > 10 then
+	if shared.RANGE ~= nil then problem('SHARED.RANGE must be a number in 0.25..10; using 3') end
+	range = 3.0
+end
+Opt.SHARED_RANGE = range
+
+--- The configured pairs, checked for shape. Whether their profiles exist is a
+--- question for the running build, answered by the server.
+Opt.SHARED_PAIRS = {}
+local pairIds = {}
+for index, row in ipairs(type(shared.PAIRS) == 'table' and shared.PAIRS or {}) do
+	local id = type(row) == 'table' and row.ID or nil
+	local actor = type(row) == 'table' and row.ACTOR or nil
+	local target = type(row) == 'table' and row.TARGET or nil
+	if type(id) ~= 'string' or not id:match('^[%l%d_]+$') or #id > 32 or pairIds[id]
+		or type(actor) ~= 'string' or type(target) ~= 'string' then
+		problem(('SHARED.PAIRS[%d] needs a unique lower-case ID, an ACTOR and a TARGET; ' ..
+			'skipped'):format(index))
+	else
+		pairIds[id] = true
+		Opt.SHARED_PAIRS[#Opt.SHARED_PAIRS + 1] = {
+			id = id,
+			actor = actor:lower(),
+			target = target:lower(),
+			durationMs = bounded(('SHARED.PAIRS[%d].DURATION_MS'):format(index), row.DURATION_MS,
+				M.MIN_DURATION_MS, M.SERVICE_MAX_MS, 10000),
+		}
 	end
 end
 

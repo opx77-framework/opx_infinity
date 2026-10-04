@@ -4,10 +4,20 @@
 -- Each screen is its own `Open` on the menu contract, NOT one sub-menu tree: the
 -- whole catalogue in a single spec went past the host's 1024-value bound on an
 -- export call, which dropped the call without a word and left the key doing
--- nothing. The screen stack is kept here. A screen lists at most MAX_LISTED
--- rows and then says how many were left out.
+-- nothing. The screen stack is kept here, a page of PAGE_ROWS at a time.
 --
 -- Do not fold the screens back into one tree.
+--
+-- A LONG LIST IS PAGED, NOT CUT. With the platform's catalogue adopted the
+-- picker offers a hundred-odd emotes, and `Every emote` alone is six screens of
+-- PAGE_ROWS. A page ends with a row to the next, as the staff menu's do, and
+-- Back steps a page back.
+--
+-- A SCREEN IS BUILT ON ITS OWN THREAD and yields as it walks the catalogue:
+-- the client gives one resume a fixed instruction budget, and a key press or a
+-- menu callback that built a hundred rows inline is the outage the staff menu
+-- already had (`modules/admin/client/menu.lua`, `breathe`). The callback only
+-- queues the draw.
 --
 -- The picker is optional: without the menu contract every command, key and
 -- contract function still works, and its absence costs one logged line a session.
@@ -30,8 +40,21 @@ local SPEC_ID = 'animations.picker'
 local KEY_PICKER = 'opx.animations.picker'
 local KEY_STOP = 'opx.animations.stop'
 
--- Rows listed on one screen before the rest are left out.
-local MAX_LISTED = 40
+-- Rows one page of a list draws, as on the staff menu.
+local PAGE_ROWS = 20
+
+-- Rows a builder walks between two yields, on the draw thread only.
+local BREATHE_EVERY = 25
+local breaths = 0
+local onDrawThread = false
+
+-- Gives the frame back every BREATHE_EVERY rows while a screen is built on the
+-- draw thread. Anywhere else a builder runs straight.
+local function breathe()
+	breaths = breaths + 1
+	if breaths % BREATHE_EVERY ~= 0 then return end
+	if onDrawThread and type(Wait) == 'function' then Wait(0) end
+end
 
 -- Emotes a screen must offer before it is worth searching. Under this the list
 -- is shorter than the search box would be useful for, and a box over six rows
@@ -133,13 +156,23 @@ local function section(key)
 	return { separator = true, label = key and locale(key) or nil }
 end
 
--- Cuts a row list to MAX_LISTED, saying how many were left out.
-local function capped(items)
-	if #items <= MAX_LISTED then return items end
-	local kept = table.move(items, 1, MAX_LISTED, 1, {})
-	kept[#kept + 1] = { id = 'more', disabled = true, icon = 'info',
-		label = locale('animations.picker.more', { count = #items - MAX_LISTED }) }
-	return kept
+-- One page of a long list: the rows above it as given, PAGE_ROWS of the list,
+-- and a row to the next page. Answers the rows and the page title suffix.
+local function paged(head, list, page, build)
+	local pages = math.max(1, math.ceil(#list / PAGE_ROWS))
+	page = math.min(math.max(math.floor(tonumber(page) or 1), 1), pages)
+	local items = head
+	local first = (page - 1) * PAGE_ROWS + 1
+	for position = first, math.min(#list, first + PAGE_ROWS - 1) do
+		breathe()
+		items[#items + 1] = build(list[position])
+	end
+	if page < pages then
+		items[#items + 1] = { id = 'more', label = locale('animations.picker.more'),
+			value = ('%d/%d'):format(page + 1, pages), icon = 'arrow', submenu = true,
+			data = { page = page + 1 } }
+	end
+	return items, pages > 1 and (' %d/%d'):format(page, pages) or ''
 end
 
 -- ── the search ──────────────────────────────────────────────────────────────
@@ -154,6 +187,7 @@ end
 -- and every word of the query has to appear. Plain `find`, never a pattern -- a
 -- typed `(` is a character and not syntax.
 local function matches(query, ...)
+	breathe()
 	if query == nil then return true end
 	local hay = ''
 	for index = 1, select('#', ...) do
@@ -174,23 +208,37 @@ local function searchRow(total, query)
 		data = { search = true, query = query } }
 end
 
--- Screen builders, each answering a title and its rows.
+-- Screen builders, each answering a title and its rows. A builder that lists
+-- takes the page it is on.
 local SCREENS = {}
+
+-- What a row says under its name about where the body goes. A layer walks; a
+-- workspot holds the player where they stand, and one authored against
+-- furniture plays on nothing -- the platform's own device is the chair.
+local function placementHint(entry)
+	if entry.kind == 'layer' then return locale('animations.picker.walkable') end
+	local placement = entry.placement
+	if placement == nil or placement == 'standing' then return nil end
+	local key = 'animations.placement.' .. placement
+	return OPX.Locale.Exists(key) and locale(key) or nil
+end
 
 -- One emote's row: the variant straight away when it has only one, and the
 -- variant screen when it has several. `value` carries the count so a row that
 -- leads somewhere says how far, and the category is named on a screen that mixes
 -- categories -- which is only the search result and `all`.
 local function entryRow(entry, withCategory)
-	local label = locale('animations.name.' .. entry.name)
+	local label = Catalogue.Label(entry)
 	local variants = Runtime.Variants(entry.name)
 	local aside = withCategory and locale('animations.category.' .. entry.category) or nil
 	if #variants == 1 then
 		return choice(entry.name, label, { name = entry.name, variant = variants[1] },
-			{ icon = entry.icon, value = aside })
+			{ icon = entry.icon, value = aside, description = placementHint(entry) })
 	end
-	return go(entry.name, label, 'variants', entry.name,
+	local row = go(entry.name, label, 'variants', entry.name,
 		aside and ('%s  %d'):format(aside, #variants) or tostring(#variants), entry.icon)
+	row.description = placementHint(entry)
+	return row
 end
 
 SCREENS.root = function()
@@ -217,6 +265,16 @@ SCREENS.root = function()
 			tostring(#everything), 'list')
 	end
 
+	-- WITH SOMEBODY ELSE, apart from the families: these are not emotes of the
+	-- player's own body but an invitation, and they are only drawn when the
+	-- server could offer one.
+	local duos = Runtime.Duos()
+	if #duos > 0 then
+		items[#items + 1] = section('animations.picker.section.together')
+		items[#items + 1] = go('duo', locale('animations.picker.duo'), 'duo', nil,
+			tostring(#duos), 'person')
+	end
+
 	local categories = {}
 	for index = 1, #Catalogue.CATEGORIES do
 		local category = Catalogue.CATEGORIES[index]
@@ -229,41 +287,43 @@ SCREENS.root = function()
 		end
 	end
 	if #categories > 0 then items[#items + 1] = section('animations.picker.section.categories') end
-	for _, item in ipairs(capped(categories)) do items[#items + 1] = item end
+	for _, item in ipairs(categories) do items[#items + 1] = item end
 	return locale('animations.picker.title'), items
 end
 
-SCREENS.category = function(category)
-	local rows = {}
+SCREENS.category = function(category, page)
 	local entries = Catalogue.IsCategory(category) and Runtime.Entries(category:lower()) or {}
-	for position = 1, #entries do
-		rows[position] = entryRow(entries[position], false)
-	end
+	local items, suffix = paged({}, entries, page, function(entry)
+		return entryRow(entry, false)
+	end)
 	local title = Catalogue.IsCategory(category) and
 		locale('animations.category.' .. category:lower()) or locale('animations.picker.title')
-	return title, capped(rows)
+	return title .. suffix, items
 end
 
-SCREENS.all = function()
+SCREENS.all = function(_, page)
 	local entries = Runtime.Entries(nil)
-	local rows = {}
+	local head = {}
 	local search = searchRow(#entries, nil)
 	if search ~= nil then
-		rows[1] = search
-		rows[2] = section()
+		head[1] = search
+		head[2] = section()
 	end
-	for _, entry in ipairs(entries) do rows[#rows + 1] = entryRow(entry, true) end
-	return locale('animations.picker.all'), capped(rows)
+	local items, suffix = paged(head, entries, page, function(entry)
+		return entryRow(entry, true)
+	end)
+	return locale('animations.picker.all') .. suffix, items
 end
 
-SCREENS.search = function(query)
+SCREENS.search = function(query, page)
 	local entries = Runtime.Entries(nil)
 	local matching = {}
 	for _, entry in ipairs(entries) do
 		-- The category word is part of the haystack: `social` finds what is filed
 		-- under it, which is the answer a player typing a family name expects
-		-- rather than "nothing matches that".
-		if matches(query, entry.name, locale('animations.name.' .. entry.name),
+		-- rather than "nothing matches that". So is the platform's own English
+		-- label beside the translated one, and the profile id a command takes.
+		if matches(query, entry.name, Catalogue.Label(entry), entry.label,
 			locale('animations.category.' .. entry.category)) then
 			matching[#matching + 1] = entry
 		end
@@ -273,30 +333,40 @@ SCREENS.search = function(query)
 	-- the row every screen below the root ends with -- is how the search is left.
 	local box = searchRow(#entries, query)
 	box.value = ('%s  %d/%d'):format(query, #matching, #entries)
-	local rows = { box, section() }
-	for _, entry in ipairs(matching) do rows[#rows + 1] = entryRow(entry, true) end
+	local items, suffix = paged({ box, section() }, matching, page, function(entry)
+		return entryRow(entry, true)
+	end)
 	if #matching == 0 then
-		rows[#rows + 1] = { id = 'none', label = locale('animations.picker.noMatch'),
+		items[#items + 1] = { id = 'none', label = locale('animations.picker.noMatch'),
 			disabled = true, icon = 'info' }
 	end
-	return ('%s: %s'):format(locale('animations.picker.search'), query), capped(rows)
+	return ('%s: %s%s'):format(locale('animations.picker.search'), query, suffix), items
 end
 
-SCREENS.variants = function(name)
-	local rows = {}
+SCREENS.variants = function(name, page)
 	local entry = Runtime.Offered(name)
+	-- An offer that landed while the screen was stacked can have dropped it.
+	if entry == nil then return locale('animations.picker.title'), {} end
 	local variants = Runtime.Variants(name)
-	for number = 1, #variants do
-		local variant = variants[number]
-		rows[number] = choice('v' .. variant,
+	local items, suffix = paged({}, variants, page, function(variant)
+		return choice('v' .. variant,
 			locale('animations.picker.variant', { index = variant }),
 			{ name = entry.name, variant = variant },
 			{ icon = entry.icon,
 				value = Opt.SHOW_VARIANT_WORDS and entry.words[variant] or nil })
+	end)
+	return Catalogue.Label(entry) .. suffix, items
+end
+
+SCREENS.duo = function()
+	local items = {}
+	local duos = Runtime.Duos()
+	for position = 1, #duos do
+		local id = duos[position]
+		items[#items + 1] = choice('duo_' .. id, locale('animations.duo.name.' .. id),
+			{ duo = id }, { icon = 'person', description = locale('animations.duo.hint') })
 	end
-	local title = entry and locale('animations.name.' .. entry.name)
-		or locale('animations.picker.title')
-	return title, capped(rows)
+	return locale('animations.picker.duo'), items
 end
 
 -- Takes the search box down, if one is up.
@@ -345,11 +415,15 @@ local function firstBelowHead(items)
 	return nil
 end
 
--- Puts the top screen up, or rebuilds the open one in place.
-local function draw(inPlace)
+-- Builds the top screen and puts it up, or rebuilds the open one in place.
+local function drawNow(inPlace)
 	local current = stack[#stack]
 	if current == nil then return end
-	local title, items = SCREENS[current.screen](current.arg)
+	local title, items = SCREENS[current.screen](current.arg, current.page)
+	-- The builder yields, and the player can close the picker or step away
+	-- while it does: a screen that is no longer on top is not drawn. Whatever
+	-- moved the stack queued its own draw.
+	if stack[#stack] ~= current then return end
 	if #stack > 1 then items[#items + 1] = backRow() end
 
 	if inPlace then
@@ -387,9 +461,44 @@ local function draw(inPlace)
 	handle, shown = result.handle, current
 end
 
+-- Whether a draw is waiting, whether every waiting ask was an in-place one, and
+-- since when a draw thread has been running. A thread a budget killer unwound
+-- never clears `drawingSince`, so one older than DRAW_STALE_MS is presumed dead
+-- and a new one takes over rather than the picker never drawing again.
+local drawQueued, drawQueuedInPlace, drawingSince = false, true, nil
+local DRAW_STALE_MS = 2000
+
+-- Puts the top screen up, or rebuilds the open one in place -- on a thread of
+-- its own, ONE AT A TIME and looping while asks keep arriving, as the staff
+-- menu draws. The caller returns at once, whatever the screen costs to build.
+local function draw(inPlace)
+	if type(CreateThread) ~= 'function' then return drawNow(inPlace) end
+	drawQueuedInPlace = drawQueuedInPlace and inPlace == true
+	drawQueued = true
+	local now = OPX.Now()
+	if drawingSince ~= nil and now - drawingSince < DRAW_STALE_MS then return end
+	drawingSince = now
+	CreateThread(function()
+		while drawQueued do
+			local place = drawQueuedInPlace
+			drawQueued, drawQueuedInPlace = false, true
+			drawingSince = OPX.Now()
+			onDrawThread = true
+			local ran, failure = pcall(drawNow, place)
+			onDrawThread = false
+			if not ran then
+				drawingSince = nil
+				Open77.log.error('[animations] picker draw raised: ' .. tostring(failure))
+				return
+			end
+		end
+		drawingSince = nil
+	end)
+end
+
 -- Stacks a screen and draws it.
-local function push(screen, arg)
-	stack[#stack + 1] = { screen = screen, arg = arg }
+local function push(screen, arg, page)
+	stack[#stack + 1] = { screen = screen, arg = arg, page = page }
 	draw()
 end
 
@@ -526,7 +635,10 @@ onRow = function(payload)
 	if data.search == true then
 		return openSearch(type(data.query) == 'string' and data.query or nil)
 	end
+	-- The next page is the same screen pushed again, so Back is a page back.
+	if type(data.page) == 'number' then return push(current.screen, current.arg, data.page) end
 	if data.go == 'all' then return push('all', nil) end
+	if data.go == 'duo' then return push('duo', nil) end
 	if (data.go == 'category' or data.go == 'variants') and type(data.arg) == 'string' then
 		return push(data.go, data.arg)
 	end
@@ -537,6 +649,11 @@ onRow = function(payload)
 	if data.stop == true then
 		local stopped = Runtime.Stop('picker')
 		if stopped.error == 'animation_locked' then Runtime.Refuse(stopped.error) end
+		return
+	end
+	if type(data.duo) == 'string' then
+		local asked = Runtime.Duo(data.duo)
+		if not asked.ok then Runtime.Refuse(asked.error) end
 		return
 	end
 	local result = Runtime.Play(data.name, { variant = data.variant }, 'picker', nil)
@@ -578,6 +695,7 @@ end
 function Picker.Init()
 	stack, handle, shown, warned, downJob = {}, nil, nil, false, nil
 	formHandle = nil
+	drawQueued, drawQueuedInPlace, drawingSince, onDrawThread = false, true, nil, false
 end
 
 --- Registers both keys, the row channel and the down watch.
@@ -601,6 +719,12 @@ function Picker.Start()
 		end
 		draw(true)
 	end)
+
+	-- The platform's catalogue lands after the hello, a few frames in: an open
+	-- picker is redrawn in place so its counts and families are the offer's.
+	Runtime.OnOffered = function()
+		if handle ~= nil and #stack > 0 and available() then draw(true) end
+	end
 
 	-- Going down only ever closes the picker and keeps it closed; standing back
 	-- up opens nothing.

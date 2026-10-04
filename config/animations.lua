@@ -23,14 +23,48 @@ OPX.Config.MODULES.animations = {
 	-- Show the stop key in the prompt strip while your animation plays.
 	PROMPTS = true,
 
-	-- Catalogue names never offered to anybody.
+	-- Catalogue names never offered to anybody. A platform profile id works
+	-- here too (`'carry'`, `'camera_point'`...): those are matched once the
+	-- platform's catalogue has been read, and one matching nothing is a line in
+	-- the boot log.
 	DISABLED = {},
+
+	-- Offer every profile of the platform's own catalogue (open77_animations,
+	-- read at runtime with `Open77.animations.list`) beside the entries written
+	-- in modules/animations/shared/catalogue.lua, so a profile a new build adds
+	-- appears without a release. false offers only the written ones.
+	PLATFORM = true,
+
+	-- EMOTES WITH A NEARBY PLAYER, through the platform's two-player
+	-- coordinator (`Open77.playerInteractions`, kind `custom`). The requester
+	-- picks one, the nearest player within RANGE is invited, and nothing plays
+	-- until they accept. The server measures the distance, never a client.
+	--
+	-- `ACTOR` and `TARGET` are platform profile ids and must be stationary
+	-- (workspot) ones: the coordinator plays nothing that walks. A pair naming a
+	-- profile the build lacks, or one in DISABLED, is not offered.
+	SHARED = {
+		ENABLED = true,
+		-- Metres between the two bodies, 0.25 to 10.
+		RANGE = 3.0,
+		-- How long an invitation waits for its answer.
+		INVITE_MS = 15000,
+		PAIRS = {
+			{ ID = 'dance', ACTOR = 'dance', TARGET = 'dance', DURATION_MS = 30000 },
+			{ ID = 'give', ACTOR = 'give', TARGET = 'give', DURATION_MS = 5000 },
+			{ ID = 'checkup', ACTOR = 'examine', TARGET = 'wounded', DURATION_MS = 12000 },
+			{ ID = 'cheer', ACTOR = 'cheer', TARGET = 'cheer', DURATION_MS = 10000 },
+			{ ID = 'taichi', ACTOR = 'taichi', TARGET = 'taichi', DURATION_MS = 30000 },
+			{ ID = 'talk', ACTOR = 'preach', TARGET = 'armscrossed', DURATION_MS = 20000 },
+		},
+	},
 
 	LOOP_BY_DEFAULT = true,
 	ONE_SHOT_MS = 10000,
 	MAX_DURATION_MS = 600000,
 
-	-- Play requests per player per window; stops get twice as many.
+	-- Play requests per player per window; stops get twice as many. An
+	-- invitation to a nearby player counts as a play.
 	RATE_LIMIT = { WINDOW_MS = 10000, REQUESTS = 6 },
 
 	PICKER = {
