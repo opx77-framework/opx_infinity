@@ -13022,6 +13022,60 @@ do
 	end
 end
 
+-- ── the X key: a cancelable bar takes the press, not the call ───────────────
+-- The progress bar cancels on X and a call declines or hangs up on X, and the
+-- host fires BOTH mappings for one press, in either order: cancelling an eat or
+-- a repair during a call ended the call. A cancelable bar that is up owns the
+-- press; with no bar, X is the call's again.
+section('the X key: a cancelable progress bar takes the press, not the call')
+do
+	local env, control, why = boot('client')
+	check('the client boots with progress and calls', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		local progress = OPX.Api.Get('progress')
+		local cancel = control.keyMappings.byId['opx.progress.cancel']
+		local decline = control.keyMappings.byId['opx.calls.decline']
+		check('both keys are mapped, on the same key out of the box',
+			cancel ~= nil and decline ~= nil and cancel.key == decline.key,
+			cancel and decline and ('%s / %s'):format(tostring(cancel.key), tostring(decline.key)))
+
+		local hungUp = 0
+		local real = calls.DeclineOrHangUp
+		calls.DeclineOrHangUp = function() hungUp = hungUp + 1; return true end
+
+		local function bar()
+			return progress.Start('test', { label = 'Eating', durationMs = 5000, cancelable = true })
+		end
+
+		-- The bar's handler first.
+		check('a cancelable bar goes up', bar().ok)
+		if cancel and decline then cancel.pressed(); decline.pressed() end
+		check('the press cancels the bar', progress.State().value.open == false)
+		check('and does not hang up, with the bar handled first', hungUp == 0, hungUp)
+
+		-- The call's handler first.
+		control.Pump(10)
+		check('a second cancelable bar goes up', bar().ok)
+		if cancel and decline then decline.pressed(); cancel.pressed() end
+		check('the press cancels that bar too', progress.State().value.open == false)
+		check('and does not hang up, with the call handled first', hungUp == 0, hungUp)
+
+		-- No bar: X is the call's key again.
+		control.Pump(10)
+		if decline then decline.pressed() end
+		check('with no bar up, the key declines or hangs up as before', hungUp == 1, hungUp)
+
+		-- A bar that cannot be cancelled does not take the press.
+		progress.Start('test', { label = 'Locked', durationMs = 5000 })
+		if decline then decline.pressed() end
+		check('and a bar that cannot be cancelled does not take it', hungUp == 2, hungUp)
+		progress.Stop('test')
+		calls.DeclineOrHangUp = real
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

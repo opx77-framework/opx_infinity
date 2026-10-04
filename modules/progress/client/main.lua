@@ -48,6 +48,12 @@ local job = nil
 -- Whether the cancel key was declared to the host.
 local cancelKeyRegistered = false
 
+-- When the player last cancelled a bar with the key, or nil. Read through
+-- `State` by any other module bound to the same key, so that the press which
+-- cancelled the bar is not ALSO taken as theirs (see `calls`): the host fires
+-- every mapping on a key, in an order nobody promises.
+local cancelledAtMs = nil
+
 -- The cancel key declaration, with the shipped value as the fallback.
 local function cancelKey()
 	local settings = type(M.Settings) == 'table' and M.Settings or {}
@@ -272,19 +278,25 @@ end
 -- @author dop42
 -- @return table a Result
 function Runtime.State()
-	if live == nil then return OPX.Result.Ok({ open = false }) end
+	-- `cancelKey` and `cancelledAtMs` are for a module sharing the cancel key:
+	-- which key a cancelable bar is listening on, and when the last press on it
+	-- cancelled one.
+	if live == nil then return OPX.Result.Ok({ open = false, cancelledAtMs = cancelledAtMs }) end
 	return OPX.Result.Ok({
 		open = true,
 		owner = live.owner,
 		label = live.label,
 		remainingMs = math.max(0, live.untilMs - OPX.Now()),
+		cancelable = live.canCancel == true,
+		cancelKey = live.canCancel and cancelKeyLabel() or nil,
+		cancelledAtMs = cancelledAtMs,
 	})
 end
 
 --- Resets the state. Never yields.
 -- @author dop42
 function M.Init()
-	live, locked, job, cancelKeyRegistered = nil, nil, nil, false
+	live, locked, job, cancelKeyRegistered, cancelledAtMs = nil, nil, nil, false, nil
 end
 
 --- Publishes the contract.
@@ -311,7 +323,10 @@ function M.Start()
 	if declared.DEFAULT ~= false then
 		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
 			declared.DEFAULT, function()
-				if live ~= nil and live.canCancel then finish(Ending.CANCELLED) end
+				if live ~= nil and live.canCancel then
+					cancelledAtMs = OPX.Now()
+					finish(Ending.CANCELLED)
+				end
 			end)
 		local effective = called and (
 			(type(ok) == 'string' and ok ~= '' and ok) or

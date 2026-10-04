@@ -423,6 +423,47 @@ function M.DeclineOrHangUp()
 	return M.HangUp()
 end
 
+-- How long after a progress bar was cancelled a press on the same key is still
+-- that cancel. The host fires every mapping bound to a key from one press, a
+-- frame apart at most.
+local SAME_PRESS_MS = 300
+
+--- Whether this press of the decline key belongs to a cancelable progress bar.
+--- @author dop42
+---
+--- THE X CONFLICT. The progress bar cancels on X and so does a call's
+--- decline/hang-up, and the host calls BOTH mappings for one press, in either
+--- order. Cancelling an eat or a repair during a call therefore ended the call.
+--- The rule: a cancelable bar that is up takes the press. If the bar's handler
+--- ran first it has already gone, so a cancel in the last few hundred
+--- milliseconds counts as this press too. Only when both are on the SAME key --
+--- a player who bound them apart gets both features.
+-- @return boolean
+function M.PressBelongsToProgress()
+	local progress = OPX.Api.Get('progress')
+	if progress == nil or type(progress.State) ~= 'function' then return false end
+	local read, answer = pcall(progress.State)
+	if not read or type(answer) ~= 'table' or not answer.ok then return false end
+	local bar = answer.value
+	local now = OPX.Now()
+	if type(bar.cancelledAtMs) == 'number' and now - bar.cancelledAtMs < SAME_PRESS_MS then
+		return true
+	end
+	if bar.open ~= true or bar.cancelable ~= true then return false end
+	local declared = type(M.Settings.DECLINE_KEY) == 'table' and M.Settings.DECLINE_KEY or {}
+	local mine = OPX.Lib.Input.KeyFor(tostring(declared.ID or 'opx.calls.decline'))
+		or declared.DEFAULT
+	return type(mine) == 'string' and type(bar.cancelKey) == 'string'
+		and mine:upper() == bar.cancelKey:upper()
+end
+
+--- The decline key: the progress bar's cancel first when they share the key.
+-- @author dop42
+function M.OnDeclineKey()
+	if M.PressBelongsToProgress() then return false end
+	return M.DeclineOrHangUp()
+end
+
 --- Asks to call, to add, or to share a contact with one player.
 ---
 --- ONE VERB FOR ALL THREE, because the server derives which of them this is
@@ -728,7 +769,7 @@ function M.Start()
 	-- withdrawing what you are ringing out, then leaving the call -- see
 	-- `M.DeclineOrHangUp` for why the middle one comes before the last.
 	bind(M.Settings.DECLINE_KEY, 'opx.calls.decline', 'calls.key.decline',
-		function() M.DeclineOrHangUp() end)
+		function() M.OnDeclineKey() end)
 
 	-- ESCAPE CLOSES IT, and it is not a key this module may bind. The pause
 	-- plugin swallows Escape before any surface sees it and re-raises it under
