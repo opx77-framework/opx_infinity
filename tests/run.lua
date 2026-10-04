@@ -30014,6 +30014,125 @@ end
 -- une autre fois cela prend le drop a cote automatiquement retire cela". The
 -- open key used to TAKE the nearest pile, screen closed, whenever one was in
 -- reach -- so looking in the bag beside something just dropped put it back.
+-- The pile scan measured the distance to every known pile -- DROPS.MAX goes to
+-- 2,048, every bucket's -- and sorted them, inside one scheduler resume shared
+-- with three other jobs. The client budget is per resume and an overrun kills
+-- the loop silently. It now walks a slice per resume and draws only the
+-- player's own bucket. Counted in VM instructions with a debug hook: off the
+-- platform that is the one honest measure of what a resume costs.
+section('the client pile scan stays inside one resume\'s budget, and in its bucket')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local World, Screen = inventory.World, inventory.Screen
+		local realOwn = Screen.Own
+		Screen.Own = function() return {} end
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0, 0, 0 end },
+			{ __index = realCharacter })
+
+		-- 2,048 piles in 32 parts: half in bucket 0, half in bucket 5, and the
+		-- eight nearest of each right beside the player.
+		local TOTAL = 2048
+		for part = 0, TOTAL // 64 - 1 do
+			local drops = {}
+			for index = 1, 64 do
+				local n = part * 64 + index
+				local near = n <= 16
+				drops[index] = { id = -n, x = near and (n * 0.05) or (100 + n), y = 0, z = 0,
+					bucket = (n % 2 == 0) and 5 or 0 }
+			end
+			control.netEvents[inventory.Event.DROPS]({ first = part == 0,
+				done = part == TOTAL // 64 - 1, drops = drops, bucket = part == 0 and 5 or nil })
+		end
+		local known, bucket = World.Known()
+		check('every pile arrives, and the bucket with them', known == TOTAL and bucket == 5,
+			('%s in %s'):format(tostring(known), tostring(bucket)))
+
+		local function cost(fn)
+			local counted = 0
+			debug.sethook(function() counted = counted + 1 end, '', 100)
+			fn()
+			debug.sethook()
+			return counted * 100
+		end
+
+		local worst, passes = 0, 0
+		local target = inventory.Contracts.target
+		local spheres
+		local realRegister = target and target.RegisterSpheres
+		if target then
+			target.RegisterSpheres = function(owner, list, definition)
+				spheres = list
+				return realRegister(owner, list, definition)
+			end
+		end
+		repeat
+			passes = passes + 1
+			local spent = cost(World.Pass)
+			if spent > worst then worst = spent end
+		until spheres ~= nil or passes > 64
+		-- A slice of 128 costs about 8,000 here; the whole list in one pass cost
+		-- about 58,000, and ran beside three other jobs on the same resume.
+		check('no single pass spends more than 25,000 instructions on 2,048 piles',
+			worst <= 25000, worst)
+		check('the sweep is spread over several passes', passes >= TOTAL // 128, passes)
+		local wrongBucket = 0
+		for _, sphere in ipairs(spheres or {}) do
+			-- Even ids are bucket 5; the near ones sit at x = n * 0.05.
+			local n = math.floor(sphere.x / 0.05 + 0.5)
+			if n % 2 ~= 0 then wrongBucket = wrongBucket + 1 end
+		end
+		check('and the row points only at piles of the player\'s own bucket',
+			spheres ~= nil and #spheres == 8 and wrongBucket == 0,
+			spheres and ('%d rows, %d wrong'):format(#spheres, wrongBucket))
+
+		control.netEvents[inventory.Event.BUCKET](0)
+		local _, moved = World.Known()
+		check('a bucket move the server reports is taken', moved == 0, tostring(moved))
+
+		if target then target.RegisterSpheres = realRegister end
+		Screen.Own = realOwn
+		env.Open77.character = realCharacter
+	end
+end
+
+-- The client has no read of its own bucket, so the server says it: in the first
+-- part of the pile list, and on every move the host reports.
+section('the server tells a client which bucket its piles are in')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local MOVER = 962
+		control.Admit(MOVER, 'account-962')
+		control.Stand(MOVER, 10, 20, 30)
+		control.Bucket(MOVER, 7)
+		local told = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, payload, ...)
+			if target == MOVER then told[#told + 1] = { name = name, payload = payload } end
+			return realTrigger(name, target, payload, ...)
+		end
+		inventory.World.SendDrops(MOVER)
+		local first = told[1]
+		check('the first part of the pile list carries the bucket',
+			first ~= nil and first.name == inventory.Event.DROPS and first.payload.bucket == 7,
+			first and tostring(first.payload.bucket))
+		told = {}
+		control.Bucket(MOVER, 9)
+		env.TriggerEvent('onPlayerBucketChange', tostring(MOVER), '9', '7')
+		local said = told[#told]
+		check('and a move the host reports is said again',
+			said ~= nil and said.name == inventory.Event.BUCKET and said.payload == 9,
+			said and tostring(said.payload))
+		env.TriggerClientEvent = realTrigger
+	end
+end
+
 section('the inventory key opens the bag and never takes a pile')
 do
 	local env, control, why = boot('client')
