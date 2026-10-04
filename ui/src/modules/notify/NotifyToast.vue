@@ -82,7 +82,7 @@ const tag = computed(() => {
     pass is promoted. */
 const glyph = computed<string[]>(() => (props.icon && own(GLYPHS, props.icon)) || [])
 
-const barWidth = computed(() => `${Math.max(0, Math.min(1, props.progress)) * 100}%`)
+const barScale = computed(() => `scaleX(${Math.max(0, Math.min(1, props.progress))})`)
 </script>
 
 <template>
@@ -111,9 +111,12 @@ const barWidth = computed(() => `${Math.max(0, Math.min(1, props.progress)) * 10
       <span v-if="message" class="message">{{ message }}</span>
     </div>
 
-    <!-- Width, not a CSS animation: the bar has to track the deadline Lua is also
-         counting, and a keyframe drifts from it the moment the surface is throttled. -->
-    <span v-if="progress >= 0" class="bar" :style="{ width: barWidth }" />
+    <!-- Driven, not a CSS animation: the bar has to track the deadline Lua is also
+         counting, and a keyframe drifts from it the moment the surface is throttled.
+         A scale, not a width: the root ticks this every 50ms, and a width is a
+         relayout plus a repaint of the whole toast -- under `.op-lift`, a filter
+         re-rasterised twenty times a second. Same pixels. -->
+    <span v-if="progress >= 0" class="bar" :style="{ transform: barScale }" />
   </article>
 </template>
 
@@ -217,8 +220,11 @@ const barWidth = computed(() => `${Math.max(0, Math.min(1, props.progress)) * 10
   position: absolute;
   left: 0;
   bottom: 0;
+  width: 100%;
   height: 2px;
   background: var(--op-red-idle);
+  transform-origin: left center;
+  will-change: transform;
 }
 
 /* =============================================================================

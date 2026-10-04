@@ -271,7 +271,7 @@ function syncCaret(): void {
     if (!root) return
     const field = focused.value
     if (field && field.kind === 'text') {
-      const input = root.querySelector<HTMLInputElement>(`[data-field="${field.id}"] input`)
+      const input = root.querySelector<HTMLInputElement>(`[data-field="${CSS.escape(field.id)}"] input`)
       if (input && document.activeElement !== input) {
         input.focus()
         // DOWN onto the second name lands the caret wherever that element was last
@@ -1059,29 +1059,16 @@ function focusField(field: Field): void {
   }
 }
 
-@keyframes field-in-on {
-  0% {
-    opacity: 0;
-    transform: translate3d(0, 0, 0);
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate3d(calc(var(--pop, 10px) + 2px), 0, 0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(var(--pop, 10px), 0, 0);
-  }
-}
-
-.room.open .field {
+/* ON THE ROW, NOT THE FIELD. It ran on `.field`, with `.field.on` swapping in a
+   second keyframe that ended on the `--pop` step -- so every Up/Down, which moves
+   `on` from one field to another, changed BOTH fields' animation-name, and a changed
+   name restarts an animation: the two rows blanked (backwards fill, 40ms delay) and
+   stuttered in again under the player's caret. The `<li>` never changes class, so
+   its animation runs once, when the keyed v-for creates it. The chosen field's step
+   is its own `transform` inside the row, and the two compose to exactly the old
+   `field-in-on` path (0 -> pop+2px -> pop). SpawnView made the same move. */
+.room.open .slot {
   animation: field-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
-}
-
-.room.open .field.on {
-  animation-name: field-in-on;
 }
 </style>
