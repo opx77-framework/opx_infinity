@@ -20669,6 +20669,164 @@ do
 end
 
 
+-- ── a shop's fitting room is charged where its clothes are written ──────────
+-- THE EXPLOIT THIS PINS, raised by the economy audit. The shop was told which
+-- slots changed by the client, on `shops:bill`, after the clothing save had
+-- already landed -- so a client that never sent the bill kept the clothes and
+-- paid nothing. The room a shop opens is a PRICED grant now: `appearance` diffs
+-- the save against the stored record itself, hands the slots to the shop's
+-- charge, and writes nothing the charge refused. And the doors that put a look
+-- on hand out ONE save of that look rather than ten free minutes of catalogue.
+section('a shop fitting room is charged on the server, before the save')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the priced room', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	local shops = OPX and OPX.Modules.Get('shops') or nil
+
+	if type(appearance) == 'table' and type(character) == 'table' and type(shops) == 'table' then
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local REFUSED = appearance.Event.REFUSED
+		local OPERATION = appearance.Operation.SAVE_CLOTHING
+		local PLAYER, CITIZEN = 93, 'citizen-shopper'
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = false } }
+
+		local writes = 0
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		local function load()
+			character.Players[PLAYER] = { PlayerData = {
+				citizenId = CITIZEN, source = PLAYER, clothing = STORED } }
+		end
+
+		--- A record that is the stored one with `change` laid over its equipment.
+		local function wearing(change, outfits)
+			local equipment = {}
+			for slot, item in pairs(STORED.equipment) do equipment[slot] = item end
+			for slot, item in pairs(change or {}) do equipment[slot] = item end
+			return { schemaVersion = 1, equipment = equipment, wardrobe = { outfits = outfits or {} } }
+		end
+
+		--- Fires the save door and answers the refusal code, or nil.
+		local function save(record)
+			OPX.ForgetCooldowns(PLAYER)
+			local mark = #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[SAVE]({ citizenId = CITIZEN, clothing = record })
+			env.source = nil
+			control.Pump(4)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == REFUSED and sent.source == PLAYER and sent[2] == OPERATION then
+					return tostring(sent[1])
+				end
+			end
+			return nil
+		end
+
+		-- ── the priced room ──────────────────────────────────────────────────
+		load()
+		local billed, answer = {}, { true }
+		local undone = 0
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return answer[1], answer[2], function() undone = undone + 1 end
+		end })
+
+		local refused = save(wearing({ OuterChest = 'Items.Jacket_02', Head = 'Items.Hat_01' }))
+		check('A SAVE FROM A PRICED ROOM IS CHARGED FOR THE SLOTS THE SERVER SAW MOVE',
+			refused == nil and billed[1] == 'Head,OuterChest', ('%s / %s'):format(tostring(refused),
+				tostring(billed[1])))
+		check('and written once the charge went through', writes == 1, tostring(writes))
+
+		load()
+		answer = { false, 'clothing.unpaid' }
+		writes = 0
+		refused = save(wearing({ Legs = 'Items.Pants_02' }))
+		check('A CHARGE THAT FAILS IS A SAVE REFUSED, and nothing is written',
+			refused == 'clothing.unpaid' and writes == 0, ('%s, %d write(s)'):format(tostring(refused), writes))
+
+		load()
+		answer = { true }
+		refused = save(wearing(nil, { ['0'] = { OuterChest = 'Items.Jacket_Gold' } }))
+		check('a garment written into an outfit override is billed as worn',
+			refused == nil and billed[#billed] == 'OuterChest', tostring(billed[#billed]))
+
+		load()
+		local count = #billed
+		refused = save(wearing())
+		check('a save that moves nothing charges nothing', #billed == count, tostring(refused))
+
+		load()
+		appearance.Storage.SaveClothing = function() return { ok = false, error = 'error.unavailable' } end
+		refused = save(wearing({ Feet = 'Items.Shoes_02' }))
+		check('charged and then not written: the charge is undone', undone == 1 and
+			refused == 'error.unavailable', ('%d undo, %s'):format(undone, tostring(refused)))
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		-- ── one look, once ───────────────────────────────────────────────────
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load()
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		check('a look grant does not admit anything else riding on it',
+			save(wearing({ OuterChest = 'Items.Uniform_01', Head = 'Items.Crown' })) == 'clothing.noFittingRoom')
+		writes = 0
+		check('it admits exactly the look it was handed for, free',
+			save(wearing({ OuterChest = 'Items.Uniform_01' })) == nil and writes == 1, tostring(writes))
+		load()
+		check('and only once', save(wearing({ OuterChest = 'Items.Uniform_01', Legs = 'Items.Pants_09' }))
+			== 'clothing.noFittingRoom')
+
+		-- A uniform bought inside the priced room is not billed a second time by it.
+		load()
+		billed = {}
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return true
+		end })
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01', Feet = 'Items.Shoes_03' }))
+		check('a look already paid for inside the room is not charged again by it',
+			refused == nil and billed[1] == 'Feet', tostring(billed[1]))
+
+		-- ── the shop's own door hands out a priced room ──────────────────────
+		local contract = OPX.Api.Get('appearance')
+		local seen
+		local realOpen = contract.OpenWardrobe
+		contract.OpenWardrobe = function(_, options) seen = options; return true end
+		control.Admit(PLAYER, 'account-shopper')
+		control.Stand(PLAYER, -1180.0, 1550.0, 25.0)
+		env.source = PLAYER
+		control.netEvents[shops.Event.OPEN]('thrift_watson')
+		env.source = nil
+		control.Pump(5)
+		contract.OpenWardrobe = realOpen
+		check('THE SHOP OPENS A PRICED ROOM, with its own charge',
+			type(seen) == 'table' and type(seen.charge) == 'function', type(seen))
+		check('and no bill door is left for a client to skip',
+			shops.Event.BILL == nil and control.netEvents[OPX.Event(OPX.Channel.NET, 'shops', 'bill')] == nil)
+
+		if type(seen) == 'table' and type(seen.charge) == 'function' then
+			local taken = {}
+			local money = OPX.Api.Get('character')
+			local realRemove = money.RemoveMoney
+			money.RemoveMoney = function(_, _, amount) taken[#taken + 1] = amount; return true end
+			local ok, _, undo = seen.charge(PLAYER, { 'OuterChest' })
+			money.RemoveMoney = realRemove
+			check('the shop charges the slots it is handed at its own prices',
+				ok == true and (taken[1] or 0) > 0 and type(undo) == 'function', tostring(taken[1]))
+		end
+
+		character.Players[PLAYER] = nil
+	end
+end
+
 -- ── the latch the whole join sits behind ────────────────────────────────────
 -- `BeginBootstrap` takes `bootstrapPicking` BEFORE its thread and drops it only
 -- from inside a raw `while true` body with no pcall. The per-resume instruction
