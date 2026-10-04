@@ -696,6 +696,14 @@ function M.OpenStash(playerId, name, options)
 			Common.Integer(options.maxWeight, 0, 4000000000),
 	}
 	if not size.slots or not size.maxWeight then return Result.Err('bad_argument', 'size') end
+	-- A CONFIGURED STASH IS MADE AT ITS CONFIGURED SIZE, whoever opens it first:
+	-- the size is written into the row on creation and kept for ever after, so a
+	-- caller's (or the default 50) would replace the operator's for good. The
+	-- same rule `withStash` and the stash marker follow.
+	local configured = configuredStash(name)
+	if configured ~= nil then
+		size = { slots = configured.slots, maxWeight = configured.maxWeight }
+	end
 	if not Players.GateOpen(playerId) then return Result.Err('not_ready') end
 	if not Players.Bag(playerId) then return Result.Err('not_loaded') end
 

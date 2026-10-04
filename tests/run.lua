@@ -35559,6 +35559,30 @@ do
 		local foreign = inventory.OpenStash(A, 'police.armory', { creator = 'my_shop' })
 		check('the contract refuses another resource a stash outside its namespace',
 			foreign.ok == false and foreign.error == 'stash_namespace', tostring(foreign.error))
+		-- A configured stash is created at the size the operator gave it: the
+		-- size goes into the row on creation and is kept, so a creator's first
+		-- open (or the default 50) replaced the configured one for good.
+		local Options = inventory.Options
+		local listed = { name = 'ncpd_lockers', slots = 120, maxWeight = 900000,
+			position = { x = 0, y = 0, z = 0 }, bucket = 0 }
+		Options.STASHES.ncpd_lockers = listed
+		local World = inventory.World
+		local realStash, realFind, realView = World.Stash, inventory.Containers.Find,
+			inventory.Containers.View
+		local madeAt
+		World.Stash = function(name, size)
+			madeAt = size
+			return { id = 9, kind = 'stash', owner = name, items = {} }, nil
+		end
+		inventory.Containers.Find = function() return { id = 9 } end
+		inventory.Containers.View = function() end
+		local configuredOpen = inventory.OpenStash(A, 'ncpd_lockers', { creator = 'my_shop', slots = 5 })
+		check('a configured stash a creator opens is made at its configured size',
+			configuredOpen.ok and madeAt ~= nil and madeAt.slots == 120 and madeAt.maxWeight == 900000,
+			madeAt and ('%s/%s'):format(tostring(madeAt.slots), tostring(madeAt.maxWeight))
+				or tostring(configuredOpen.error))
+		World.Stash, inventory.Containers.Find, inventory.Containers.View = realStash, realFind, realView
+		Options.STASHES.ncpd_lockers = nil
 		Players.GateOpen, Players.Bag = realGate, realBag2
 	end
 end
