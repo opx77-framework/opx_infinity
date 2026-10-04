@@ -7600,10 +7600,36 @@ do
 				garage = 'lot', role = 'menu', location = index,
 				x = index * 0.5, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
 		end
+		-- The list is read on a thread of its own now (see the next section), so
+		-- the resume that applies it is that thread's last: counted there.
+		local realCreate, realWait = cenv.CreateThread, cenv.Wait
+		local mostInOneResume, readerOpen, atOpen = 0, false, 0
+		local function drawn() return #cenv.Open77.markers.list() end
+		local function close()
+			if not readerOpen then return end
+			readerOpen = false
+			if drawn() - atOpen > mostInOneResume then mostInOneResume = drawn() - atOpen end
+		end
+		cenv.CreateThread = function(fn)
+			return realCreate(function()
+				readerOpen, atOpen = true, drawn()
+				local reader = coroutine.running()
+				cenv.Wait = function(...)
+					if coroutine.running() ~= reader then return realWait(...) end
+					close()
+					realWait(...)
+					readerOpen, atOpen = true, drawn()
+				end
+				fn()
+				close()
+			end)
+		end
 		cctl.netEvents[garages.Event.SYNC]({ spots = crowd })
-		local firstPass = #cenv.Open77.markers.list()
-		check('the list that arrives creates a bounded number of markers in its own resume',
-			firstPass > 0 and firstPass <= 8, firstPass)
+		cenv.CreateThread = realCreate
+		cctl.Pump(4)
+		cenv.Wait = realWait
+		check('the list that arrives creates a bounded number of markers in the resume that applies it',
+			mostInOneResume > 0 and mostInOneResume <= 8, mostInOneResume)
 		cctl.Pump(30)
 		check('and the rest follow on the next passes', #cenv.Open77.markers.list() == 20,
 			#cenv.Open77.markers.list())
@@ -27443,6 +27469,8 @@ do
 			{ key = 'blip_dock#1.in', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
 				role = 'entry', location = 1, x = 46.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
 		} })
+		-- The garages read a list on a thread of their own; give it its frames.
+		control.Pump(5)
 		blips.Runtime.Sync()
 		control.Pump(20)
 		local garagePins = {}
@@ -34254,10 +34282,14 @@ do
 				x = index * 0.5, y = 1.0, z = 0.0, heading = 0.0, bucket = 0 }
 		end
 
-		control.netEvents[garages.Event.SYNC]({ spots = lot })
-		control.Pump(12)
+		local reading, resumes = resumeCost(env, control, function()
+			control.netEvents[garages.Event.SYNC]({ spots = lot })
+		end, 12)
 		check('every point of the list is taken', garages.Runtime.Report().spots == TOTAL,
 			garages.Runtime.Report().spots)
+		check('and no resume of reading it cost more than 4,000 instructions',
+			resumes > 1 and reading < 4000,
+			('%d instructions, dearest of %d resumes'):format(reading, resumes))
 
 		local drawing = 0
 		for _ = 1, 12 do
