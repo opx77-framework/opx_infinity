@@ -310,6 +310,10 @@ local RUNTIME_FIELDS = {
 -- The fields of `use`, lower case.
 local RUNTIME_USE = { consume = 'CONSUME', close = 'CLOSE', status = 'STATUS', animation = 'ANIMATION' }
 
+-- Most needs one runtime item's `use.status` may move. The needs a server has
+-- are a handful; see the client budget note where it is checked.
+local RUNTIME_STATUS_MAX = 8
+
 -- Runtime definitions by name, as given (lower case), with their owner: what
 -- the server sends a client that joins after they were registered.
 local runtime = {}
@@ -350,8 +354,15 @@ local function runtimeRow(raw)
 		if use.CLOSE ~= nil and type(use.CLOSE) ~= 'boolean' then return 'use.close' end
 		if use.STATUS ~= nil then
 			if type(use.STATUS) ~= 'table' then return 'use.status' end
+			-- BOUNDED, because every client walks this table twice (here and in
+			-- `useOf`) inside the one resume that received it: a few hundred keys
+			-- on one item spend the whole budget, the client's handler is killed,
+			-- and the item the server took never reaches that client.
+			local keys = 0
 			for key, amount in pairs(use.STATUS) do
-				if type(key) ~= 'string' or #key > 32 or not OPX.Math.IsFinite(amount) then
+				keys = keys + 1
+				if keys > RUNTIME_STATUS_MAX or type(key) ~= 'string' or #key > 32
+					or not OPX.Math.IsFinite(amount) then
 					return 'use.status'
 				end
 			end

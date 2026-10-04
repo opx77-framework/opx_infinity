@@ -618,9 +618,12 @@ end
 
 -- Items one `opx:net:inventory:catalog` carries. Small, because the client
 -- validates each one inside the resume that received them (see
--- `Catalog.Register`): eight is a few thousand instructions, well inside the
--- budget, and a long list simply arrives in more events.
-local RUNTIME_CHUNK = 8
+-- `Catalog.Register`): FOUR. An item at every bound the validator allows costs
+-- the client about 1,500 instructions, so eight of them (the first figure here)
+-- overran the ~10,000 a resume may spend and the client's handler was killed --
+-- every item in that event missing on that client while the server kept them.
+-- Four at the bounds is about 6,500; a long list simply arrives in more events.
+local RUNTIME_CHUNK = 4
 
 -- The ceiling on items one owner registers when the caller names none.
 local RUNTIME_DEFAULT_CAP = 64

@@ -790,8 +790,8 @@ roster rows (`source`, `citizenId`, names, `job`, `gang` -- no money, no metadat
 entries as a screen reads them, `GetInventory(target)` a whole bag.
 
 **Runtime items**: `RegisterItem('my_burger', { label, description?, weight?,
-stack?, drop?, category?, image?, model?, use? = { consume?, close?, status?,
-animation? } })` adds an item to the catalogue on both halves while the server runs
+stack?, drop?, category?, image?, model?, use? = { consume?, close?, status? (at
+most 8 needs), animation? } })` adds an item to the catalogue on both halves while the server runs
 (`modules/inventory/shared/catalog.lua`, `Catalog.Register`, the one validator both
 halves run; clients that join later get the list on their hello). Never a weapon or
 ammo, never a name config or another resource holds (`item_taken`), at most

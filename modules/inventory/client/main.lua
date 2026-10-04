@@ -496,10 +496,11 @@ local function tell(resource, name, ...)
 	end)
 end
 
--- Most runtime items one catalogue event may carry. The server sends eight; a
--- longer list is a server this client does not understand, refused whole rather
--- than validated past the resume budget.
-local MAX_RUNTIME_PART = 16
+-- Most runtime items one catalogue event may carry: what the server sends
+-- (`RUNTIME_CHUNK`), and what fits one resume with every item at the
+-- validator's bounds. A longer list is refused whole rather than validated past
+-- the resume budget.
+local MAX_RUNTIME_PART = 4
 
 --- Takes in items another resource registered at runtime, a few at a time, and
 --- rewrites the page's catalogue once they are in.

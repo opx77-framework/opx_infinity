@@ -35452,6 +35452,28 @@ do
 		local late = sentAfter(control, beforeHello, 'opx:net:inventory:catalog')
 		check('a client that says hello later is sent every runtime item',
 			late ~= nil and late.source == 703 and late[1][1].name == 'my_burger')
+		-- The hello sends the whole runtime list, and no event may carry more
+		-- than a client can validate in one resume: at eight a part, a part of
+		-- items at the validator's bounds overran the budget and was lost.
+		for index = 1, 9 do
+			call('my_shop', 'RegisterItem', 'my_part_' .. index, { label = 'Part ' .. index })
+		end
+		control.Admit(704, 'account-704')
+		env.source = 704
+		local beforeParts = #control.clientEvents
+		control.netEvents['opx:net:inventory:hello']()
+		local parts, carried, widest = 0, 0, 0
+		for index = beforeParts + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == 'opx:net:inventory:catalog' and event.source == 704 then
+				parts = parts + 1
+				carried = carried + #event[1]
+				widest = math.max(widest, #event[1])
+			end
+		end
+		check('a late client is sent every runtime item in parts of at most four',
+			carried == 10 and widest <= 4 and parts >= 3,
+			('%d items in %d parts, widest %d'):format(carried, parts, widest))
 
 		-- ── a use handler in another resource ─────────────────────────────────
 		local inventory = OPX.Modules.Get('inventory')
@@ -36149,22 +36171,52 @@ do
 		check('and the client refuses what the server would, by the same function',
 			inventory.GetItem('water').label ~= 'Mine')
 		local flood = {}
-		for index = 1, 17 do
+		for index = 1, 5 do
 			flood[index] = { name = 'flood_' .. index, owner = 'ext:x', definition = {} }
 		end
 		receive(flood)
 		check('a part longer than the server ever sends is refused whole',
 			inventory.GetItem('flood_1') == nil)
 		local part = {}
-		for index = 1, 8 do
+		for index = 1, 4 do
 			part[index] = { name = 'bulk_' .. index, owner = 'ext:my_shop', definition = {
 				label = 'Bulk ' .. index, weight = 100, category = 'food',
 				use = { consume = 1, status = { hunger = 5 } } } }
 		end
 		local cost = callCost(receive, part)
-		check('the eight items one event carries are taken in well inside one resume', cost < 7000,
+		check('the four items one event carries are taken in well inside one resume', cost < 7000,
 			('%d instructions'):format(cost))
-		check('every one of them', inventory.GetItem('bulk_8') ~= nil)
+		check('every one of them', inventory.GetItem('bulk_4') ~= nil)
+
+		-- A use.status is walked twice per item on the client: unbounded, one
+		-- event of heavy items spent the whole resume and was killed, so
+		-- an item the server accepted never reached that client.
+		local heavy = {}
+		for key = 1, 300 do heavy['need_' .. key] = key end
+		local heavyPart = {}
+		for index = 1, 4 do
+			heavyPart[index] = { name = 'heavy_' .. index, owner = 'ext:my_shop', definition = {
+				label = 'Heavy ' .. index, use = { status = heavy } } }
+		end
+		local heavyCost = callCost(receive, heavyPart)
+		check('an item moving hundreds of needs is refused by the shared validator',
+			inventory.GetItem('heavy_1') == nil)
+		check('and refusing a part of them stays inside one resume', heavyCost < 10000,
+			('%d instructions'):format(heavyCost))
+		local widest = {}
+		for key = 1, 8 do widest['need_' .. key] = key end
+		local widePart = {}
+		for index = 1, 4 do
+			widePart[index] = { name = 'wide_' .. index, owner = 'ext:my_shop', definition = {
+				label = ('W'):rep(160), description = ('D'):rep(160), weight = 100, stack = true,
+				drop = true, category = 'food', image = 'wide.png', model = 'crate',
+				use = { consume = 1, close = true, status = widest,
+					animation = { name = 'drink', variant = 1, durationMs = 3000 } } } }
+		end
+		local wideCost = callCost(receive, widePart)
+		check('a full part of items at every bound the validator allows fits inside one resume',
+			wideCost < 8000 and inventory.GetItem('wide_4') ~= nil,
+			('%d instructions'):format(wideCost))
 
 		local progress = OPX.Api.Get('progress')
 		local start = control.netEvents['opx:net:progress:start']
