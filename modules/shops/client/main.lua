@@ -1,17 +1,12 @@
 --- The shop floor: a row on the eye, and the bill that follows a fitting.
 -- @author dop42
 --
--- THIS HALF ASKS AND REPORTS. It does not decide. It puts a row where a shop
--- stands, it asks the server to open the room, and when the room closes it
--- reports WHICH SLOTS CHANGED -- the one fact the server cannot see for itself,
--- because `Open77.equipment.records` and the fitting room's own draft live only
--- here. Every other question -- the distance, the price, the money, the job --
--- is answered on the server, from its own tables. See `server/main.lua`.
---
--- THE SLOT LIST IS NOT COMPUTED HERE EITHER. It rides on `wardrobeClosed`,
--- published by the fitting room, which is the only place that holds both what
--- the player walked in wearing and what they walked out with. A shop that
--- re-read the body afterwards would be racing the clothing module's own save.
+-- THIS HALF ASKS. It does not decide, and it does not bill. It puts a row where
+-- a shop stands and asks the server to open the room; the room's clothing save
+-- is what the server charges, diffing it against the stored record itself
+-- before it is written. Every question -- the distance, the slots that moved,
+-- the price, the money, the job -- is answered on the server, from its own
+-- tables. See `server/main.lua`.
 
 local M = OPX.Modules.Get('shops')
 
@@ -32,9 +27,9 @@ local wardrobe = nil
 local ON_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
 
 -- The shop the player is currently being served at, or nil. Set when the room
--- is asked for and cleared when the bill goes out: a room opened for any other
--- reason -- the join offer, a staff member -- must not be billed to a shop
--- somebody happened to be standing near.
+-- is asked for and cleared when it closes: the uniforms strip and the WEAR
+-- request name it, and a room opened for any other reason -- the join offer, a
+-- staff member -- is not a room at this shop.
 local serving = nil
 
 -- The ready-made looks the server said this player may take here.
@@ -580,10 +575,8 @@ function M.Start()
 		placeRows()
 	end
 
-	-- THE BILL IS RAISED BY THE ROOM CLOSING, and only when this module asked for
-	-- it. `serving` is what separates "a fitting at a shop" from every other
-	-- reason a fitting room opens -- the join offer, a staff member -- and it is
-	-- cleared here whatever the outcome, so a later close cannot be billed twice.
+	-- THE ROOM'S DECISIONS. No bill is raised here any more: the server charges
+	-- the clothing save itself. `serving` is cleared when the room closes.
 	AddEventHandler(ON_DECISION, function(decision)
 		if type(decision) ~= 'table' then return end
 		local event = decision.event
@@ -629,13 +622,7 @@ function M.Start()
 		-- that name is exactly the confusion the queue exists to avoid.
 		if decision.kept ~= true then pendingSave = nil end
 
-		local shop = serving
 		serving, offered, saved = nil, {}, {}
-		if shop == nil or decision.kept ~= true then return end
-
-		local slots = type(decision.slots) == 'table' and decision.slots or {}
-		if #slots == 0 then return end
-		TriggerServerEvent(M.Event.BILL, { shop = shop, slots = slots })
 	end)
 
 	RegisterNetEvent(M.Event.LOOKS, function(payload)
@@ -649,14 +636,6 @@ function M.Start()
 	RegisterNetEvent(M.Event.PUT_ON, function(payload)
 		if type(payload) ~= 'table' then return end
 		dress(payload.wear)
-	end)
-
-	-- THE BILL COULD NOT BE TAKEN, so the clothes go back. The record comes from
-	-- the server because by this point the client's own idea of what it walked in
-	-- wearing is exactly what is in doubt.
-	RegisterNetEvent(M.Event.RESTORE, function(record)
-		if type(record) ~= 'table' or type(record.equipment) ~= 'table' then return end
-		putOn(record.equipment)
 	end)
 
 	RegisterNetEvent(M.Event.SAVED, function(payload)

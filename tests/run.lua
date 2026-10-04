@@ -1278,6 +1278,59 @@ do
 	end
 end
 
+-- ── a choice belongs to a character, not to a slot ──────────────────────────
+-- A switch in the world unloads one character and places the next on the spot,
+-- asking this module nothing. The choice still open for the first stayed open:
+-- its menu up and holding the keyboard until the hold ran out, and a second
+-- offer on the slot refused behind it.
+section('spawn: a choice left by a character that left the slot')
+do
+	local env, control, why = boot('server')
+	check('server boots for the abandoned choice', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local heldPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
+		local src = 9
+		control.Admit(src, 'account-switch')
+
+		local function closedWith(mark, reason)
+			for index = mark + 1, #control.clientEvents do
+				local one = control.clientEvents[index]
+				if one.name == spawn.Event.CLOSE and type(one[1]) == 'table' and
+					one[1].reason == reason then return true end
+			end
+			return false
+		end
+
+		check('the first character is offered a choice', spawn.Offer(src, 'citizen-a') == true)
+		local mark = #control.clientEvents
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-a' })
+		check('UNLOADING THE CHARACTER DROPS ITS CHOICE', spawn.IsPending(src) == false)
+		check('and takes its menu down', closedWith(mark, 'abandoned'))
+
+		check('the next character on the slot is offered its own',
+			spawn.Offer(src, 'citizen-b') == true)
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-other' })
+		check('an unload naming somebody else leaves it standing', spawn.IsPending(src) == true)
+
+		-- A choice nobody unloaded (an unload the module missed) is still nobody's
+		-- once another character is offered on the slot.
+		mark = #control.clientEvents
+		check('an offer for a different character replaces the stale one',
+			spawn.Offer(src, 'citizen-c') == true and closedWith(mark, 'abandoned'))
+		check('while a second offer for the same one is still refused',
+			spawn.Offer(src, 'citizen-c') == false)
+
+		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
+		spawn.Init()
+	end
+end
+
 -- ── the spawn menu's page contract ───────────────────────────────────────────
 -- The Lua half and the CEF half agreeing by string literal, and the one piece of
 -- ordering this module has: the menu stands aside while the entry module is asking
@@ -2627,6 +2680,32 @@ do
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
+	-- AND THE FACE GIVEN UP ON IS OWED, NOT LOST. Settling with no face is what
+	-- keeps a dead body from holding the gate; it was also the face gone for the
+	-- session, because "the next world entry" never comes for a player who is
+	-- revived where they lie.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(70)
+		check('the dead body settles the entry with no face first',
+			platform.warned('settles with no face') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		platform.alive = true
+		control.Pump(10)
+		check('A BODY ALIVE AGAIN GETS THE FACE THE ENTRY GAVE UP ON',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(3)
+		local settled = appearance.Contract.IsSettled()
+		check('and the entry is settled on it, still announced once',
+			settled.ok and settled.value.settled == true and platform.announced() == 1,
+			tostring(settled.ok and settled.value.waiting))
+		control.Pump(20)
+		check('once, not on every pass', #platform.applied == 1, tostring(#platform.applied))
+	end
+
 	-- AND A RESET THAT NEVER COMES IS STILL BOUNDED, by RESET_WAIT_MS rather than
 	-- by a not-alive clock that cannot tell a dead body from an unreset one.
 	do
@@ -2644,6 +2723,146 @@ do
 		local settled = appearance.Contract.IsSettled()
 		check('so the clothing gate and the published look are not held for ever',
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- A SWITCH IN THE WORLD IS NOT A WORLD ENTRY. `CHARACTERS.SWITCH = 'relog'`
+	-- unloads one character and loads the next on the same puppet: no world-ready
+	-- and no platform reset. The unload used to clear the reset and the
+	-- announcement with the character, so the next one's entry waited for ever on
+	-- a reset that was never coming -- its clothes never put on, nothing saved,
+	-- and its look never published again, invisible to everybody else.
+	do
+		local env, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local settled = appearance.Contract.IsSettled()
+		check('the first character is settled before the switch',
+			settled.ok and settled.value.settled == true)
+
+		local other = { gameBuild = '2.31', gender = 'female', options = { eyes = 5 } }
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'unloaded'))
+		control.Pump(3)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-OTHER', charInfo = { gender = 'female' }, appearance = other })
+		control.Pump(10)
+		check('the next character\'s face goes on the same puppet',
+			#platform.applied == 2 and platform.applied[2].options.eyes == 5,
+			('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(5)
+		settled = appearance.Contract.IsSettled()
+		check('AND ITS ENTRY SETTLES WITHOUT A RESET NOBODY WILL RUN',
+			settled.ok and settled.value.settled == true,
+			tostring(settled.ok and settled.value.waiting))
+		check('still counted as announced, so its clothes and its look go out',
+			settled.ok and settled.value.announced == true)
+		check('without sending gameplay-ready a second time', platform.announced() == 1,
+			tostring(platform.announced()))
+
+		-- A real world entry still starts over.
+		control.Fire(env.OPX.Host.WORLD_READY)
+		settled = appearance.Contract.IsSettled()
+		check('while a world entry clears the announcement it is owed',
+			settled.ok and settled.value.announced == false)
+	end
+
+	-- A RESTART MID-SESSION IS NOT A JOIN EITHER. The resource comes back on a
+	-- puppet the platform reset long ago, and no `playerReset:complete` will be
+	-- raised for it again -- so a restore that waited for one never settled:
+	-- nothing announced, no clothes put back, no look published.
+	--- A client VM started on a world already reset, with `reset` projected.
+	local function restartedClient(reset)
+		local own, ctl = Host.Environment('client')
+		local platform = { applied = {} }
+		own.Open77.appearance = {
+			captureBody = function() return { family = 'female' } end,
+			takeBodyFamilyTransition = function() return nil end,
+			finishCommit = function() return true end,
+			isOpen = function() return false end,
+			apply = function(snapshot)
+				platform.applied[#platform.applied + 1] = snapshot
+				return true
+			end,
+		}
+		own.Open77.session = {
+			characterBootstrap = function()
+				return { phase = 'ready', bodyFamily = 'female', playerReset = reset }
+			end,
+			resolveCharacterBootstrap = function() return false, 'spent' end,
+			failCharacterBootstrap = function() return true end,
+		}
+		own.Open77.character.state = function()
+			return { attached = true, alive = true, health = 250 }
+		end
+		own.Open77.players.getLifeState = function() return { phase = 'alive' } end
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Pump(240)
+		ctl.ReadyPages()
+		platform.announced = function()
+			local count = 0
+			for _, sent in ipairs(ctl.serverEvents) do
+				if sent.name == own.OPX.Host.GAMEPLAY_READY then count = count + 1 end
+			end
+			return count
+		end
+		return own, ctl, own.OPX.Modules.Get('appearance'), platform
+	end
+	for _, reset in ipairs({ 'complete', false }) do
+		local env, control, appearance, platform = restartedClient(reset or nil)
+		local said = reset and 'projected complete' or 'not projected'
+		-- The character module's answer to its own announce after the restart.
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-BACK', charInfo = { gender = 'female' },
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 7 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(10)
+		check(('after a restart (reset %s) the face goes back on'):format(said),
+			#platform.applied >= 1, ('%d apply call(s)'):format(#platform.applied))
+		local settled = appearance.Contract.IsSettled()
+		check(('AND THE ENTRY SETTLES AND ANNOUNCES WITHOUT A RESET (%s)'):format(said),
+			settled.ok and settled.value.settled == true and settled.value.announced == true,
+			tostring(settled.ok and settled.value.waiting))
+	end
+	-- But a restart that lands on a body whose reset is still under way waits
+	-- for it, exactly as a join does.
+	do
+		local _, _, appearance = restartedClient('clearing')
+		check('a restart on a reset still running does not count it as done',
+			appearance.Face.playerResetDone == false)
+	end
+
+	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
+	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
+	-- minute in the world on no face, with the clothing gate held behind it.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('announced on the armed body before the failed reset',
+			platform.announced() == 1, tostring(platform.announced()))
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(70)
+		check('A FAILED RESET SETTLES THE ENTRY ON THE NOT-ALIVE CLOCK, NOT AFTER A MINUTE',
+			platform.warned('settles with no face') and not platform.warned('has not reset the body'),
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('so nothing downstream waits on it',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(5)
+		check('and a body alive after a failed reset still gets its face',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
 	end
 
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
@@ -13759,6 +13978,161 @@ do
 			contract.IsDown(PLAYER).value.down == false)
 	end
 end
+-- ── a stored down row and the join's own placement ──────────────────────────
+-- A JOIN IS A KILL AND A RESPAWN, and the scan used to read both as real. A
+-- character that disconnected down was put back down by a kill the character
+-- module's placement then respawned: the record closed as `alive` and the
+-- stored row was cleared, so quitting while down was a free revive. A death read
+-- on the join body before placement wrote the stored row back as zero seconds
+-- down. Nothing about being down is decided until the body has been placed.
+section('a stored down row waits for the join placement')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the down restore', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local PLAYER = 1
+		local downed = OPX.Modules.Get('downed')
+		control.Admit(PLAYER, 'user-restore')
+		-- The stored rows are stubbed below, so the table is as good as there:
+		-- with no database the module reads and writes nothing at all.
+		OPX.BootError = nil
+
+		local phase = 'alive'
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function()
+			return { phase = phase, position = { x = 0, y = 0, z = 0, bucket = 0 } }
+		end
+		env.Open77.players.isDead = function() return phase == 'dead' end
+		local kills = 0
+		env.Open77.players.kill = function()
+			kills = kills + 1
+			phase = 'dead'
+			return true
+		end
+
+		local body = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-1' } }
+		local character = OPX.Api.Get('character')
+		local getPlayer = character and character.GetPlayer
+		if character ~= nil then character.GetPlayer = function() return body end end
+
+		local reads, writes, clears = 0, {}, 0
+		local storage = downed.Storage
+		local read, write, clear = storage.Read, storage.Write, storage.Clear
+		storage.Read = function()
+			reads = reads + 1
+			return { downForMs = 50000, waiting = true }
+		end
+		storage.Write = function(citizenId, downForMs, waiting)
+			writes[#writes + 1] = { citizenId = citizenId, downForMs = downForMs, waiting = waiting }
+		end
+		storage.Clear = function() clears = clears + 1 end
+
+		local contract = OPX.Api.Get('downed')
+
+		-- The join body, alive and not placed yet: nothing is put back on it.
+		control.Pump(60)
+		check('A STORED DOWN ROW IS NOT PUT BACK ON A BODY THE JOIN HAS NOT PLACED',
+			kills == 0 and reads == 0, ('%d kill(s), %d read(s)'):format(kills, reads))
+
+		-- The placement's own kill, read between the kill and the respawn: not a
+		-- death, and nothing is written over the stored row.
+		phase = 'dead'
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		control.Pump(20)
+		check('a death read on the unplaced body opens no record',
+			contract.IsDown(PLAYER).value.down == false)
+		check('and writes nothing over the stored row', #writes == 0 and clears == 0,
+			('%d write(s), %d clear(s)'):format(#writes, clears))
+
+		-- The placement lands: the body is alive, where the row says.
+		phase = 'alive'
+		body.MaySample = true
+		check('once the body is placed the stored row is put back on it',
+			settle(control, function() return kills == 1 end, 80), ('%d kill(s)'):format(kills))
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('and the record resumes it, still asking for help',
+			settle(control, function()
+				local answer = contract.IsDown(PLAYER)
+				return answer.ok and answer.value.down == true and answer.value.waiting == true
+					and answer.value.downForMs >= 50000
+			end, 40))
+		check('with the row never cleared on the way', clears == 0, tostring(clears))
+
+		-- A placement that never lands is bounded: a death on a body that stayed
+		-- unplaced is counted after the grace, or nothing would ever revive it.
+		local env2, control2, why2 = boot('server')
+		if why2 == nil then
+			local OPX2 = env2.OPX
+			control2.Admit(PLAYER, 'user-unplaced')
+			OPX2.BootError = nil
+			env2.Open77.ready.isReady = function() return true end
+			env2.Open77.players.getLifeState = function()
+				return { phase = 'dead', position = { x = 0, y = 0, z = 0, bucket = 0 } }
+			end
+			env2.Open77.players.isDead = function() return true end
+			local stuck = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-2' } }
+			local character2 = OPX2.Api.Get('character')
+			if character2 ~= nil then character2.GetPlayer = function() return stuck end end
+			local storage2 = OPX2.Modules.Get('downed').Storage
+			storage2.Read = function() return nil end
+			storage2.Write = function() end
+			storage2.Clear = function() end
+			local contract2 = OPX2.Api.Get('downed')
+			control2.Pump(100)
+			check('a dead body whose placement never landed is not counted at once',
+				contract2.IsDown(PLAYER).value.down == false)
+			control2.Pump(250)
+			check('but it is counted once the grace has run out',
+				contract2.IsDown(PLAYER).value.down == true)
+		end
+
+		storage.Read, storage.Write, storage.Clear = read, write, clear
+		if character ~= nil then character.GetPlayer = getPlayer end
+	end
+end
+-- ── the last needs push of a disconnect ────────────────────────────────────
+-- `needs not pushed: session_not_active` was written to the client log on EVERY
+-- disconnect: the unload and `Stop` push one last time over a session that is
+-- already closed. Harmless -- the server writes the last push it holds when the
+-- player departs -- so it is not a warning. Any other refusal still is.
+section('the last needs push of a disconnect')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the needs push', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-1' })
+		local onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-1', { hunger = 40, thirst = 40 }) end
+		local needs = OPX.Api.Get('needs')
+		check('the needs are loaded', needs ~= nil and needs.GetNeeds().ok == true)
+
+		local function warnedPush()
+			for _, line in ipairs(control.log.warn) do
+				if tostring(line):find('needs not pushed', 1, true) then return true end
+			end
+			return false
+		end
+		local send = env.TriggerServerEvent
+		env.TriggerServerEvent = function() return false, 'session_not_active' end
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('A PUSH OVER A CLOSED SESSION IS NOT A WARNING', not warnedPush(),
+			table.concat(control.log.warn, ' | '))
+
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-2' })
+		env.TriggerServerEvent = send
+		onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-2', { hunger = 40, thirst = 40 }) end
+		env.TriggerServerEvent = function() return false, 'network_payload_too_large' end
+		needs.AddNeeds({ hunger = 30 })
+		check('but any other refusal still is', warnedPush(), table.concat(control.log.warn, ' | '))
+		env.TriggerServerEvent = send
+	end
+end
+
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
@@ -20372,6 +20746,164 @@ do
 	end
 end
 
+
+-- ── a shop's fitting room is charged where its clothes are written ──────────
+-- THE EXPLOIT THIS PINS, raised by the economy audit. The shop was told which
+-- slots changed by the client, on `shops:bill`, after the clothing save had
+-- already landed -- so a client that never sent the bill kept the clothes and
+-- paid nothing. The room a shop opens is a PRICED grant now: `appearance` diffs
+-- the save against the stored record itself, hands the slots to the shop's
+-- charge, and writes nothing the charge refused. And the doors that put a look
+-- on hand out ONE save of that look rather than ten free minutes of catalogue.
+section('a shop fitting room is charged on the server, before the save')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the priced room', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	local shops = OPX and OPX.Modules.Get('shops') or nil
+
+	if type(appearance) == 'table' and type(character) == 'table' and type(shops) == 'table' then
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local REFUSED = appearance.Event.REFUSED
+		local OPERATION = appearance.Operation.SAVE_CLOTHING
+		local PLAYER, CITIZEN = 93, 'citizen-shopper'
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = false } }
+
+		local writes = 0
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		local function load()
+			character.Players[PLAYER] = { PlayerData = {
+				citizenId = CITIZEN, source = PLAYER, clothing = STORED } }
+		end
+
+		--- A record that is the stored one with `change` laid over its equipment.
+		local function wearing(change, outfits)
+			local equipment = {}
+			for slot, item in pairs(STORED.equipment) do equipment[slot] = item end
+			for slot, item in pairs(change or {}) do equipment[slot] = item end
+			return { schemaVersion = 1, equipment = equipment, wardrobe = { outfits = outfits or {} } }
+		end
+
+		--- Fires the save door and answers the refusal code, or nil.
+		local function save(record)
+			OPX.ForgetCooldowns(PLAYER)
+			local mark = #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[SAVE]({ citizenId = CITIZEN, clothing = record })
+			env.source = nil
+			control.Pump(4)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == REFUSED and sent.source == PLAYER and sent[2] == OPERATION then
+					return tostring(sent[1])
+				end
+			end
+			return nil
+		end
+
+		-- ── the priced room ──────────────────────────────────────────────────
+		load()
+		local billed, answer = {}, { true }
+		local undone = 0
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return answer[1], answer[2], function() undone = undone + 1 end
+		end })
+
+		local refused = save(wearing({ OuterChest = 'Items.Jacket_02', Head = 'Items.Hat_01' }))
+		check('A SAVE FROM A PRICED ROOM IS CHARGED FOR THE SLOTS THE SERVER SAW MOVE',
+			refused == nil and billed[1] == 'Head,OuterChest', ('%s / %s'):format(tostring(refused),
+				tostring(billed[1])))
+		check('and written once the charge went through', writes == 1, tostring(writes))
+
+		load()
+		answer = { false, 'clothing.unpaid' }
+		writes = 0
+		refused = save(wearing({ Legs = 'Items.Pants_02' }))
+		check('A CHARGE THAT FAILS IS A SAVE REFUSED, and nothing is written',
+			refused == 'clothing.unpaid' and writes == 0, ('%s, %d write(s)'):format(tostring(refused), writes))
+
+		load()
+		answer = { true }
+		refused = save(wearing(nil, { ['0'] = { OuterChest = 'Items.Jacket_Gold' } }))
+		check('a garment written into an outfit override is billed as worn',
+			refused == nil and billed[#billed] == 'OuterChest', tostring(billed[#billed]))
+
+		load()
+		local count = #billed
+		refused = save(wearing())
+		check('a save that moves nothing charges nothing', #billed == count, tostring(refused))
+
+		load()
+		appearance.Storage.SaveClothing = function() return { ok = false, error = 'error.unavailable' } end
+		refused = save(wearing({ Feet = 'Items.Shoes_02' }))
+		check('charged and then not written: the charge is undone', undone == 1 and
+			refused == 'error.unavailable', ('%d undo, %s'):format(undone, tostring(refused)))
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		-- ── one look, once ───────────────────────────────────────────────────
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load()
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		check('a look grant does not admit anything else riding on it',
+			save(wearing({ OuterChest = 'Items.Uniform_01', Head = 'Items.Crown' })) == 'clothing.noFittingRoom')
+		writes = 0
+		check('it admits exactly the look it was handed for, free',
+			save(wearing({ OuterChest = 'Items.Uniform_01' })) == nil and writes == 1, tostring(writes))
+		load()
+		check('and only once', save(wearing({ OuterChest = 'Items.Uniform_01', Legs = 'Items.Pants_09' }))
+			== 'clothing.noFittingRoom')
+
+		-- A uniform bought inside the priced room is not billed a second time by it.
+		load()
+		billed = {}
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return true
+		end })
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01', Feet = 'Items.Shoes_03' }))
+		check('a look already paid for inside the room is not charged again by it',
+			refused == nil and billed[1] == 'Feet', tostring(billed[1]))
+
+		-- ── the shop's own door hands out a priced room ──────────────────────
+		local contract = OPX.Api.Get('appearance')
+		local seen
+		local realOpen = contract.OpenWardrobe
+		contract.OpenWardrobe = function(_, options) seen = options; return true end
+		control.Admit(PLAYER, 'account-shopper')
+		control.Stand(PLAYER, -1180.0, 1550.0, 25.0)
+		env.source = PLAYER
+		control.netEvents[shops.Event.OPEN]('thrift_watson')
+		env.source = nil
+		control.Pump(5)
+		contract.OpenWardrobe = realOpen
+		check('THE SHOP OPENS A PRICED ROOM, with its own charge',
+			type(seen) == 'table' and type(seen.charge) == 'function', type(seen))
+		check('and no bill door is left for a client to skip',
+			shops.Event.BILL == nil and control.netEvents[OPX.Event(OPX.Channel.NET, 'shops', 'bill')] == nil)
+
+		if type(seen) == 'table' and type(seen.charge) == 'function' then
+			local taken = {}
+			local money = OPX.Api.Get('character')
+			local realRemove = money.RemoveMoney
+			money.RemoveMoney = function(_, _, amount) taken[#taken + 1] = amount; return true end
+			local ok, _, undo = seen.charge(PLAYER, { 'OuterChest' })
+			money.RemoveMoney = realRemove
+			check('the shop charges the slots it is handed at its own prices',
+				ok == true and (taken[1] or 0) > 0 and type(undo) == 'function', tostring(taken[1]))
+		end
+
+		character.Players[PLAYER] = nil
+	end
+end
 
 -- ── the latch the whole join sits behind ────────────────────────────────────
 -- `BeginBootstrap` takes `bootstrapPicking` BEFORE its thread and drops it only

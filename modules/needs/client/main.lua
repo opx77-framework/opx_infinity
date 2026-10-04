@@ -537,13 +537,34 @@ local function publishNeeds(origin, changed)
 	})
 end
 
+-- Refusals that say the link to the server is already gone.
+--
+-- `session_not_active` is what every disconnect writes: the character unload and
+-- this module's `Stop` both push one last time, and by then the session is
+-- closed. It is not a lost value. The server half writes the last push it HOLDS
+-- when the player departs (`departed` in server/main.lua), which is never more
+-- than PUSH_DELTA or one PUSH_MS of decay behind -- the bound the throttle was
+-- always going to leave on a lost link. A warning on every disconnect is noise in
+-- exactly the file a player sends when something else went wrong.
+local LINK_GONE = { session_not_active = true, network_unavailable = true }
+
+-- Logs an event that did not leave: quietly when the link is gone, loudly
+-- otherwise.
+local function unsent(what, reason)
+	reason = tostring(reason)
+	if LINK_GONE[reason] then
+		Open77.log.debug(('needs not %s: %s (the server keeps the last push it holds)')
+			:format(what, reason))
+		return
+	end
+	Open77.log.warn(('needs not %s: %s'):format(what, reason))
+end
+
 -- Asks the server half for this character's stored values.
 local function pull(atMs)
 	lastPullAtMs = atMs
 	local accepted, reason = TriggerServerEvent(EVENT_PULL, Needs.citizenId)
-	if not accepted then
-		Open77.log.warn(('needs not requested: %s'):format(tostring(reason)))
-	end
+	if not accepted then unsent('requested', reason) end
 end
 
 -- Sends the held values when due, drifted enough, or forced. The throttled push
@@ -560,7 +581,7 @@ local function push(atMs, force)
 	local values = Needs.Snapshot()
 	local accepted, reason = TriggerServerEvent(EVENT_PUSH, Needs.citizenId, values)
 	if not accepted then
-		Open77.log.warn(('needs not pushed: %s'):format(tostring(reason)))
+		unsent('pushed', reason)
 		return false
 	end
 	Needs.Sending(values)

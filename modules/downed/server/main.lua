@@ -32,6 +32,11 @@ local IDENTITY_MS = 3000
 -- Milliseconds down before a give up is accepted, settled in `Init`.
 local giveUpMs = 120000
 
+-- How long a loaded character's body may stay unplaced before a death on it is
+-- counted, and before a stored down row is put back on it anyway. See `placed`.
+local DEATH_GRACE_MS = 30000
+local RESTORE_GRACE_MS = 600000
+
 -- Downed players by id: sinceMs, waiting, waitingSinceMs, position and citizenId.
 local down = {}
 
@@ -44,6 +49,10 @@ local checked = {}
 
 -- When each player last made each kind of request, by player:kind slot.
 local lastRequest = {}
+
+-- Per loaded player whose body the character module has not placed yet: the
+-- citizen, and when this module first saw it unplaced.
+local unplaced = {}
 
 -- The character contract, looked up in `Start`.
 local character
@@ -222,6 +231,39 @@ local function inWorld(playerId)
 	return true, type(data.citizenId) == 'string' and data.citizenId or nil
 end
 
+-- Whether the character module has put this character's body where its row says.
+--
+-- A JOIN IS A KILL AND A RESPAWN, and neither is a death or a revive. The
+-- character module places a joining body once the gate opens (`PlaceCharacter`,
+-- and later still when the spawn menu is up), and until then the body is the
+-- platform's join body. A stored down row put back on it was a kill the
+-- placement then respawned: the scan read the body alive again, closed the
+-- record as `alive` and CLEARED THE ROW -- a character that disconnected down
+-- came back standing, which is a free revive for anybody who quits while
+-- bleeding out. A death read on the unplaced body opened a fresh record over the
+-- stored one, writing it back as zero seconds down and not waiting.
+--
+-- `MaySample` is the character module's own word for "placed": false from the
+-- load, true once `PlaceCharacter` has put the body down. A contract that does
+-- not carry it is taken as placed, which is the behaviour before this existed.
+-- BOUNDED, because a placement that failed leaves it false for the session, and
+-- a player whose deaths nobody counts is a player nothing ever revives.
+local function placed(playerId, citizenId, graceMs)
+	if character == nil or type(character.GetPlayer) ~= 'function' then return true end
+	local loaded = character.GetPlayer(playerId)
+	if type(loaded) ~= 'table' or loaded.MaySample ~= false then
+		unplaced[playerId] = nil
+		return true
+	end
+	local atMs = OPX.Now()
+	local seen = unplaced[playerId]
+	if seen == nil or seen.citizenId ~= citizenId then
+		seen = { citizenId = citizenId, sinceMs = atMs }
+		unplaced[playerId] = seen
+	end
+	return atMs - seen.sinceMs >= graceMs
+end
+
 -- Puts a character stored down back down once, by a kill `goDown` then resumes.
 local function restore(playerId, citizenId)
 	local row = M.Storage.Read(citizenId)
@@ -249,7 +291,9 @@ local function observe(playerId)
 	local life = lifeOf(playerId)
 	if phaseOf(life) == 'dead' then
 		local loaded, citizenId = inWorld(playerId)
-		if loaded == true then goDown(playerId, life, citizenId) end
+		if loaded == true and placed(playerId, citizenId, DEATH_GRACE_MS) then
+			goDown(playerId, life, citizenId)
+		end
 		return
 	end
 
@@ -261,6 +305,12 @@ local function observe(playerId)
 	if loaded == nil then return end
 	if loaded == false or citizenId == nil then
 		checked[playerId] = { atMs = atMs }
+		return
+	end
+	-- Not before the body is placed, and not ticked off either: the restore is
+	-- still owed to this character, so it is asked again on a later pass.
+	if not placed(playerId, citizenId, RESTORE_GRACE_MS) then
+		checked[playerId] = { atMs = atMs, citizenId = seen and seen.citizenId or nil }
 		return
 	end
 	local already = seen and seen.citizenId == citizenId
@@ -393,6 +443,7 @@ local function departed(rawPlayerId)
 	local playerId = tonumber(rawPlayerId) or 0
 	local record = down[playerId]
 	down[playerId], checked[playerId], restoring[playerId] = nil, nil, nil
+	unplaced[playerId] = nil
 
 	local prefix = tostring(playerId) .. ':'
 	for slot in pairs(lastRequest) do
@@ -511,7 +562,7 @@ end
 --- Builds the state and contributes the table.
 -- @author dop42
 function M.Init()
-	down, restoring, checked, lastRequest = {}, {}, {}, {}
+	down, restoring, checked, lastRequest, unplaced = {}, {}, {}, {}, {}
 	giveUpMs = math.floor(clamp(M.Settings.GIVE_UP_AFTER_S, 0, 3600, 120) * 1000)
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
