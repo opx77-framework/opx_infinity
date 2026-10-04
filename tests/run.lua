@@ -3998,6 +3998,46 @@ do
 	end
 end
 
+-- `open77_notifications` spells its positions with an underscore and refuses a
+-- field past its byte bound; the shipped `top-right` was neither. And the two
+-- doors that reach our own page check what they carry on the sending side.
+section('server toasts and command answers')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local sent = {}
+		local notifications = env.Open77.notifications
+		env.Open77.notifications = { send = function(_, definition)
+			sent[#sent + 1] = definition
+			return 1
+		end }
+		env.OPX.Notify(3, ('x'):rep(1000), 'info')
+		local first = sent[1]
+		check('a server toast names a position the package has',
+			first ~= nil and first.position == 'top_right', first and tostring(first.position))
+		check('and its message fits the 384 bytes the package accepts',
+			first ~= nil and #first.message == 384, first and #first.message)
+
+		env.Open77.notifications = nil
+		local ran, delivered, reason = pcall(env.OPX.Notify, 4, 'hello', 'info')
+		check('a host without notifications answers a refusal instead of raising',
+			ran and delivered == false and reason == 'no_notifications', tostring(reason))
+		env.Open77.notifications = notifications
+
+		env.OPX.Refuse(4, 'error.tooFast', 'test', 'not-a-glyph')
+		local refusal = control.clientEvents[#control.clientEvents]
+		check('a refusal naming a glyph outside the set sends none',
+			refusal ~= nil and refusal[1] ~= nil and refusal[1].icon == nil)
+
+		env.OPX.CommandResult(4, true, ('a\xC3\xA9'):rep(3000))
+		local dump = control.clientEvents[#control.clientEvents]
+		local text = dump and dump[1] and dump[1].text or ''
+		check('a long command answer is cut before the character it would split',
+			#text == 8194 and text:sub(-4) == 'a...', #text)
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
