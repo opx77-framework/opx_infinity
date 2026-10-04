@@ -713,10 +713,8 @@ local function open()
 		handle = handle,
 		hoverMs = HOVER_MS,
 		labels = {
-			hint = locale('target.hint'),
 			looking = locale('target.looking'),
 			unavailable = locale('target.unavailable'),
-			back = locale('target.back'),
 		},
 	})
 	if not drawn or refused then return close(refused and 'payload_refused' or 'no_surface') end

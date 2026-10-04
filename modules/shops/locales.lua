@@ -60,7 +60,6 @@ local EN = {
 	['shops.outfits.delete'] = 'Delete outfit',
 	['shops.outfits.deleteConfirm'] = 'Yes, delete {name}',
 	['shops.outfits.keep'] = 'Keep it',
-	['shops.outfits.code'] = 'Code {code}',
 	['shops.outfits.shared'] = 'Share code: {code}',
 
 	['shops.save.title'] = 'Save what you are wearing',
@@ -125,7 +124,6 @@ local FR = {
 	['shops.outfits.delete'] = 'Supprimer la tenue',
 	['shops.outfits.deleteConfirm'] = 'Oui, supprimer {name}',
 	['shops.outfits.keep'] = 'La garder',
-	['shops.outfits.code'] = 'Code {code}',
 	['shops.outfits.shared'] = 'Code de partage : {code}',
 
 	['shops.save.title'] = 'Enregistrer votre tenue actuelle',

@@ -36,7 +36,6 @@ local EN = {
 	['garages.wrongBucket'] = 'You are not at this marker. Step onto it and try again.',
 	['garages.tooFar'] = 'You are too far from the marker. Stand on it and try again.',
 	['garages.nothingHere'] = 'You have no vehicle for this garage.',
-	['garages.notYours'] = 'That vehicle of yours does not come out here.',
 	-- EVERY EXIT IS TAKEN. The owner chose a refusal over a queue and over
 	-- creating the vehicle inside the car already parked there, so this says what
 	-- is wrong and what to do about it rather than apologising.
@@ -76,7 +75,6 @@ local FR = {
 	['garages.wrongBucket'] = "Vous n'êtes pas sur ce marqueur. Placez-vous dessus et réessayez.",
 	['garages.tooFar'] = 'Vous êtes trop loin du marqueur. Mettez-vous dessus.',
 	['garages.nothingHere'] = "Vous n'avez aucun véhicule pour ce garage.",
-	['garages.notYours'] = "Ce véhicule ne sort pas ici.",
 	['garages.noFreeExit'] =
 		'Toutes les sorties de {garage} sont bloquées. Dégagez-en une et réessayez.',
 	['garages.passengers'] = 'Vos passagers doivent descendre avant de ranger le véhicule dans {garage}.',

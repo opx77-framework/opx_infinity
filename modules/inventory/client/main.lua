@@ -95,7 +95,7 @@ local function labels()
 	local keys = {
 		'bag', 'ground', 'trunk', 'glovebox', 'stash', 'drop', 'weight', 'ammo', 'serial',
 		'condition', 'use', 'split', 'dropZone', 'giveTo', 'sortWeight', 'sortName', 'close',
-		'nobody', 'unknown', 'kg', 'g', 'm', 'slots', 'groundHint',
+		'nobody', 'unknown', 'kg', 'g', 'm', 'groundHint',
 		-- `character` is the eyebrow over a searched bag, which drew the raw kind;
 		-- `cancel` is the split dialog's way out, which said `Close`.
 		'character', 'cancel',

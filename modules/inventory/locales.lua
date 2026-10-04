@@ -18,7 +18,6 @@
 --   inventory.ui.<key>                 the words the page draws
 
 OPX.Locale.Register('en', {
-	['inventory.title'] = 'Inventory',
 
 	['inventory.ui.bag'] = 'Bag',
 	['inventory.ui.ground'] = 'Ground',
@@ -42,7 +41,6 @@ OPX.Locale.Register('en', {
 	['inventory.ui.kg'] = 'kg',
 	['inventory.ui.g'] = 'g',
 	['inventory.ui.m'] = 'm',
-	['inventory.ui.slots'] = 'slots',
 	['inventory.ui.groundHint'] = 'Hand over or drop',
 	['inventory.ui.character'] = 'Bag',
 	['inventory.ui.cancel'] = 'Cancel',
@@ -382,7 +380,6 @@ OPX.Locale.Register('en', {
 })
 
 OPX.Locale.Register('fr', {
-	['inventory.title'] = 'Inventaire',
 
 	['inventory.ui.bag'] = 'Sac',
 	['inventory.ui.ground'] = 'Sol',
@@ -406,7 +403,6 @@ OPX.Locale.Register('fr', {
 	['inventory.ui.kg'] = 'kg',
 	['inventory.ui.g'] = 'g',
 	['inventory.ui.m'] = 'm',
-	['inventory.ui.slots'] = 'emplacements',
 	['inventory.ui.groundHint'] = 'Donner ou poser',
 	['inventory.ui.character'] = 'Sac',
 	['inventory.ui.cancel'] = 'Annuler',
