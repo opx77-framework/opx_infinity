@@ -21910,6 +21910,71 @@ do
 	end
 end
 
+-- A use handler yields, and the consume comes after it. While it ran, the stack
+-- could be dragged away, handed over, dropped, split or used again: the effect
+-- was applied and the consume found nothing. The slot is held for the handler.
+section('inventory: a stack being used cannot move until the use is settled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Actions, Players = inventory.Containers, inventory.Actions,
+			inventory.Players
+		local bag = Containers.Transient('stash', 'use_lock_bag', 10, 100000)
+		local other = Containers.Transient('stash', 'use_lock_other', 10, 100000)
+		bag.items[1] = { name = 'bandage', count = 1 }
+
+		local realBag, realMayAct = Players.Bag, Players.MayAct
+		Players.Bag = function() return bag end
+		Players.MayAct = function() return true end
+
+		local effects = 0
+		Actions.RegisterUsable('bandage', function()
+			env.Wait(300)
+			effects = effects + 1
+			return { ok = true, consume = 1 }
+		end, 'tests')
+
+		local first
+		env.CreateThread(function() first = { Actions.Use(951, 1) } end)
+		control.Pump(1)
+
+		local moved, movedWhy = Containers.Move(bag, 1, other, nil, nil)
+		check('the stack cannot be moved out while it is being used',
+			not moved and movedWhy == 'in_use', tostring(movedWhy))
+		bag.items[2] = { name = 'scrap_metal', count = 1 }
+		local swapped, swapWhy = Containers.Move(bag, 2, bag, 1, nil)
+		check('nor anything swapped into its slot', not swapped and swapWhy == 'in_use',
+			tostring(swapWhy))
+		bag.items[2] = nil
+		local sorted, sortWhy = Containers.Sort(bag, 'name')
+		check('nor the container sorted', not sorted and sortWhy == 'in_use', tostring(sortWhy))
+		local removed, removeWhy = Containers.Remove(bag, 'bandage', 1)
+		check('nor its units taken by name from elsewhere', not removed
+			and removeWhy == 'not_enough', tostring(removeWhy))
+		local again
+		env.CreateThread(function() again = { Actions.Use(952, 1) } end)
+		control.Pump(2)
+		check('and a second use of the same slot is refused while the first runs',
+			again ~= nil and again[1] == false and again[2] == 'in_use',
+			again and tostring(again[2]))
+
+		settle(control, function() return first ~= nil end, 40)
+		check('the use goes through', first ~= nil and first[1] == true,
+			first and tostring(first[2]))
+		check('its effect applied once and the unit consumed',
+			effects == 1 and bag.items[1] == nil, ('%d %s'):format(effects, tostring(bag.items[1])))
+		check('and the slot is free again', not Containers.IsHeld(bag, 1))
+
+		Actions.UnregisterUsable('bandage', 'tests')
+		Players.Bag, Players.MayAct = realBag, realMayAct
+		Containers.Discard(bag.id)
+		Containers.Discard(other.id)
+	end
+end
+
 -- `ResizeContainer` loaded a container it did not hold and never put it away:
 -- an offline bag or an unopened stash stayed in memory for the life of the
 -- resource. And a kind that was not a string raised on `:upper()`.

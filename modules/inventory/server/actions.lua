@@ -134,6 +134,13 @@ function Actions.Use(source, slot)
 	local use = item.use or {}
 	local consume = use.consume or 0
 	if handler then
+		-- THE SLOT IS HELD FOR AS LONG AS THE HANDLER RUNS, because the handler
+		-- yields -- `ask` waits on it in 25 ms steps at the very least -- and the
+		-- consume comes after it. Unheld, the stack could be dragged away, handed
+		-- over, dropped, split or used a second time in that window: the handler
+		-- applied its effect and the consume found nothing to take. See
+		-- `Containers.Hold` for what a held slot refuses.
+		if not Containers.Hold(bag, slot) then return false, 'in_use' end
 		local answer, refusal = ask(handler, source, {
 			name = entry.name,
 			slot = slot,
@@ -142,6 +149,7 @@ function Actions.Use(source, slot)
 			label = Catalog.Label(entry.name),
 			citizenId = Players.Citizen(source),
 		})
+		Containers.Release(bag, slot)
 		if not answer then return false, refusal end
 		if answer.consume ~= nil then
 			consume = Common.Integer(answer.consume, 0, Options.MAX_STACK) or consume
@@ -149,9 +157,10 @@ function Actions.Use(source, slot)
 	end
 
 	if consume > 0 then
-		-- The handler yielded, so the stack may have moved. The slot is trusted
-		-- only while it still carries the same entry with enough units in it;
-		-- otherwise the units go by name and metadata instead.
+		-- Nothing could MOVE the stack while the slot was held, so it is normally
+		-- exactly where it was. A path that names the slot itself
+		-- (`TakeFromSlot`, a staff clear) may still have changed it, and then the
+		-- units go by name and metadata instead.
 		local consumed
 		if bag.items[slot] == entry and entry.count >= consume then
 			consumed = Containers.TakeFromSlot(bag, slot, consume)
