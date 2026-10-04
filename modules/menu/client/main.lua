@@ -132,15 +132,52 @@ end
 -- ── the spec ────────────────────────────────────────────────────────────────
 
 --- Counts a caller's opaque table against the payload budget.
+--
+-- A SCALAR IS COUNTED IN PLACE, NOT THROUGH A CALL. Every row's `data` is
+-- walked here inside the one resume `Open` or `Update` runs in, and a call per
+-- key and per value was the dearest part of checking a spec: about 150
+-- instructions a row, over a third of the whole check, for tables that are
+-- almost all strings and numbers. Only a nested table recurses now; the count
+-- and the limits are the same.
 local function fitsInPayload(value, depth, budget)
-	budget.nodes = budget.nodes + 1
-	if budget.nodes > MAX_DATA_NODES then return false end
-	if type(value) ~= 'table' then return true end
-	if depth > MAX_DATA_DEPTH then return false end
-	for key, nested in pairs(value) do
-		if not fitsInPayload(key, depth + 1, budget) then return false end
-		if not fitsInPayload(nested, depth + 1, budget) then return false end
+	local nodes = budget.nodes + 1
+	if nodes > MAX_DATA_NODES then
+		budget.nodes = nodes
+		return false
 	end
+	if type(value) ~= 'table' then
+		budget.nodes = nodes
+		return true
+	end
+	if depth > MAX_DATA_DEPTH then
+		budget.nodes = nodes
+		return false
+	end
+	for key, nested in pairs(value) do
+		if type(key) == 'table' then
+			budget.nodes = nodes
+			if not fitsInPayload(key, depth + 1, budget) then return false end
+			nodes = budget.nodes
+		else
+			nodes = nodes + 1
+			if nodes > MAX_DATA_NODES then
+				budget.nodes = nodes
+				return false
+			end
+		end
+		if type(nested) == 'table' then
+			budget.nodes = nodes
+			if not fitsInPayload(nested, depth + 1, budget) then return false end
+			nodes = budget.nodes
+		else
+			nodes = nodes + 1
+			if nodes > MAX_DATA_NODES then
+				budget.nodes = nodes
+				return false
+			end
+		end
+	end
+	budget.nodes = nodes
 	return true
 end
 
@@ -212,7 +249,9 @@ local function normalizeItem(item, index, depth, budget)
 	local label = Text.Clean(item.label or item.text, MAX_LABEL)
 	if label == nil or label == '' then return nil, 'invalid_item_label' end
 
-	if item.description ~= nil and Text.Clean(item.description, MAX_DESCRIPTION) == nil then
+	-- Cleaned once and kept: the row below used to clean it a second time.
+	local description = Text.Clean(item.description, MAX_DESCRIPTION)
+	if item.description ~= nil and description == nil then
 		return nil, 'invalid_item_description'
 	end
 	local fault = dataFault(item.data, 'invalid_item_data', 'item_data_too_large')
@@ -248,7 +287,7 @@ local function normalizeItem(item, index, depth, budget)
 		id = id,
 		label = label,
 		icon = icon,
-		description = Text.Clean(item.description, MAX_DESCRIPTION),
+		description = description,
 		data = item.data,
 		disabled = item.disabled == true,
 		close = item.close == true or nil,
@@ -939,6 +978,12 @@ local function Open(spec)
 
 	if record ~= nil then
 		closeNow(record.handle, record.owner == owner and 'reopened' or 'superseded')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then closeNow(record.handle, 'superseded') end
 	end
 
 	nextHandle = nextHandle + 1
@@ -1261,6 +1306,23 @@ local function pagePolls()
 	return record ~= nil and record.focus == 'full'
 end
 
+-- HANDS ONE POLLED KEY TO A RESUME OF ITS OWN.
+--
+-- The poll is a scheduler job, and the scheduler runs up to four due jobs in
+-- one resume of the client's ONLY loop -- whose overrun retires that loop for
+-- the session, silently, with the HUD, the prompts, the target eye and these
+-- very keys inside it. A key used to be handled inline here: Enter reached
+-- `activate`, then the owner's row callback, which routinely builds and opens
+-- its next screen -- tens of thousands of instructions for a long list, on a
+-- budget shared with three other jobs. Now the poll only notices the edge and
+-- the key is played on a one-shot thread, a frame later, where an overrun can
+-- cost that one press and nothing else. The handle rides along, so a key whose
+-- menu was replaced in the meantime is dropped by `onKey` like any stale one.
+local function playKey(payload)
+	if type(CreateThread) ~= 'function' then return onKey(payload) end
+	CreateThread(function() onKey(payload) end)
+end
+
 --- One pass over the six keys: edge, then repeat.
 local function pollKeys()
 	if record == nil or pagePolls() then return end
@@ -1287,15 +1349,13 @@ local function pollKeys()
 				heldUntil[name] = (key == 'enter' or key == 'back') and math.huge
 					or atMs + REPEAT_FIRST_MS
 			elseif due == nil then
-				-- The rising edge. Fires at once and arms the long first repeat.
+				-- The rising edge. Fires and arms the long first repeat. One key per
+				-- pass: the next one is read against the frame this one leaves.
 				heldUntil[name] = atMs + REPEAT_FIRST_MS
-				onKey({ handle = record.handle, key = key })
-				-- A press may have closed the menu under us.
-				if record == nil then return end
+				return playKey({ handle = record.handle, key = key })
 			elseif atMs >= due then
 				heldUntil[name] = atMs + REPEAT_NEXT_MS
-				onKey({ handle = record.handle, key = key, ['repeat'] = true })
-				if record == nil then return end
+				return playKey({ handle = record.handle, key = key, ['repeat'] = true })
 			end
 		end
 	end

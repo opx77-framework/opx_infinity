@@ -752,7 +752,15 @@ local function Open(spec)
 	local built, reason = build(owner, spec)
 	if built == nil then return Result.Err(reason) end
 
-	if record ~= nil then finish('cancel', 'reopened') end
+	if record ~= nil then
+		finish('cancel', 'reopened')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then finish('cancel', 'superseded') end
+	end
 
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle

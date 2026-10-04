@@ -29004,7 +29004,7 @@ do
 		local count, more = listed('player_')
 		check('a 150-player roster draws one page of it', admin.Menu.Screen() == 'players'
 			and count == 20 and more ~= nil, ('%d rows'):format(count))
-		check('and no resume of that redraw is dear', worst < 15000, ('%d instructions'):format(worst))
+		check('and no resume of that redraw is dear', worst < 12000, ('%d instructions'):format(worst))
 
 		-- The next page is the same screen, one deeper, and Back is a page back.
 		-- An update carries no callback; the open before it does.
@@ -29034,7 +29034,7 @@ do
 		count = listed('slot_')
 		check('a 120-slot bag draws one page of it', admin.Menu.Screen() == 'bag' and count == 20,
 			('%d rows'):format(count))
-		check('and no resume of that redraw is dear either', worst < 15000, ('%d instructions'):format(worst))
+		check('and no resume of that redraw is dear either', worst < 12000, ('%d instructions'):format(worst))
 
 		-- A category whose name has a space no longer refuses the whole screen.
 		control.netEvents[admin.Event.ITEMS]({ rows = {
@@ -29064,6 +29064,91 @@ do
 		admin.Menu.Close()
 		control.Pump(20)
 		check('a redraw overtaken by a close does not reopen the menu', not admin.Menu.IsOpen())
+	end
+end
+
+
+-- ── a polled menu key is played outside the scheduler's resume ──────────────
+-- The key poll is a scheduler job, and the scheduler runs up to four jobs in one
+-- resume of the client's only loop -- an overrun there retires the loop for the
+-- session. Enter used to run the owner's row callback inline, and an owner's
+-- callback routinely builds its next screen. The poll now only notices the edge;
+-- the callback must run with no scheduler frame under it.
+section('a polled menu key is played outside the scheduler resume')
+do
+	local env, control, why = boot('client')
+	check('client boots for the polled key', why == nil, why)
+	if why == nil then
+		local menu = env.OPX.Api.Get('menu')
+		local heard, underScheduler = {}, nil
+		local opened = menu.Open({
+			owner = 'probe', id = 'probe.keys', title = 'Probe',
+			items = { { id = 'first', label = 'First' }, { id = 'second', label = 'Second' } },
+			on = function(payload)
+				heard[#heard + 1] = payload.action
+				if payload.action ~= 'select' then return end
+				underScheduler = false
+				for level = 2, 40 do
+					local info = debug.getinfo(level, 'S')
+					if info == nil then break end
+					if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+						underScheduler = true
+					end
+				end
+			end,
+		})
+		check('a menu the page does not hold the keyboard for opens', opened.ok, opened.error)
+		-- Past the reopen grace, which is counted in POLLS, and the scheduler
+		-- rotates through every job four at a time.
+		control.Pump(200)
+		control.input.down.ENTER = true
+		settle(control, function() return underScheduler ~= nil end, 200)
+		control.input.down.ENTER = nil
+		control.Pump(2)
+		check('Enter selects the row', underScheduler ~= nil, table.concat(heard, ','))
+		check('and the owner hears it with no scheduler frame under it', underScheduler == false)
+		local state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- The row data count is walked without a call per scalar now; the limits
+		-- are the ones it always had. 64 nodes: the table, then a key and a value
+		-- for each entry.
+		local function withData(data)
+			return menu.Open({ owner = 'probe', id = 'probe.data', title = 'Probe',
+				items = { { id = 'only', label = 'Only', data = data } }, on = function() end })
+		end
+		local fits, over = {}, {}
+		for index = 1, 31 do fits['k' .. index] = index end
+		for index = 1, 32 do over['k' .. index] = index end
+		check('row data of 63 nodes is taken', withData(fits).ok)
+		check('and of 65 is refused as too large', withData(over).error == 'item_data_too_large',
+			withData(over).error)
+		check('and nested past four levels is refused too',
+			withData({ a = { b = { c = { d = { e = 1 } } } } }).error == 'item_data_too_large')
+		check('while four levels are taken', withData({ a = { b = { c = { d = 1 } } } }).ok)
+		state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- A close callback that opens another menu does not leave it orphaned
+		-- under the open that caused the close.
+		local nestedClosed = nil
+		local function spec(id, on)
+			return { owner = 'probe', id = id, title = id, items = { { id = 'x', label = 'X' } }, on = on }
+		end
+		menu.Open(spec('probe.first', function(payload)
+			if payload.action == 'close' and payload.reason == 'reopened' then
+				menu.Open(spec('probe.nested', function(inner)
+					if inner.action == 'close' then nestedClosed = inner.reason end
+				end))
+			end
+		end))
+		menu.Open(spec('probe.third', function() end))
+		state = menu.State()
+		check('the open that replaced a menu is the one standing',
+			state.ok and state.value.menu == 'probe.third', state.value and state.value.menu)
+		check('and the menu its close callback opened was closed, not orphaned',
+			nestedClosed == 'superseded', tostring(nestedClosed))
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
 	end
 end
 

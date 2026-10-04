@@ -705,6 +705,12 @@ local function Open(spec)
 
 	if record ~= nil then
 		closeNow(record.handle, record.owner == owner and 'reopened' or 'superseded')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then closeNow(record.handle, 'superseded') end
 	end
 
 	nextHandle = nextHandle + 1
