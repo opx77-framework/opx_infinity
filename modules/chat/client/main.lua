@@ -395,6 +395,14 @@ local function submit(text)
 	-- keyboard held, and a command that answers nothing gives the view no other
 	-- reason to redraw.
 	closeChat(true)
+	-- BOUNDED HERE, NOT ONLY ON THE PAGE. `MAX_LENGTH` is handed to the input
+	-- box and the server cuts what it relays, but a command is tokenised on
+	-- this side a character at a time, inside the page callback's one resume:
+	-- a line the page did not bound -- a paste into an older view, a forged
+	-- emit -- was an unbounded walk on the per-resume budget, and the command
+	-- would vanish with no answer. Cut at a character, never mid-sequence.
+	local limit = tonumber(M.Settings.MAX_LENGTH) or 240
+	if #text > limit then text = text:sub(1, OPX.Text.Span(text, limit)) end
 	if #text == 0 then return end
 
 	if text:sub(1, 1) ~= '/' then

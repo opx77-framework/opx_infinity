@@ -1152,8 +1152,19 @@ function M.Start()
 
 	-- Escape is swallowed by the plugin before any surface sees it; when it
 	-- arrives here rather than on `panel:dismiss`, the reason is the pause menu.
+	--
+	-- AND IT ASKS WHERE ESCAPE WOULD HAVE ASKED. This closed every panel outright,
+	-- including one whose owner declared `dismiss = 'ask'` -- the editor with
+	-- unsaved changes -- so the same key that is consulted on the page was not
+	-- consulted here, and the menu already honours its own `closable` on this
+	-- path. A dialog up owns Escape, as it does on `panel:dismiss`.
 	AddEventHandler(M.Host.PAUSE_KEY, function()
-		if record ~= nil then closeNow(record.handle, 'pause') end
+		if record == nil or record.dialog ~= nil then return end
+		if record.view.dismiss == 'ask' then
+			raise(record, 'dismiss')
+			return
+		end
+		closeNow(record.handle, 'pause')
 	end)
 
 	OPX.Scheduler.Every('panel:sweep', SWEEP_MS, function()

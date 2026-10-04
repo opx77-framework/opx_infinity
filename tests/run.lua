@@ -29153,6 +29153,134 @@ do
 end
 
 
+-- ── interaction surfaces: what the audit found besides the budget ───────────
+-- One case per defect: a prompt addressed to "player -1" went up on every
+-- client; a progress bar counted a refused input block as held; the pause key
+-- closed a panel that asked to be consulted; a chat command and a form
+-- keystroke were measured a byte at a time in Lua inside a page callback.
+section('interaction surfaces: the smaller defects')
+do
+	local env, control, why = boot('server')
+	check('server boots for the prompt address', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local spec = { title = 'T', rows = { { id = 'a', label = 'A' } } }
+		local before = #control.clientEvents
+		local everyone = prompts.Show(-1, 'test', 'x', spec)
+		check('a prompt for player -1 is refused, not broadcast',
+			not everyone.ok and everyone.error == 'prompts.invalidPlayer'
+				and #control.clientEvents == before, tostring(everyone.error))
+		check('and so is one for a slot nobody holds', not prompts.Show(7, 'test', 'x', spec).ok)
+		check('and one for a fraction', not prompts.HideAll(3.5, 'test').ok)
+		control.Admit(3, 'user-3')
+		local one = prompts.Show(3, 'test', 'x', spec)
+		local sent = control.clientEvents[#control.clientEvents]
+		check('while one for a connected player reaches that player alone',
+			one.ok and sent ~= nil and sent.source == 3, tostring(one.error))
+
+		-- The animation offer is built lazily because the API can arrive late; a
+		-- build asked for before it did must not latch an empty offer.
+		local Service = env.OPX.Modules.Get('animations').Service
+		local early = #Service.Wire()
+		env.Open77.animations = { play = function() return true end, stop = function() return true end }
+		local late = #Service.Wire()
+		check('an offer asked for before the animation API exists is built once it does',
+			early == 0 and late > 0, ('%d then %d'):format(early, late))
+		env.Open77.animations = nil
+	end
+end
+do
+	local refusedBlocks = 0
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.input = env.Open77.input or {}
+		env.Open77.input.setActionBlocked = function()
+			refusedBlocks = refusedBlocks + 1
+			return false, 'action_not_blockable'
+		end
+	end)
+	check('client boots for the smaller defects', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+
+		-- A progress bar whose input block was refused says so, once.
+		local progress = OPX.Api.Get('progress')
+		local warned = #control.log.warn
+		local started = progress.Start('test', { label = 'Working', durationMs = 2000 })
+		check('a bar starts even though its input block is refused', started.ok, started.error)
+		local said = 0
+		for index = warned + 1, #control.log.warn do
+			if control.log.warn[index]:find('could not be blocked', 1, true) then said = said + 1 end
+		end
+		check('and the refusal is reported, not recorded as held',
+			refusedBlocks > 0 and said > 0, ('%d asked, %d said'):format(refusedBlocks, said))
+		if started.ok then progress.Stop('test') end
+
+		-- The pause key consults a panel that asked to be consulted.
+		local heard = {}
+		local panel = OPX.Api.Get('panel')
+		local opened = panel.Open({
+			owner = 'test', id = 'test.ask', title = 'ASK', dismiss = 'ask',
+			actions = { { id = 'a', label = 'A' } },
+			on = function(payload) heard[#heard + 1] = payload.action end,
+		})
+		check('a panel that asks before it is dismissed opens', opened.ok, opened.error)
+		control.Fire('open77:pauseKey')
+		local state = panel.State()
+		check('the pause key asks it rather than closing it',
+			state.ok and state.value.open == true and heard[#heard] == 'dismiss',
+			table.concat(heard, ','))
+		if state.ok and state.value.open then panel.Close(state.value.handle) end
+
+		-- A command line the page did not bound is cut before it is tokenised.
+		local chatPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:chat:submit'] then chatPage = candidate end
+		end
+		check('the chat input is wired', chatPage ~= nil)
+		if chatPage ~= nil then
+			env.TriggerServerEvent = function() return true end
+			local long = '/me ' .. ('a'):rep(20000)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(chatPage, 'opx:chat:submit', { text = long })
+			debug.sethook()
+			check('a 20,000-character command costs a bounded walk', spent < 20000,
+				('%d instructions'):format(spent))
+		end
+
+		-- A long accented buffer is measured natively, not a byte at a time.
+		local forms = OPX.Api.Get('form')
+		local submitted
+		local form = forms.Open({
+			owner = 'test', id = 'test.long', title = 'LONG',
+			fields = { { id = 'body', label = 'Body', maxLength = 512 } },
+			on = function(payload) if payload.action == 'submit' then submitted = payload.values end end,
+		})
+		check('a form with a long field opens', form.ok, form.error)
+		local formPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then formPage = candidate end
+		end
+		if form.ok and formPage ~= nil then
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 1, text = ('é'):rep(500) })
+			debug.sethook()
+			check('a 500-character accented keystroke is cheap to measure', spent < 4000,
+				('%d instructions'):format(spent))
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 2, text = ('é'):rep(513) })
+			control.PageEmit(formPage, 'opx:form:key', { handle = form.value.handle, key = 'enter' })
+			local body = submitted and submitted.body
+			check('and one past the limit is still refused: the buffer kept is the last good one',
+				type(body) == 'string' and utf8.len(body) == 500, body and utf8.len(body))
+			if not submitted then forms.Close(form.value.handle) end
+		end
+	end
+end
+
+
 -- ── doorlock ─────────────────────────────────────────────────────────────────
 -- The door locks. The server is booted against a bridge that keeps what it was
 -- given, with three config doors patched in after `config/doorlock.lua` loads,

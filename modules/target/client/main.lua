@@ -419,13 +419,23 @@ end
 
 -- One slice of a pick: at most BATCH rows, then the body ends. Runs on its own
 -- one-shot thread because `ask` may yield.
+--
+-- A SLICE ONLY EVER SPEAKS FOR ITS OWN PICK. `ask` yields on a round trip, and
+-- in that gap the player can release, press again and start a new pick. The
+-- old slice then woke up and cleared `pending` -- the NEW pick's -- which left
+-- that one on its spinner with `busy` set, refusing every pick and hover until
+-- the eye was closed. Every check after a yield is now against `job` itself.
 local function slice()
 	local job = pending
 	if job == nil then return end
+	local function drop()
+		if pending == job then setPending(nil) end
+	end
 	local last = math.min(job.at + BATCH - 1, #job.queue)
 	while job.at <= last do
+		if pending ~= job then return end
 		if not stillHeld(job.request) then
-			setPending(nil)
+			drop()
 			return
 		end
 		if OPX.Now() >= job.budget then
@@ -443,8 +453,9 @@ local function slice()
 			-- without one.
 			if answer == true or answer == false then mark = answer end
 		end
+		if pending ~= job then return end
 		if not stillHeld(job.request) then
-			setPending(nil)
+			drop()
 			return
 		end
 		if allowed and Registry.Get(row.token) == row and Registry.Matches(row, job.context) then
@@ -459,15 +470,28 @@ local function slice()
 			end
 		end
 	end
+	if pending ~= job then return end
 	if job.at > #job.queue then return finish() end
 	job.inFlight = false
 end
+
+-- How long past its lookup budget a slice may stay in flight before it is
+-- presumed dead. A slice the instruction budget unwound never clears
+-- `inFlight`, and the pick would sit on its spinner until the eye closed.
+local SLICE_STALE_MS = 1000
 
 -- Starts the next slice, if the last one has finished. The scheduler job, and the
 -- only thing that paces the resolution.
 function resolve()
 	local job = pending
-	if job == nil or job.inFlight then return end
+	if job == nil then return end
+	if job.inFlight then
+		if OPX.Now() < job.budget + SLICE_STALE_MS then return end
+		-- Draw what was resolved; a slice still alive after this finds its pick
+		-- gone and stops.
+		job.at = #job.queue + 1
+		return finish()
+	end
 	if not stillHeld(job.request) then
 		setPending(nil)
 		return

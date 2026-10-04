@@ -21,6 +21,12 @@ local function nowMs()
 	return lastMs
 end
 
+-- Longest author a line may carry; a player's own name is bounded the same way
+-- by the character module. Declared up here because a player's line uses it
+-- too: it was declared below that, so a player's name was cut at the message
+-- length (240) instead.
+local MAX_AUTHOR = 64
+
 --- Cleans display text to MAX_LENGTH characters, never nil.
 local function clean(value)
 	return OPX.Text.Clean(value, M.Settings.MAX_LENGTH, '...') or ''
@@ -91,7 +97,7 @@ local function onSaid(text)
 	local unknown = identity and identity.userId and identity.userId:sub(1, 8) or tostring(player)
 	TriggerClientEvent(M.Event.MESSAGE, -1, {
 		kind = 'chat',
-		author = clean(name or locale('chat.author.unknown', { id = unknown })),
+		author = OPX.Text.Clean(name or locale('chat.author.unknown', { id = unknown }), MAX_AUTHOR, '...') or '',
 		text = said,
 	})
 end
@@ -149,9 +155,6 @@ end
 -- would arrive as a class the stylesheet has no rule for and read like a player.
 local LINE_KINDS = { chat = true, system = true, info = true, warning = true, error = true }
 
--- Longest author a server line may carry; a player's own name is bounded the
--- same way by the character module.
-local MAX_AUTHOR = 64
 
 -- Largest radius a broadcast may name, in metres. A bigger one is "everybody",
 -- which is what leaving `radius` out already says.

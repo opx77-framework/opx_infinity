@@ -513,8 +513,19 @@ local function edit(entry, text)
 	if entry.kind ~= 'text' then return 'form.refuse.character' end
 	if type(text) ~= 'string' then return 'form.refuse.character' end
 	local clean = text:gsub('%c', '')
-	if Text.Span(clean, entry.maxLength) < #clean then
-		return 'form.refuse.tooLong', { max = entry.maxLength }
+	-- MEASURED NATIVELY WHERE IT CAN BE. This runs on every keystroke, inside
+	-- the page callback's resume, and `Text.Span` walks the buffer a byte at a
+	-- time in Lua -- up to four bytes a character of the limit, about 18,000
+	-- instructions at a 512-character field of accented text. A buffer no longer
+	-- in bytes than the limit is within it in characters, and `utf8.len` counts
+	-- the rest in C; only a buffer that is not valid UTF-8 falls back to the walk.
+	if #clean > entry.maxLength then
+		local count = utf8 and utf8.len(clean) or nil
+		if count ~= nil then
+			if count > entry.maxLength then return 'form.refuse.tooLong', { max = entry.maxLength } end
+		elseif Text.Span(clean, entry.maxLength) < #clean then
+			return 'form.refuse.tooLong', { max = entry.maxLength }
+		end
 	end
 	if not withinCharset(entry, clean) then return 'form.refuse.character' end
 	entry.text = clean
