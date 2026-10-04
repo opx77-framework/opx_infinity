@@ -12912,6 +12912,66 @@ do
 	end
 end
 
+-- ── Escape in a submenu goes back ───────────────────────────────────────────
+-- Escape closed the whole menu from any depth while Backspace went up one
+-- level, so the key every other screen uses to back out threw a player three
+-- levels into a shop all the way out. One rule now: Escape is Back, and closes
+-- at the top.
+section('menus: Escape inside a submenu goes back a level, and closes at the top')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local heard = {}
+		local opened = menu.Open({
+			owner = 'test', id = 'test.esc', title = 'MENU',
+			items = {
+				{ id = 'sub', label = 'Sub', items = { { id = 'inner', label = 'Inner' } } },
+				{ id = 'other', label = 'Other' },
+			},
+			on = function(payload) heard[#heard + 1] = payload.action end,
+		})
+		check('a nested menu opens', type(opened) == 'table' and opened.ok,
+			type(opened) == 'table' and tostring(opened.error))
+		control.Pump(5)
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local handle = opened.ok and opened.value.handle or 0
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:key', { handle = handle, key = 'enter' })
+			control.Pump(2)
+		end
+		local inside = menu.State()
+		check('enter on the submenu row descends into it',
+			inside.ok and inside.value.itemId == 'inner', inside.ok and tostring(inside.value.itemId))
+
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:dismiss', { handle = handle })
+			control.Pump(2)
+		end
+		local back = menu.State()
+		check('Escape in the submenu goes back to the level above, and the menu stays open',
+			back.ok and back.value.open == true and back.value.itemId == 'sub',
+			back.ok and ('%s/%s'):format(tostring(back.value.open), tostring(back.value.itemId)))
+		check('and the caller hears a back, not a close', heard[#heard] == 'back',
+			tostring(heard[#heard]))
+
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:dismiss', { handle = handle })
+			control.Pump(2)
+		end
+		local closed = menu.State()
+		check('Escape at the top closes the menu',
+			not (closed.ok and closed.value.open == true), closed.ok and tostring(closed.value.open))
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
