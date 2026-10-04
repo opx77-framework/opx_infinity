@@ -1753,6 +1753,19 @@ function M.Start()
 	-- world, the bootstrap and a character already loaded are all picked up here.
 	State.EnterWorld()
 	markWorldEligibility('start')
+	-- A RESTART LANDS ON A BODY THE PLATFORM RESET LONG AGO, and its
+	-- `playerReset:complete` was raised to the VM that stopped. Waiting for
+	-- another is waiting for ever: the restore's face went on and the entry never
+	-- settled, so nothing was announced, no clothes went back on and the look was
+	-- never published. A join starts here in the menu (`worldEligible` false) and
+	-- is untouched; a reset projected as still running is still waited for.
+	if State.worldEligible and Runtime.Attached() then
+		local reset = playerResetPhase()
+		if reset == 'complete' or (reset == nil and inGameplay()) then
+			State.playerResetDone = true
+			Open77.log.info('[appearance] started in a world whose body is already reset')
+		end
+	end
 	Runtime.BeginBootstrap('start')
 
 	local api = OPX.Api.Get('character')

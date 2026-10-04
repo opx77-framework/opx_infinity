@@ -2738,6 +2738,75 @@ do
 			settled.ok and settled.value.announced == false)
 	end
 
+	-- A RESTART MID-SESSION IS NOT A JOIN EITHER. The resource comes back on a
+	-- puppet the platform reset long ago, and no `playerReset:complete` will be
+	-- raised for it again -- so a restore that waited for one never settled:
+	-- nothing announced, no clothes put back, no look published.
+	--- A client VM started on a world already reset, with `reset` projected.
+	local function restartedClient(reset)
+		local own, ctl = Host.Environment('client')
+		local platform = { applied = {} }
+		own.Open77.appearance = {
+			captureBody = function() return { family = 'female' } end,
+			takeBodyFamilyTransition = function() return nil end,
+			finishCommit = function() return true end,
+			isOpen = function() return false end,
+			apply = function(snapshot)
+				platform.applied[#platform.applied + 1] = snapshot
+				return true
+			end,
+		}
+		own.Open77.session = {
+			characterBootstrap = function()
+				return { phase = 'ready', bodyFamily = 'female', playerReset = reset }
+			end,
+			resolveCharacterBootstrap = function() return false, 'spent' end,
+			failCharacterBootstrap = function() return true end,
+		}
+		own.Open77.character.state = function()
+			return { attached = true, alive = true, health = 250 }
+		end
+		own.Open77.players.getLifeState = function() return { phase = 'alive' } end
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Pump(240)
+		ctl.ReadyPages()
+		platform.announced = function()
+			local count = 0
+			for _, sent in ipairs(ctl.serverEvents) do
+				if sent.name == own.OPX.Host.GAMEPLAY_READY then count = count + 1 end
+			end
+			return count
+		end
+		return own, ctl, own.OPX.Modules.Get('appearance'), platform
+	end
+	for _, reset in ipairs({ 'complete', false }) do
+		local env, control, appearance, platform = restartedClient(reset or nil)
+		local said = reset and 'projected complete' or 'not projected'
+		-- The character module's answer to its own announce after the restart.
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-BACK', charInfo = { gender = 'female' },
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 7 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(10)
+		check(('after a restart (reset %s) the face goes back on'):format(said),
+			#platform.applied >= 1, ('%d apply call(s)'):format(#platform.applied))
+		local settled = appearance.Contract.IsSettled()
+		check(('AND THE ENTRY SETTLES AND ANNOUNCES WITHOUT A RESET (%s)'):format(said),
+			settled.ok and settled.value.settled == true and settled.value.announced == true,
+			tostring(settled.ok and settled.value.waiting))
+	end
+	-- But a restart that lands on a body whose reset is still under way waits
+	-- for it, exactly as a join does.
+	do
+		local _, _, appearance = restartedClient('clearing')
+		check('a restart on a reset still running does not count it as done',
+			appearance.Face.playerResetDone == false)
+	end
+
 	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
 	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
 	-- minute in the world on no face, with the clothing gate held behind it.
