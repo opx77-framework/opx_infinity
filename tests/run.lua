@@ -27240,6 +27240,40 @@ do
 		ask(A, module.Event.HANG_UP)
 		check('the call ending takes the channel with it', channels() == 0, channels())
 
+		-- ── ONE OF THREE DISCONNECTS ─────────────────────────────────────────
+		-- A disconnect is a hang-up nobody pressed, and in a call of three the
+		-- other two carry on. They were told "the call ended" anyway.
+		-- What a player was toasted after a mark, read off the host's own
+		-- notification log: `tell` goes through `OPX.Notify`, not a net event.
+		local function saidTo(playerId, mark, text)
+			for index = mark + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId and type(notice.message) == 'string'
+					and notice.message:find(text, 1, true) ~= nil then
+					return true
+				end
+			end
+			return false
+		end
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		ask(A, module.Event.INVITE, D)
+		ask(D, module.Event.ACCEPT, inviteOn(D))
+		check('three are on the call before one of them leaves',
+			onCallCount(A) == 3, onCallCount(A))
+		local leftMark = #control.notices
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, D, 'quit')
+		check('the two left are still talking', onCallCount(A) == 2, onCallCount(A))
+		local hungUp = OPX.Locale.Text('calls.left', { name = '' })
+		local endedText = OPX.Locale.Text('calls.ended')
+		check('and are told that one hung up, not that the call ended',
+			saidTo(A, leftMark, hungUp) and saidTo(B, leftMark, hungUp)
+				and not saidTo(A, leftMark, endedText),
+			hungUp)
+		ask(A, module.Event.HANG_UP)
+		incarnate(D, 'd')
+		control.Pump(5)
+
 		-- ── calling yourself ─────────────────────────────────────────────────
 		local mark = ask(A, module.Event.INVITE, A)
 		local refused = refusalFor(mark)
@@ -27949,6 +27983,17 @@ do
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('a fresh call lights both again',
 			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- ── a host read that fails is not a reason to hang up ────────────────
+		-- `judge` answers `unreadable` when the host could not be asked, and its
+		-- own comment calls that "a feature that is merely having a bad second".
+		-- The sweep treated it as unreachable and hung up every live call.
+		local realLife = env.Open77.players.getLifeState
+		env.Open77.players.getLifeState = function() error('host hiccup') end
+		control.Pump(40)
+		env.Open77.players.getLifeState = realLife
+		check('a life-state read that raises does not end a live call',
+			calls.IsOnCall(A).value.onCall == true and calls.IsOnCall(B).value.onCall == true)
 
 		-- The platform clears a lease on death by itself. Without the sweep
 		-- taking the body off the call, the call would carry on with a corpse
