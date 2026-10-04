@@ -7,6 +7,12 @@ import { acquireFocus } from '@/bridge/focus'
 import { num, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
+import { useLocale } from '@/composables/useLocale'
+
+// The eyebrow from the catalogue, so a French player does not read `FORM`; the
+// English word only before the catalogue has reached the page.
+const { t, has } = useLocale()
+const eyebrow = computed(() => (has('form.eyebrow') ? t('form.eyebrow') : 'FORM'))
 
 /**
  * THE FORM -- port of `opx77_input/web/{index.html,input.css,input.js}`.
@@ -434,7 +440,7 @@ function focusField(field: Field): void {
               <!-- The `//` device, drawn locally: `.op77-eyebrow` in tokens.css colours
                    its own `::before` with `--op77-accent`, which is yellow under
                    `.op-theme-city`. Otherwise identical, and that is the only reason. -->
-              <span class="eyebrow">FORM</span>
+              <span class="eyebrow">{{ eyebrow }}</span>
               <h1 class="op-truncate">{{ title }}</h1>
             </div>
           </div>

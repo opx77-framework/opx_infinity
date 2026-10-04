@@ -7154,11 +7154,15 @@ do
 		check('and the refusal says it was the exits, not the distance or the roster',
 			answer ~= nil and answer[2] == false and answer[3] == 'garages.noFreeExit',
 			answer and tostring(answer[3]))
-		local blocked = control.notices[#control.notices]
-		check('and the player is told in game, which is what the owner asked for',
-			#control.notices > noticesBeforeBays and blocked ~= nil
-				and blocked.playerId == bays and blocked.type == 'error',
-			blocked and ('%s: %s'):format(tostring(blocked.type), tostring(blocked.message)))
+		-- THE PLAYER IS TOLD IN GAME THROUGH THE ANSWER, which the client toasts,
+		-- and through nothing else: this used to raise the refusal, a platform
+		-- notice AND the answer -- three toasts for one refusal. The answer now
+		-- carries the garage's name, which is what the sentence names.
+		check('and the answer names the garage, so the client can say which one',
+			answer ~= nil and type(answer[6]) == 'string' and answer[6] ~= '',
+			answer and tostring(answer[6]))
+		check('and it is said once, not as a second notice beside it',
+			#control.notices == noticesBeforeBays, #control.notices - noticesBeforeBays)
 
 		-- ── a car standing on its own only exit ───────────────────────────
 		-- The one occupancy that must NOT count. A single-exit garage whose own
@@ -9373,7 +9377,7 @@ do
 		check('picking a model opens the delivery screen',
 			Runtime.Report().screen == 'deliver', tostring(Runtime.Report().screen))
 		check('and titled with the model, not the dealer',
-			deliver ~= nil and deliver.payload.title == 'Deliver the Archer Hella',
+			deliver ~= nil and deliver.payload.title == 'Buy the Archer Hella: choose a garage',
 			deliver and tostring(deliver.payload.title))
 
 		local destination, otherKind = nil, 0
@@ -10064,8 +10068,11 @@ do
 			verdict.ok == false and verdict.error == 'clothing.wardrobeRefused'
 				and verdict.reason == 'player_down',
 			('%s/%s'):format(tostring(verdict.error), tostring(verdict.reason)))
-		check('and the player is told the room\'s own reason, not a generic one',
-			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }):find('player_down', 1, true) ~= nil,
+		-- THE REASON TRAVELS, THE CODE IS NOT SHOWN. The verdict above still
+		-- carries `player_down` for the bus and the log; the player reads a
+		-- sentence, where this line used to print `player_down` at them.
+		check('and the player reads a sentence rather than the room\'s code',
+			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }):find('player_down', 1, true) == nil,
 			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }))
 		check('and the refusal is on the local bus too',
 			#decisions == 1 and decisions[1].ok == false)
@@ -12612,6 +12619,408 @@ do
 		table.concat(missing, '; '))
 end
 
+
+-- ── every key a menu names is written, in both languages ────────────────────
+-- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
+-- never passes through that spelling: the staff menu hands a row helper its
+-- key -- `command('heal', 'admin.menu.heal', ...)` -- the target rows carry
+-- `label = 'doorlock.target.lock'`, and a confirmation names its question as
+-- an argument. A typo in any of those reached the screen as the key itself.
+-- So this reads EVERY quoted dotted literal whose first two parts are the
+-- prefix of a family of real keys (`admin.menu`, `doorlock.target`, ...), and
+-- requires each to be written in English AND in French. The few literals that
+-- share such a prefix and are not text -- a scheduler job, an event name --
+-- are named below rather than excused by a looser rule.
+section('every key a menu names is written in both languages')
+do
+	local files = { 'locales/en.lua', 'locales/fr.lua' }
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'shared')) do
+		if file:match('locales%.lua$') then files[#files + 1] = file end
+	end
+	local keys = { en = {}, fr = {} }
+	for _, file in ipairs(files) do
+		local language
+		for line in io.lines(file) do
+			language = line:match("OPX%.Locale%.Register%('(%a%a)'") or language
+			local declared = line:match('^local (%u%u) = {')
+			if declared then language = declared:lower() end
+			local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
+			if key and keys[language] then keys[language][key] = true end
+		end
+	end
+
+	local families = {}
+	for key in pairs(keys.en) do
+		local family = key:match('^([%w_]+%.[%w_]+)%.')
+		if family then families[family] = (families[family] or 0) + 1 end
+	end
+
+	-- Literals that look like keys and are the names of something else.
+	local NOT_TEXT = {
+		['admin.menu.upkeep'] = true,        -- a scheduler job
+		['admin.target.access'] = true,      -- an event name
+		['admin.inventory.view'] = true,     -- audit event names
+		['admin.inventory.give'] = true,
+		['admin.inventory.remove'] = true,
+		['admin.inventory.clear'] = true,
+	}
+
+	local missing, seen = {}, 0
+	for _, side in ipairs({ 'client', 'server' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local number = 0
+			for line in io.lines(file) do
+				number = number + 1
+				if not line:match('^%s*%-%-') then
+					for literal in line:gmatch("'([%w_]+%.[%w_]+%.[%w_%.]*[%w_])'") do
+						local family = literal:match('^([%w_]+%.[%w_]+)%.')
+						if (families[family] or 0) >= 3 and not NOT_TEXT[literal] then
+							seen = seen + 1
+							for _, language in ipairs({ 'en', 'fr' }) do
+								if not keys[language][literal] then
+									missing[#missing + 1] = ('%s missing %s (%s:%d)')
+										:format(language, literal, file, number)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(missing)
+	check('the sweep found the keys the menus name', seen > 300, ('%d literal(s)'):format(seen))
+	check('and every one is written in English and in French', #missing == 0,
+		table.concat(missing, '; '))
+end
+
+-- ── every staff screen draws words, in both languages ───────────────────────
+-- A ROW WITH NO LABEL IS A ROW THAT DOES SOMETHING NOBODY CAN READ, and a row
+-- whose label is its own key (`admin.menu.heal`) is the same thing with extra
+-- steps. Both are caught only by drawing the screen: a label is often built --
+-- a flag's words, a preset's, a page counter -- rather than looked up. So every
+-- screen of the staff menu is opened, in English and then in French, and every
+-- row it hands the menu contract is read.
+section('every staff screen draws a label on every row')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the screen walk', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		control.netEvents[admin.Event.ROSTER]({ rows = {
+			{ id = 3, name = 'Vee One', state = 'up', bucket = 0, user = 'vee', citizenId = 'CIT-0003' },
+			{ id = 4, name = 'Vee Two', state = 'down', bucket = 2 },
+		}, offset = 0, total = 2, done = true })
+		control.netEvents[admin.Event.ITEMS]({ rows = {
+			{ name = 'weapon_pistol', label = 'Pistol', category = 'weapons', weapon = true },
+			{ name = 'ammo_pistol', label = 'Pistol rounds', category = 'ammo', ammo = true },
+			{ name = 'water', label = 'Water', category = 'food' },
+		}, offset = 0, total = 3, done = true })
+		control.Pump(10)
+
+		local SCREENS = {
+			{ 'root' }, { 'players' }, { 'player', 3 }, { 'playerMove', 3 }, { 'playerHealth', 3 },
+			{ 'playerCharacter', 3 }, { 'playerCharacters', 3 }, { 'playerItems', 3 },
+			{ 'playerInventory', 3 }, { 'offlineChars' }, { 'character', 'CIT-0003' },
+			{ 'self' }, { 'vehicles' }, { 'vehicleClasses', 'me' }, { 'pedFamilies', 'me' },
+			{ 'weaponList', { t = 'me' } }, { 'ammoList', 'me' }, { 'itemCategories', { t = 'me' } },
+			{ 'itemList', { t = 'me', c = 'food' } }, { 'bag', 3 }, { 'locations', 'me' },
+			{ 'saved' }, { 'world' }, { 'dev' }, { 'weather' }, { 'time' }, { 'server' },
+		}
+
+		--- Whether a string reads as a catalogue key rather than as words.
+		local function rawKey(text)
+			return type(text) == 'string' and text:match('^[%a_]+%.[%w_]+%.[%w_%.]+$') ~= nil
+		end
+
+		for _, language in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(language)
+			local blank, raw, unopened = {}, {}, {}
+			for _, wanted in ipairs(SCREENS) do
+				local before = #specs
+				admin.Menu.OpenAt(wanted[1], wanted[2])
+				control.Pump(10)
+				local spec = specs[#specs]
+				if #specs == before or admin.Menu.Screen() ~= wanted[1] or spec == nil then
+					unopened[#unopened + 1] = wanted[1]
+				else
+					if rawKey(spec.title) then raw[#raw + 1] = wanted[1] .. ' title ' .. spec.title end
+					for _, item in ipairs(spec.items or {}) do
+						if not item.separator then
+							if type(item.label) ~= 'string' or item.label == '' then
+								blank[#blank + 1] = ('%s/%s'):format(wanted[1], tostring(item.id))
+							elseif rawKey(item.label) or rawKey(item.value) then
+								raw[#raw + 1] = ('%s/%s %s'):format(wanted[1], tostring(item.id),
+									rawKey(item.label) and item.label or item.value)
+							end
+						elseif rawKey(item.label) then
+							raw[#raw + 1] = ('%s heading %s'):format(wanted[1], item.label)
+						end
+					end
+				end
+			end
+			check(('[%s] every staff screen opens'):format(language), #unopened == 0,
+				table.concat(unopened, ' '))
+			check(('[%s] and no row on any of them is without a label'):format(language),
+				#blank == 0, table.concat(blank, ' '))
+			check(('[%s] and no label, value or heading is a raw key'):format(language),
+				#raw == 0, table.concat(raw, '; '))
+		end
+		OPX.Locale.Set('en')
+
+		-- THE CONFIRMATION SAYS THE ACTION. Its second row used to read `Confirm`
+		-- under the question; it carries the words of the row that asked now.
+		admin.Menu.OpenAt('playerHealth', 3)
+		control.Pump(10)
+		admin.Menu.Confirm({ 'opx.admin.player.kill', '3' }, 'admin.confirm.kill', nil, nil, 'Kill')
+		control.Pump(10)
+		local spec = specs[#specs]
+		local confirm, cancel
+		for _, item in ipairs(spec and spec.items or {}) do
+			if item.id == 'confirm' then confirm = item end
+			if item.id == 'cancel' then cancel = item end
+		end
+		check('a confirmation opens on its own screen', admin.Menu.Screen() == 'confirm')
+		check('with Cancel first, so Enter pressed without looking does nothing',
+			spec ~= nil and cancel ~= nil and spec.items[1] == cancel)
+		check('and the confirm row says the action it confirms',
+			confirm ~= nil and confirm.label == 'Kill', confirm and confirm.label)
+
+		-- AND FORGETTING A SAVED SPOT GOES THROUGH IT. One press used to forget
+		-- the spot outright, from a list of identical trash rows.
+		control.netEvents[admin.Event.LOCATIONS]({ rows = {
+			{ name = 'roof', label = 'The roof', runtime = true },
+		}, offset = 0, total = 1, done = true })
+		admin.Menu.OpenAt('saved')
+		control.Pump(10)
+		local forget
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.id == 'forget_roof' then forget = item end
+		end
+		check('a saved spot is listed to forget', forget ~= nil)
+		check('and forgetting it asks first',
+			forget ~= nil and type(forget.data) == 'table' and type(forget.data.confirm) == 'table'
+				and forget.data.key == 'admin.confirm.forget' and forget.data.run == nil)
+		admin.Menu.Close()
+	end
+end
+
+-- ── the gunsmith rows resolve by position ───────────────────────────────────
+-- THE SHOPS BUG, A SECOND TIME. Both gunsmith rows read `payload.index` off a
+-- target context that has never carried one, so Workbench and the armoury stock
+-- did nothing when pressed: no screen, no toast, no log line.
+section('gunsmith: the eye rows resolve the armoury from where the eye landed')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the gunsmith module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local target = OPX.Modules.Get('target')
+		local rows = target ~= nil and target.Registry.List('gunsmith') or {}
+		local bench, chest
+		for _, listed in ipairs(rows) do
+			local row = target.Registry.Get(listed.token)
+			if row and row.id == 'gunsmith.bench' then bench = row end
+			if row and row.id == 'gunsmith.chest' then chest = row end
+		end
+		check('the gunsmith put a bench row and a chest row on the eye',
+			bench ~= nil and chest ~= nil, ('%d row(s)'):format(#rows))
+
+		local function chestsAsked()
+			local asked = {}
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == gunsmith.Event.CHEST then asked[#asked + 1] = sent[1] end
+			end
+			return asked
+		end
+
+		if chest ~= nil then
+			chest.onSelect({ position = { x = -1522.2, y = 889.6, z = 42.3 },
+				option = { id = 'gunsmith.chest', owner = 'gunsmith' } })
+		end
+		local asked = chestsAsked()
+		check('a press on the chest asks for that armoury\'s chest',
+			asked[#asked] == 'arasaka_armoury', tostring(asked[#asked]))
+
+		local before = #chestsAsked()
+		if chest ~= nil then
+			chest.onSelect({ position = { x = 0.0, y = 0.0, z = 0.0 } })
+			chest.onSelect({ screen = { x = 0.5, y = 0.5 } })
+			chest.onSelect(nil)
+		end
+		check('and a press nowhere near a chest, or with no position, asks for nothing',
+			#chestsAsked() == before)
+
+		-- The bench row opens the crafting screen for the bench it resolved.
+		local opened
+		local crafting = OPX.Api.Get('crafting')
+		if crafting ~= nil then
+			local realOpen = crafting.Open
+			crafting.Open = function(key) opened = key end
+			if bench ~= nil then
+				bench.onSelect({ position = { x = -1519.0, y = 889.2, z = 42.2 } })
+			end
+			crafting.Open = realOpen
+		end
+		check('a press on the bench opens that armoury\'s bench',
+			opened == gunsmith.BENCH_PREFIX .. 'arasaka_armoury', tostring(opened))
+	end
+end
+
+-- ── the lock rows say which way ─────────────────────────────────────────────
+-- `Lock / unlock` with a tick box made the player decode a check mark, while
+-- the key strip already said `Lock {door}`. Each module now registers a row per
+-- direction and shows the one that applies.
+section('the door and vehicle lock rows on the eye say which way they go')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the lock rows', why == nil, why)
+	if why == nil then
+		local target = env.OPX.Modules.Get('target')
+		local function rowsOf(owner)
+			local found = {}
+			for _, listed in ipairs(target ~= nil and target.Registry.List(owner) or {}) do
+				local row = target.Registry.Get(listed.token)
+				if row ~= nil then found[row.id] = row end
+			end
+			return found
+		end
+
+		local doors = rowsOf('doorlock')
+		check('a door has a Lock row and an Unlock row',
+			doors['doorlock.lock'] ~= nil and doors['doorlock.unlock'] ~= nil)
+		check('worded as the action, not as a toggle',
+			doors['doorlock.lock'] ~= nil and doors['doorlock.lock'].label == 'Lock door'
+				and doors['doorlock.unlock'].label == 'Unlock door')
+		check('and the two-way row is gone', doors['doorlock.toggle'] == nil)
+
+		local keys = rowsOf('vehiclekeys')
+		check('a vehicle has a Lock row and an Unlock row',
+			keys['vehiclekeys.lock'] ~= nil and keys['vehiclekeys.unlock'] ~= nil)
+		check('worded as the action',
+			keys['vehiclekeys.lock'] ~= nil and keys['vehiclekeys.lock'].label == 'Lock vehicle'
+				and keys['vehiclekeys.unlock'].label == 'Unlock vehicle')
+	end
+end
+
+-- ── Escape in a submenu goes back ───────────────────────────────────────────
+-- Escape closed the whole menu from any depth while Backspace went up one
+-- level, so the key every other screen uses to back out threw a player three
+-- levels into a shop all the way out. One rule now: Escape is Back, and closes
+-- at the top.
+section('menus: Escape inside a submenu goes back a level, and closes at the top')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local heard = {}
+		local opened = menu.Open({
+			owner = 'test', id = 'test.esc', title = 'MENU',
+			items = {
+				{ id = 'sub', label = 'Sub', items = { { id = 'inner', label = 'Inner' } } },
+				{ id = 'other', label = 'Other' },
+			},
+			on = function(payload) heard[#heard + 1] = payload.action end,
+		})
+		check('a nested menu opens', type(opened) == 'table' and opened.ok,
+			type(opened) == 'table' and tostring(opened.error))
+		control.Pump(5)
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local handle = opened.ok and opened.value.handle or 0
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:key', { handle = handle, key = 'enter' })
+			control.Pump(2)
+		end
+		local inside = menu.State()
+		check('enter on the submenu row descends into it',
+			inside.ok and inside.value.itemId == 'inner', inside.ok and tostring(inside.value.itemId))
+
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:dismiss', { handle = handle })
+			control.Pump(2)
+		end
+		local back = menu.State()
+		check('Escape in the submenu goes back to the level above, and the menu stays open',
+			back.ok and back.value.open == true and back.value.itemId == 'sub',
+			back.ok and ('%s/%s'):format(tostring(back.value.open), tostring(back.value.itemId)))
+		check('and the caller hears a back, not a close', heard[#heard] == 'back',
+			tostring(heard[#heard]))
+
+		if page ~= nil then
+			control.PageEmit(page, 'opx:menu:dismiss', { handle = handle })
+			control.Pump(2)
+		end
+		local closed = menu.State()
+		check('Escape at the top closes the menu',
+			not (closed.ok and closed.value.open == true), closed.ok and tostring(closed.value.open))
+	end
+end
+
+-- ── deleting your own character asks twice ──────────────────────────────────
+-- `/opx.delete <id>` deleted at once, taking clothes, items, vehicles and
+-- groups with it; one mistyped character in a citizen id was somebody else of
+-- yours. The bare command now says what it would do, and `confirm` does it.
+section('character: /opx.delete asks for confirm before it deletes anything')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+	}))
+	check('the server boots with the character module', why == nil, why)
+	if why == nil then
+		local character = env.OPX.Modules.Get('character')
+		local command = control.commands['opx.delete']
+		check('the delete command is registered', command ~= nil)
+		local asked = {}
+		local real = character.DeleteCharacter
+		character.DeleteCharacter = function(source, citizenId)
+			asked[#asked + 1] = citizenId
+			return { ok = true }
+		end
+		local src = 52
+		control.Admit(src, 'account-delete')
+		if command ~= nil then
+			command.run(src, { 'ABC123' })
+			control.Pump(4)
+		end
+		check('the bare command deletes nothing', #asked == 0, #asked)
+		-- Past the command's one-second cooldown.
+		control.Pump(15)
+		if command ~= nil then
+			command.run(src, { 'ABC123', 'confirm' })
+			control.Pump(4)
+		end
+		check('and the confirmed one deletes the character named',
+			#asked == 1 and asked[1] == 'ABC123', asked[1])
+		check('and the warning names the command that goes ahead',
+			env.OPX.Locale.Text('character.deleteConfirm', { citizenId = 'ABC123' })
+				:find('/opx.delete ABC123 confirm', 1, true) ~= nil)
+		character.DeleteCharacter = real
+	end
+end
 
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
@@ -25618,7 +26027,7 @@ do
 			control.Admit(SHOPPER, 'account-911-again')
 			env.Open77.players.position = function() return nil end
 			check('a player the host cannot place is refused, and told why',
-				(open('thrift_watson') or ''):find('cannot tell where', 1, true) ~= nil,
+				(open('thrift_watson') or ''):find('position could not be read', 1, true) ~= nil,
 				open('thrift_watson'))
 			check('and it is NOT treated as standing at the origin',
 				(open('thrift_watson') or ''):find('close enough', 1, true) == nil)

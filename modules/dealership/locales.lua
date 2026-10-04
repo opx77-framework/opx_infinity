@@ -17,7 +17,7 @@ local EN = {
 
 	['dealership.close'] = 'Close',
 	['dealership.back'] = 'Back',
-	['dealership.deliverHere'] = 'Deliver here',
+	['dealership.deliverHere'] = 'Buy, deliver here',
 
 	['dealership.bought'] = 'You bought {model}. Plate {plate}.',
 	['dealership.handOverBlocked'] =
@@ -30,9 +30,9 @@ local EN = {
 	['dealership.noSuchGarage'] = 'That is not a garage of yours you can deliver to.',
 	['dealership.nothingForSale'] = 'This dealership has nothing in stock.',
 	['dealership.noList'] = 'The list could not be opened. Use the buy command instead.',
-	['dealership.noCharacter'] = 'Your record could not be read.',
+	['dealership.noCharacter'] = 'Your character is not loaded yet. Try again in a moment.',
 	['dealership.noPosition'] = 'Your position could not be read.',
-	['dealership.wrongBucket'] = 'That marker is not the one in front of you.',
+	['dealership.wrongBucket'] = 'You are not at this marker. Step onto it and try again.',
 	['dealership.tooFar'] = 'You are too far from the dealer. Stand on the marker and try again.',
 	['dealership.cannotAfford'] = 'You cannot afford that.',
 	['dealership.noCurrency'] = 'Prices on this server are in a currency that does not exist here. ' ..
@@ -43,7 +43,7 @@ local EN = {
 
 	-- Selling face to face, and the two ends of it: the salesperson who offers
 	-- and the buyer who answers.
-	['dealership.target.sell'] = 'Sell a vehicle',
+	['dealership.target.sell'] = 'Sell them a vehicle',
 	['dealership.offerSent'] = 'Offer sent. They have to accept it themselves.',
 	['dealership.offerAccept'] = 'Buy it',
 	['dealership.offerDecline'] = 'No thanks',
@@ -63,7 +63,7 @@ local EN = {
 	['dealership.commission'] = 'You earned {amount} on the {model}.',
 
 	['dealership.menu.title'] = '{dealer}',
-	['dealership.menu.deliver'] = 'Deliver the {model}',
+	['dealership.menu.deliver'] = 'Buy the {model}: choose a garage',
 	['dealership.menu.pay'] = 'You pay {price}',
 	['dealership.menu.sell'] = 'Sell to {player}',
 	['dealership.menu.sellHint'] = 'They have to accept the offer themselves.',
@@ -83,12 +83,12 @@ local FR = {
 	['dealership.refused'] = "Cela n'a pas pu être fait.",
 
 	['dealership.key.use'] = 'Ouvrir la concession',
-	['dealership.prompt.garage'] = 'Voir les véhicules',
-	['dealership.prompt.avpad'] = 'Voir les AV',
+	['dealership.prompt.garage'] = 'Parcourir les véhicules',
+	['dealership.prompt.avpad'] = 'Parcourir les AV',
 
 	['dealership.close'] = 'Fermer',
 	['dealership.back'] = 'Retour',
-	['dealership.deliverHere'] = 'Livrer ici',
+	['dealership.deliverHere'] = 'Acheter, livrer ici',
 
 	['dealership.bought'] = 'Vous avez acheté : {model}. Plaque {plate}.',
 	['dealership.handOverBlocked'] =
@@ -101,9 +101,9 @@ local FR = {
 	['dealership.noSuchGarage'] = "Ce n'est pas un de vos garages où livrer.",
 	['dealership.nothingForSale'] = "Cette concession n'a rien en stock.",
 	['dealership.noList'] = "La liste n'a pas pu être ouverte. Utilisez la commande d'achat.",
-	['dealership.noCharacter'] = "Votre fiche n'a pas pu être lue.",
+	['dealership.noCharacter'] = "Votre personnage n'est pas encore chargé. Réessayez dans un instant.",
 	['dealership.noPosition'] = "Votre position n'a pas pu être lue.",
-	['dealership.wrongBucket'] = "Ce marqueur n'est pas celui devant vous.",
+	['dealership.wrongBucket'] = "Vous n'êtes pas sur ce marqueur. Placez-vous dessus et réessayez.",
 	['dealership.tooFar'] = 'Vous êtes trop loin du concessionnaire. Mettez-vous sur le marqueur.',
 	['dealership.cannotAfford'] = 'Vous ne pouvez pas vous le permettre.',
 	['dealership.noCurrency'] = "Les prix de ce serveur sont dans une monnaie qui n'existe pas ici. " ..
@@ -112,7 +112,7 @@ local FR = {
 	['dealership.registerFailed'] = "Ce véhicule n'a pas pu être enregistré, il ne vous a donc pas été vendu.",
 	['dealership.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
 
-	['dealership.target.sell'] = 'Vendre un véhicule',
+	['dealership.target.sell'] = 'Lui vendre un véhicule',
 	['dealership.offerSent'] = "Offre envoyée. La personne doit l'accepter elle-même.",
 	['dealership.offerAccept'] = 'Acheter',
 	['dealership.offerDecline'] = 'Non merci',
@@ -129,14 +129,14 @@ local FR = {
 	['dealership.buyerCannotAfford'] = 'Cette personne ne peut pas se le permettre.',
 	['dealership.buyerGone'] = "Cette personne n'est plus là.",
 	['dealership.sellerGone'] = "Le vendeur n'est plus là.",
-	['dealership.commission'] = 'Vous avez gagné {amount} sur la {model}.',
+	['dealership.commission'] = 'Vous avez gagné {amount} sur la vente : {model}.',
 
 	['dealership.menu.title'] = '{dealer}',
-	['dealership.menu.deliver'] = 'Livrer la {model}',
+	['dealership.menu.deliver'] = 'Acheter : {model} — choisissez un garage',
 	['dealership.menu.pay'] = 'Vous payez {price}',
 	['dealership.menu.sell'] = 'Vendre à {player}',
 	['dealership.menu.sellHint'] = "La personne doit accepter l'offre elle-même.",
-	['dealership.menu.offer'] = 'Acheter la {model} ?',
+	['dealership.menu.offer'] = 'Acheter : {model} ?',
 	['dealership.menu.offerHint'] = '{seller} vous la propose pour {price}',
 	['dealership.dest.none'] = 'Votre garage par défaut',
 

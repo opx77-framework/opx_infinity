@@ -38,30 +38,30 @@ OPX.Locale.Register('en', {
 })
 
 OPX.Locale.Register('fr', {
-	['hud.info.eyebrow'] = 'ETAT',
+	['hud.info.eyebrow'] = 'ÉTAT',
 
-	['hud.gauge.health'] = 'SANTE',
+	['hud.gauge.health'] = 'SANTÉ',
 	['hud.gauge.armor'] = 'ARMURE',
 	['hud.gauge.stamina'] = 'ENDURANCE',
 	['hud.gauge.hunger'] = 'FAIM',
 	['hud.gauge.thirst'] = 'SOIF',
 
-	['hud.info.job'] = 'METIER',
+	['hud.info.job'] = 'MÉTIER',
 	['hud.info.cred'] = 'CRED',
 
 	['hud.voice.state.idle'] = 'MICRO',
 	['hud.voice.state.detected'] = 'MICRO',
 	['hud.voice.state.talking'] = 'TX',
-	['hud.voice.state.muted'] = 'COUPE',
+	['hud.voice.state.muted'] = 'COUPÉ',
 	['hud.voice.state.offline'] = 'HORS LIGNE',
-	['hud.voice.mode.whisper'] = 'CHUCHOTE',
+	['hud.voice.mode.whisper'] = 'CHUCHOTÉ',
 	['hud.voice.mode.normal'] = 'NORMAL',
-	['hud.voice.mode.shout'] = 'CRIE',
-	['hud.voice.mode.proximity'] = 'PORTEE',
+	['hud.voice.mode.shout'] = 'CRIÉ',
+	['hud.voice.mode.proximity'] = 'PORTÉE',
 	['hud.voice.distance'] = '{metres} M',
 	['hud.voice.open'] = 'OUVERT',
 
 	['hud.vehicle.unit'] = 'KM/H',
-	['hud.vehicle.integrity'] = 'INTEGRITE',
+	['hud.vehicle.integrity'] = 'INTÉGRITÉ',
 	['hud.vehicle.airborne'] = 'EN VOL',
 })

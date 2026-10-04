@@ -20,7 +20,7 @@ OPX.Locale.Register('en', {
 
 	['chat.author.command'] = 'COMMAND',
 	['chat.author.network'] = 'NETWORK',
-	['chat.author.unknown'] = 'player {id}',
+	['chat.author.unknown'] = 'Player {id}',
 
 	['chat.placeholder'] = 'Say something, or type / for a command',
 
@@ -51,7 +51,7 @@ OPX.Locale.Register('fr', {
 
 	['chat.author.command'] = 'COMMANDE',
 	['chat.author.network'] = 'RÉSEAU',
-	['chat.author.unknown'] = 'joueur {id}',
+	['chat.author.unknown'] = 'Joueur {id}',
 
 	['chat.placeholder'] = 'Dites quelque chose, ou tapez / pour une commande',
 

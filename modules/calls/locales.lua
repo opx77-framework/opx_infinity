@@ -46,14 +46,13 @@ local EN = {
 	-- ── the rows on the eye ──────────────────────────────────────────────────
 	-- One row is left: handing your contact to the player you are pointing at.
 	['calls.row.share'] = 'Give my contact',
-	['calls.group'] = 'Holocall',
 
 	-- ── the hologram ─────────────────────────────────────────────────────────
 	-- The whole feature's vocabulary now: the eye rows above are gone and these
 	-- replaced them. See `config/calls.lua`'s KEY block for why.
-	['calls.key.holo'] = 'Holocall',
+	['calls.key.holo'] = 'Open holocall',
 	['calls.key.answer'] = 'Answer a holocall',
-	['calls.key.decline'] = 'Decline a holocall',
+	['calls.key.decline'] = 'Decline or hang up a holocall',
 	['calls.holo.incoming'] = 'Incoming call',
 	['calls.holo.inCall'] = 'Call in progress',
 	['calls.holo.eyebrow'] = 'NETWORK',
@@ -66,7 +65,7 @@ local EN = {
 	['calls.holo.dialing'] = 'Calling...',
 	['calls.holo.live'] = 'On a call with {names}.',
 	['calls.holo.answer'] = 'ANSWER',
-	['calls.holo.refuse'] = 'REFUSE',
+	['calls.holo.refuse'] = 'DECLINE',
 	-- The share is a question, so its answers are a question's answers and not
 	-- a call's. "le share contact devrais etre un input qui propose un yes or no".
 	['calls.holo.yes'] = 'YES',
@@ -80,7 +79,7 @@ local EN = {
 	['calls.holo.tab.contacts'] = 'CONTACTS',
 	['calls.holo.tab.nearby'] = 'AROUND ME',
 	['calls.holo.tab.recent'] = 'RECENT',
-	['calls.holo.noContacts'] = 'Nobody has given you their contact yet.',
+	['calls.holo.noContacts'] = 'No contacts yet. Ask someone nearby to give you theirs.',
 	['calls.holo.noNear'] = 'Nobody close enough to hand a contact to.',
 	['calls.holo.noneNear'] = 'Nobody close enough to hand a contact to.',
 	['calls.holo.noRecent'] = 'Nothing yet.',
@@ -89,14 +88,14 @@ local EN = {
 	-- same thing to both would be telling one of them a small lie.
 	['calls.holo.outcome.missed'] = 'Missed call',
 	['calls.holo.outcome.unanswered'] = 'No answer',
-	['calls.holo.outcome.declined'] = 'They refused',
-	['calls.holo.outcome.refused'] = 'You refused',
+	['calls.holo.outcome.declined'] = 'Declined',
+	['calls.holo.outcome.refused'] = 'You declined',
 
 	-- ── what happened ────────────────────────────────────────────────────────
 	['calls.placed'] = 'Calling {name}...',
 	['calls.ringing'] = '{name} is calling you.',
 	['calls.answered'] = '{name} answered.',
-	['calls.declined'] = '{name} refused the call.',
+	['calls.declined'] = '{name} declined the call.',
 	['calls.joined'] = '{name} joined the call.',
 	['calls.left'] = '{name} hung up.',
 	['calls.ended'] = 'The call ended.',
@@ -147,16 +146,15 @@ local FR = {
 
 	-- ── la ligne de l'oeil ───────────────────────────────────────────────────
 	['calls.row.share'] = 'Donner mon contact',
-	['calls.group'] = 'Holo-appel',
 
 
 	-- ── l'hologramme ─────────────────────────────────────────────────────────
-	['calls.key.holo'] = 'Holo-appel',
+	['calls.key.holo'] = 'Ouvrir le holo-appel',
 	['calls.key.answer'] = 'Répondre à un holo-appel',
-	['calls.key.decline'] = 'Refuser un holo-appel',
+	['calls.key.decline'] = 'Refuser ou raccrocher un holo-appel',
 	['calls.holo.incoming'] = 'Appel entrant',
 	['calls.holo.inCall'] = 'Appel en cours',
-	['calls.holo.eyebrow'] = 'RESEAU',
+	['calls.holo.eyebrow'] = 'RÉSEAU',
 	['calls.holo.title'] = 'HOLO-APPEL',
 	['calls.holo.close'] = 'FERMER',
 	['calls.holo.ringing'] = '{name} vous appelle.',
@@ -164,7 +162,7 @@ local FR = {
 	['calls.holo.calling'] = 'Appel vers {name}...',
 	['calls.holo.dialing'] = 'Appel sortant...',
 	['calls.holo.live'] = 'En appel avec {names}.',
-	['calls.holo.answer'] = 'REPONDRE',
+	['calls.holo.answer'] = 'RÉPONDRE',
 	['calls.holo.refuse'] = 'REFUSER',
 	['calls.holo.yes'] = 'OUI',
 	['calls.holo.no'] = 'NON',
@@ -175,15 +173,15 @@ local FR = {
 	['calls.holo.share'] = 'PARTAGER',
 	['calls.holo.tab.contacts'] = 'CONTACTS',
 	['calls.holo.tab.nearby'] = 'AUTOUR DE MOI',
-	['calls.holo.tab.recent'] = 'RECENTS',
-	['calls.holo.noContacts'] = 'Personne ne vous a encore donne son contact.',
+	['calls.holo.tab.recent'] = 'RÉCENTS',
+	['calls.holo.noContacts'] = "Aucun contact pour l'instant. Demandez à quelqu'un près de vous de vous donner le sien.",
 	['calls.holo.noNear'] = 'Personne d\'assez proche pour donner un contact.',
 	['calls.holo.noneNear'] = 'Personne d\'assez proche pour donner un contact.',
 	['calls.holo.noRecent'] = 'Rien pour le moment.',
-	['calls.holo.outcome.missed'] = 'Appel manque',
-	['calls.holo.outcome.unanswered'] = 'Pas de reponse',
-	['calls.holo.outcome.declined'] = 'Il a refuse',
-	['calls.holo.outcome.refused'] = 'Vous avez refuse',
+	['calls.holo.outcome.missed'] = 'Appel manqué',
+	['calls.holo.outcome.unanswered'] = 'Pas de réponse',
+	['calls.holo.outcome.declined'] = 'Refusé',
+	['calls.holo.outcome.refused'] = 'Vous avez refusé',
 
 	['calls.placed'] = 'Appel vers {name}...',
 	['calls.ringing'] = '{name} vous appelle.',

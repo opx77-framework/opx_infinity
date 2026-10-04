@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useLocale } from '@/composables/useLocale'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
 import { text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
+
+// The eyebrow from the catalogue, so a French player does not read `SPAWN`; the
+// English word only before the catalogue has reached the page.
+const { t, has } = useLocale()
+const eyebrow = computed(() => (has('spawn.eyebrow') ? t('spawn.eyebrow') : 'SPAWN'))
 
 /**
  * THE SPAWN MENU -- where a character starts.
@@ -240,7 +246,7 @@ onUnmounted(() => {
                cannot drop -- the same call `FormView` makes. -->
           <div class="head">
             <div class="head-text">
-              <span class="eyebrow op-eyebrow">SPAWN</span>
+              <span class="eyebrow op-eyebrow">{{ eyebrow }}</span>
               <h1 class="op-truncate">{{ title }}</h1>
             </div>
           </div>

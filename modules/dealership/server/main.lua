@@ -1226,10 +1226,9 @@ local function onRequested(dealerKey, entryKey, destKey)
 	CreateThread(function()
 		local bought = M.Buy(src, dealerKey, entryKey, destKey)
 		if not bought.ok then
-			-- The refusal AND a toast of the same code: without the toast the
-			-- player would not know why nothing happened.
+			-- The refusal is the toast. A second one through the platform's
+			-- notifications put the same sentence on screen twice.
 			OPX.Refuse(src, bought.error, M.Operation.BUY)
-			OPX.NotifyLocale(src, bought.error, nil, 'error')
 			TriggerClientEvent(M.Event.ANSWER, src, false, bought.error, entryKey)
 			Open77.log.info(('[dealership] player %d refused %s: %s'):format(src,
 				safe(entryKey), tostring(bought.error)))
@@ -1289,7 +1288,6 @@ local function onDecided(token, yes, destKey)
 
 		if not settled.ok then
 			OPX.Refuse(src, settled.error, M.Operation.DECIDE)
-			OPX.NotifyLocale(src, settled.error, nil, 'error')
 			TriggerClientEvent(M.Event.ANSWER, src, false, settled.error)
 			return
 		end

@@ -17,6 +17,10 @@ OPX.Locale.Register('en', {
 	['error.rpc_failed'] = 'That did not go through.',
 	['error.tooFast'] = 'Slow down.',
 	['error.noPermission'] = 'You may not do that.',
+	['notify.kind.info'] = 'NOTICE',
+	['notify.kind.success'] = 'CONFIRMED',
+	['notify.kind.warning'] = 'CAUTION',
+	['notify.kind.error'] = 'FAILED',
 })
 
 -- The creator surface: what an export answers another resource when it refuses.

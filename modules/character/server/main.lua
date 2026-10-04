@@ -674,6 +674,14 @@ DEFAULT_SPAWN = {
 			if source <= 0 or not args[1] then
 				return OPX.CommandNotice(source, raw, 'warning', locale('command.usage.delete'))
 			end
+			-- ASKED TWICE, BECAUSE IT CANNOT BE UNDONE. A delete takes the
+			-- character's clothes, items, vehicles and groups with it, and one
+			-- typed character in a citizen id is somebody else of yours. So the
+			-- bare command only says what it is about to do and how to go on.
+			if tostring(args[2] or ''):lower() ~= 'confirm' then
+				return OPX.CommandNotice(source, raw, 'warning',
+					locale('character.deleteConfirm', { citizenId = tostring(args[1]) }))
+			end
 			CreateThread(function()
 				local deleted = M.DeleteCharacter(source, args[1])
 				OPX.CommandNotice(source, raw, deleted.ok and 'success' or 'error',

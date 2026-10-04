@@ -162,8 +162,19 @@ let pointerBound = false
     prop identity re-renders the whole secondary grid each time. */
 const NONE: string[] = []
 
+/** A label Lua sent, or the fallback -- never the key. A container kind with no
+    word of its own (`character`, a searched bag) used to print as the raw kind in
+    the eyebrow. */
 function label(key: string, fallback = ''): string {
-  return config.value.labels[key] || fallback || key
+  return config.value.labels[key] || fallback
+}
+
+/** Escape closes the innermost thing open: the split dialog, then the slot card,
+    and only then the inventory. It closed everything from inside a dialog. */
+function onEscape(): void {
+  if (split.open) split.open = false
+  else if (menu.open) closeMenu()
+  else close()
 }
 
 function mine(payload: Payload): boolean {
@@ -644,7 +655,7 @@ useBridge('opx:inventory:open', (payload) => {
       secondary.value = payload.secondary === false ? null : readContainer(payload.secondary)
       tab.value = tabs.value.length > 0 ? tabs.value[0].key : ''
       open.value = true
-      release = acquireFocus({ id: 'inventory', onEscape: close })
+      release = acquireFocus({ id: 'inventory', onEscape })
       // The nearby list is asked for, not assumed: who is close enough to be
       // handed something is a fact about the world, and the world is Lua's.
       tell('nearby')
@@ -773,7 +784,7 @@ try {
         >
           <header class="head">
             <div class="head-text">
-              <span class="eyebrow">{{ label('bag', 'BAG') }}</span>
+              <span class="eyebrow">{{ label('bag') }}</span>
               <h1 class="op-truncate">{{ titleOf(primary, 'bag') }}</h1>
             </div>
             <!-- The key the player actually has, rebinds included: Lua reads it
@@ -864,7 +875,7 @@ try {
           <template v-if="secondary">
             <header class="head">
               <div class="head-text">
-                <span class="eyebrow">{{ label(secondary.kind, '') }}</span>
+                <span class="eyebrow">{{ label(secondary.kind === 'drop' ? 'ground' : secondary.kind) }}</span>
                 <h1 class="op-truncate">{{ titleOf(secondary, 'stash') }}</h1>
               </div>
             </header>
@@ -1061,7 +1072,7 @@ try {
         <p class="hint">1 &ndash; {{ split.max }}</p>
         <footer class="foot">
           <button type="button" class="row op-label grow" @click="split.open = false">
-            {{ label('close') }}
+            {{ label('cancel') }}
           </button>
           <button type="button" class="row op-label grow on" @click="doSplit">
             {{ label('split') }}
