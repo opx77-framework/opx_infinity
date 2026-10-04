@@ -173,11 +173,7 @@ end
 -- @param moneyType MoneyType|nil
 -- @return string
 function M.FormatMoney(amount, moneyType)
-	local grouped = OPX.Math.GroupDigits(math.floor(amount + 0.5))
-	if moneyType == nil or moneyType == 'EDDIES' then
-		return grouped .. ' \u{20AC}$'
-	end
-	return ('%s %s'):format(grouped, moneyType)
+	return OPX.Locale.Money(amount, moneyType)
 end
 
 --- Fills in whatever a stored entity is missing, in place.

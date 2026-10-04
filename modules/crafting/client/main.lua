@@ -73,7 +73,7 @@ end
 local function priceOf(row)
 	local clock = Recipes.Clock(row.seconds)
 	if row.price > 0 then
-		return ('%s  %s'):format(clock, OPX.Math.GroupDigits(row.price))
+		return ('%s  %s'):format(clock, OPX.Locale.Money(row.price, row.money))
 	end
 	return clock
 end

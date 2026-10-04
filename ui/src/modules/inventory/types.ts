@@ -74,6 +74,8 @@ export interface ScreenConfig {
 export interface NearbyPlayer {
   id: number
   distance: number
+  /** The character's name, so the give list is people rather than `#12`. */
+  name: string
 }
 
 export function readStack(value: unknown): Stack | null {
@@ -151,6 +153,6 @@ export function readTabs(value: unknown): TabSpec[] {
 
 export function readNearby(value: unknown): NearbyPlayer[] {
   return records(value)
-    .map((row) => ({ id: num(row.id, 0), distance: num(row.distance, 0) }))
+    .map((row) => ({ id: num(row.id, 0), distance: num(row.distance, 0), name: text(row.name) }))
     .filter((row) => row.id > 0)
 }

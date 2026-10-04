@@ -373,6 +373,8 @@ function M.List(source, key)
 			listed[#listed + 1] = {
 				plate = row.plate,
 				record = row.record,
+				-- The model as a player calls it, so the list is not bare plates.
+				name = OPX.Vehicle.DisplayName(row.record),
 				here = row.garage == built.key,
 			}
 		end

@@ -632,12 +632,34 @@ local function commit(row, at)
 	end
 end
 
+-- How long an armed confirm row waits for its second click.
+local CONFIRM_MS = 4000
+
+-- The confirm row armed by a first click: `{ token, handle, atMs }`, or nil.
+local armedConfirm = nil
+
 -- The page reports which row was clicked; everything about it is re-derived here.
 local function choose(payload)
 	if not opened or busy or payload.handle ~= handle then return end
 	if type(payload.token) ~= 'string' or not listed[payload.token] then return end
 	local row = Registry.Get(payload.token)
 	if row == nil or selection == nil then return close('option_unavailable') end
+	-- A ROW THAT DESTROYS SOMETHING ASKS TWICE. The first click relabels it
+	-- `Confirm: <label>` in place, inside whatever folder it sits in; only a
+	-- second click on the same row, on the same eye, within a few seconds runs
+	-- it. Removing a vehicle used to take one stray click.
+	if row.confirm == true then
+		local armed = armedConfirm
+		local again = armed ~= nil and armed.token == payload.token and armed.handle == handle
+			and OPX.Now() - armed.atMs <= CONFIRM_MS
+		if not again then
+			armedConfirm = { token = payload.token, handle = handle, atMs = OPX.Now() }
+			send('target:confirm', { handle = handle, token = payload.token,
+				label = locale('target.confirm', { label = row.label }) })
+			return
+		end
+	end
+	armedConfirm = nil
 	request = request + 1
 	local at = request
 	busy = true
@@ -691,10 +713,8 @@ local function open()
 		handle = handle,
 		hoverMs = HOVER_MS,
 		labels = {
-			hint = locale('target.hint'),
 			looking = locale('target.looking'),
 			unavailable = locale('target.unavailable'),
-			back = locale('target.back'),
 		},
 	})
 	if not drawn or refused then return close(refused and 'payload_refused' or 'no_surface') end

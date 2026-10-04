@@ -80,26 +80,10 @@ local function plateOf(value)
 	return value
 end
 
---- The words a key's label carries for a model: a catalogue label as it is, or a
---- TweakDB record turned into something a player can read.
--- `Vehicle.v_standard2_villefort_cortes_player` reads `Villefort Cortes`: the
--- namespace, the `v_` prefix, the class-and-size token (`standard2`, `sport1`
--- -- a word ENDING IN A DIGIT, so `militech_` in a record without one is kept)
--- and the `_player` suffix are the engine's filing, not the car's name.
+--- The words a key's label carries for a model. Shared with the garage list
+--- now, so a car is called the same thing on its key and in the garage.
 local function modelName(model)
-	if type(model) ~= 'string' or model == '' then return nil end
-	local name = model
-	if name:find('^Vehicle%.') then
-		name = name:gsub('^Vehicle%.', ''):gsub('^v_', ''):gsub('_player$', '')
-		name = name:gsub('^%a+%d+_', '', 1)
-		name = name:gsub('_', ' '):gsub('(%a)([%w]*)', function(first, rest)
-			return first:upper() .. rest
-		end)
-	end
-	name = name:gsub('%c', '')
-	if name == '' then return nil end
-	if #name > MODEL_MAX then name = name:sub(1, MODEL_MAX) end
-	return name
+	return OPX.Vehicle.DisplayName(model, MODEL_MAX)
 end
 
 --- A key's label: the model and the plate, or the plate alone.

@@ -90,10 +90,17 @@ end
 -- tempted to act on.
 local function places()
 	local rows = {}
+	-- WHERE I LEFT OFF FIRST, when the server says there is somewhere to go back
+	-- to: a card like the others, so the page draws it without knowing it is
+	-- special, and the server knows its id.
+	if offer ~= nil and offer.resume == true then
+		rows[1] = { id = M.RESUME_ID, label = locale('spawn.resume'),
+			district = locale('spawn.resumeHint') }
+	end
 	local catalogue = M.Catalogue()
 	for index = 1, #catalogue do
 		local point = catalogue[index]
-		rows[index] = { id = point.id, label = point.label, district = point.district }
+		rows[#rows + 1] = { id = point.id, label = point.label, district = point.district }
 	end
 	return rows
 end
@@ -186,6 +193,8 @@ local function onClosed(payload)
 
 	if reason == 'chosen' then
 		OPX.Toast.Locale('spawn.placed', { place = payload.place or '' }, 'success')
+	elseif reason == 'resumed' then
+		OPX.Toast.Locale('spawn.resumed', nil, 'success')
 	elseif reason == 'timeout' then
 		OPX.Toast.Locale('spawn.timeout', nil, 'info')
 	end
@@ -203,7 +212,7 @@ local function onOffered(payload)
 	-- granted and nothing here reads it any more: the page draws no clock, and the
 	-- window is the SERVER's to count -- see `sendOpen`. What this side needs to
 	-- know is only that a choice is outstanding, which is this table existing.
-	offer = {}
+	offer = { resume = payload.resume == true }
 	tryOpen()
 end
 

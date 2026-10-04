@@ -305,6 +305,33 @@ local function normalizeItem(item, index, depth, budget)
 		return { id = id, kind = 'separator', label = clean(item.label, MAX_LABEL) or '' }
 	end
 
+	-- `confirm` ON A ROW THAT DOES SOMETHING: the row becomes a two-row level
+	-- whose FIRST row keeps things as they are (so Enter pressed without looking
+	-- does nothing) and whose second does what the row said, under the same id
+	-- and data, so the caller hears exactly the select it always heard. Callers
+	-- used to build this by hand, or not at all. `confirm = true` takes the
+	-- words from the catalogue; a table may name `title`, `yes` and `no`.
+	if item.confirm ~= nil and item.confirm ~= false and item.items == nil then
+		local ask = type(item.confirm) == 'table' and item.confirm or {}
+		local named = clean(item.label or item.text, MAX_LABEL)
+		if named == nil or named == '' then return nil, 'invalid_item_label' end
+		local yes = {}
+		for field, value in pairs(item) do yes[field] = value end
+		yes.confirm = nil
+		yes.label = clean(ask.yes, MAX_LABEL) or locale('menu.confirm.yes', { label = named })
+		yes.icon = 'warning'
+		item = {
+			id = id, label = named, icon = item.icon, description = item.description,
+			disabled = item.disabled, value = item.value,
+			title = clean(ask.title, MAX_LABEL) or locale('menu.confirm.title', { label = named }),
+			items = {
+				{ id = tostring(id) .. '_keep', icon = 'back', back = true,
+					label = clean(ask.no, MAX_LABEL) or locale('menu.confirm.no') },
+				yes,
+			},
+		}
+	end
+
 	local label = clean(item.label or item.text, MAX_LABEL)
 	if label == nil or label == '' then return nil, 'invalid_item_label' end
 

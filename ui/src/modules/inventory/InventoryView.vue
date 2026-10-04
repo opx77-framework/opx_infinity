@@ -152,7 +152,19 @@ const drag = reactive({
 const menu = reactive({ container: 0, slot: 0, x: 0, y: 0, open: false })
 
 /** The split step: how many units of the chosen stack to take out. */
-const split = reactive({ container: 0, slot: 0, count: 1, max: 1, open: false })
+/* The count dialog. `mode` says what its confirm does: split a stack, give part
+   of it to `target`, or drop part of it. Give and drop moved the WHOLE stack in
+   one click -- "give one of twenty" meant splitting first -- so a stack of more
+   than one now asks how many, and that question is also the confirm step. */
+const split = reactive({
+  container: 0,
+  slot: 0,
+  count: 1,
+  max: 1,
+  open: false,
+  mode: 'split' as 'split' | 'give' | 'drop',
+  target: 0
+})
 
 let release: (() => void) | undefined
 let pointerBound = false
@@ -552,13 +564,31 @@ function doUse(): void {
   void ask('use', { slot })
 }
 
+/** Opens the count dialog to give or drop part of a stack, or acts at once on a
+    single item, where there is nothing to choose. */
+function askCount(mode: 'give' | 'drop', target: number): boolean {
+  const stack = menuStack.value
+  if (!stack || stack.count < 2) return false
+  split.container = menu.container
+  split.slot = menu.slot
+  split.max = stack.count
+  split.count = 1
+  split.mode = mode
+  split.target = target
+  split.open = true
+  closeMenu()
+  return true
+}
+
 function doDrop(): void {
+  if (askCount('drop', 0)) return
   const slot = menu.slot
   closeMenu()
   void ask('drop', { slot })
 }
 
 function doGive(playerId: number): void {
+  if (askCount('give', playerId)) return
   const slot = menu.slot
   closeMenu()
   void ask('give', { target: playerId, slot })
@@ -571,15 +601,27 @@ function openSplit(): void {
   split.slot = menu.slot
   split.max = stack.count - 1
   split.count = Math.max(1, Math.floor(stack.count / 2))
+  split.mode = 'split'
+  split.target = 0
   split.open = true
   closeMenu()
 }
 
 function doSplit(): void {
-  const { container, slot, count } = split
+  const { container, slot, count, mode, target } = split
   split.open = false
-  void ask('split', { container, slot, count })
+  if (mode === 'give') void ask('give', { target, slot, count })
+  else if (mode === 'drop') void ask('drop', { slot, count })
+  else void ask('split', { container, slot, count })
 }
+
+/** The count dialog's title and confirm, by what it is for. */
+const countTitle = computed(() =>
+  split.mode === 'give' ? label('giveHowMany') : split.mode === 'drop' ? label('dropHowMany') : label('split')
+)
+const countConfirm = computed(() =>
+  split.mode === 'give' ? label('give') : split.mode === 'drop' ? label('drop') : label('split')
+)
 
 function stepSplit(delta: number): void {
   split.count = Math.max(1, Math.min(split.max, split.count + delta))
@@ -1047,7 +1089,7 @@ try {
               :disabled="busy"
               @click="doGive(person.id)"
             >
-              <span class="row-label op-truncate">#{{ person.id }}</span>
+              <span class="row-label op-truncate">{{ person.name || `#${person.id}` }}</span>
               <span class="row-value op-value">{{ person.distance }}{{ label('m', 'm') }}</span>
             </button>
             <div v-if="!nearby.length" class="sep op-eyebrow">{{ label('nobody') }}</div>
@@ -1060,7 +1102,7 @@ try {
     <div v-if="split.open" class="menu-layer" @pointerdown.self="split.open = false">
       <div class="dialog">
         <header class="head">
-          <h2>{{ label('split') }}</h2>
+          <h2>{{ countTitle }}</h2>
         </header>
         <div class="stepper">
           <button type="button" class="row op-label" @click="stepSplit(-1)">&minus;</button>
@@ -1075,7 +1117,7 @@ try {
             {{ label('cancel') }}
           </button>
           <button type="button" class="row op-label grow on" @click="doSplit">
-            {{ label('split') }}
+            {{ countConfirm }}
           </button>
         </footer>
       </div>

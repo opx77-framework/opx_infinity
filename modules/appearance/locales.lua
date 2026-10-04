@@ -8,8 +8,6 @@
 -- published and logged.
 
 local EN = {
-	['appearance.title'] = 'APPEARANCE',
-
 	['appearance.saved'] = 'Appearance saved.',
 	['appearance.saveFailed'] = 'Your appearance was not saved. Try again.',
 	['appearance.saveTimedOut'] = 'Appearance was not saved: nothing answered.',
@@ -45,10 +43,8 @@ local EN = {
 
 	['appearance.panel.title'] = 'Appearance',
 	['appearance.panel.looks'] = 'Looks',
-	['appearance.panel.body'] = 'Body',
-	['appearance.panel.outfits'] = 'Outfits',
-	['appearance.panel.soon'] = 'soon',
 	['appearance.panel.bodyType'] = 'Body type',
+	['appearance.panel.openRoom'] = 'Open fitting room',
 	['appearance.panel.savedLook'] = 'Saved look',
 	['appearance.panel.worn'] = 'worn',
 	['appearance.panel.stored'] = 'stored',
@@ -61,13 +57,11 @@ local EN = {
 	['appearance.panel.editHair'] = 'Hair only',
 	['appearance.panel.editNote'] = "Opens the game's own customization mirror.",
 	['appearance.panel.bodyNote'] = 'Your body type belongs to the character. Changing it means creating another one.',
-	['appearance.panel.outfitsNote'] = 'Open the fitting room to change what you wear.',
 	['appearance.panel.wearing'] = 'Putting your saved look back on.',
 	['appearance.panel.wornNow'] = 'Your saved look is back on.',
 	['appearance.panel.alreadyWorn'] = 'You are already wearing it.',
 	['appearance.panel.busy'] = 'Not right now.',
 	['appearance.command.panel'] = 'Open the appearance panel',
-	['appearance.command.wardrobe'] = 'Open the fitting room',
 
 	['wardrobe.title'] = 'FITTING ROOM',
 	['wardrobe.unavailable'] = 'The fitting room cannot open right now.',
@@ -112,8 +106,6 @@ local EN = {
 }
 
 local FR = {
-	['appearance.title'] = 'APPARENCE',
-
 	['appearance.saved'] = 'Apparence enregistrée.',
 	['appearance.saveFailed'] = "Votre apparence n'a pas été enregistrée. Réessayez.",
 	['appearance.saveTimedOut'] = "L'apparence n'a pas été enregistrée : personne n'a répondu.",
@@ -149,10 +141,8 @@ local FR = {
 
 	['appearance.panel.title'] = 'Apparence',
 	['appearance.panel.looks'] = 'Looks',
-	['appearance.panel.body'] = 'Corps',
-	['appearance.panel.outfits'] = 'Tenues',
-	['appearance.panel.soon'] = 'bientôt',
 	['appearance.panel.bodyType'] = 'Type de corps',
+	['appearance.panel.openRoom'] = "Ouvrir la cabine d'essayage",
 	['appearance.panel.savedLook'] = 'Look enregistré',
 	['appearance.panel.worn'] = 'porté',
 	['appearance.panel.stored'] = 'enregistré',
@@ -165,13 +155,11 @@ local FR = {
 	['appearance.panel.editHair'] = 'Cheveux seulement',
 	['appearance.panel.editNote'] = "Ouvre le miroir de personnalisation du jeu.",
 	['appearance.panel.bodyNote'] = 'Votre type de corps appartient au personnage. En changer, c\'est en créer un autre.',
-	['appearance.panel.outfitsNote'] = 'Ouvrez la cabine pour changer de tenue.',
 	['appearance.panel.wearing'] = 'Remise de votre look enregistré.',
 	['appearance.panel.wornNow'] = 'Votre look enregistré est de nouveau porté.',
 	['appearance.panel.alreadyWorn'] = 'Vous le portez déjà.',
 	['appearance.panel.busy'] = 'Pas maintenant.',
 	['appearance.command.panel'] = "Ouvrir le panneau d'apparence",
-	['appearance.command.wardrobe'] = "Ouvrir la cabine d'essayage",
 
 	['wardrobe.title'] = "CABINE D'ESSAYAGE",
 	['wardrobe.unavailable'] = "La cabine d'essayage ne peut pas s'ouvrir pour le moment.",

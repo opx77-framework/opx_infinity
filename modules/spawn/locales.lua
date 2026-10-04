@@ -15,6 +15,9 @@ local EN = {
 	['spawn.hint'] = 'Click a location to spawn there.',
 	['spawn.placed'] = 'Spawned at {place}.',
 	['spawn.timeout'] = 'No choice was made: the server placed you.',
+	['spawn.resume'] = 'Where I left off',
+	['spawn.resumeHint'] = 'Your last position',
+	['spawn.resumed'] = 'Back where you left off.',
 
 	['spawn.noChoice'] = 'That spawn choice is no longer open.',
 }
@@ -26,6 +29,9 @@ local FR = {
 	['spawn.hint'] = 'Cliquez sur un lieu pour y apparaître.',
 	['spawn.placed'] = 'Apparition à {place}.',
 	['spawn.timeout'] = 'Aucun choix : le serveur vous a placé.',
+	['spawn.resume'] = "Là où j'étais",
+	['spawn.resumeHint'] = 'Votre dernière position',
+	['spawn.resumed'] = 'Retour là où vous étiez.',
 
 	['spawn.noChoice'] = "Ce choix d'apparition n'est plus ouvert.",
 }

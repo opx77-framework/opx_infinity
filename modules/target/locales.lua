@@ -15,10 +15,9 @@ local EN = {
 	['target.identify.copied'] = 'Server {server} / Character {citizen} — copied',
 	['target.identify.shown'] = 'Server {server} / Character {citizen}',
 	['target.key'] = 'Target (hold)',
-	['target.hint'] = 'Right-click a target',
 	['target.looking'] = 'Looking…',
-	['target.back'] = 'Back',
 	['target.unavailable'] = 'Action unavailable',
+	['target.confirm'] = 'Confirm: {label}',
 }
 
 local FR = {
@@ -27,10 +26,9 @@ local FR = {
 	['target.identify.copied'] = 'Serveur {server} / Personnage {citizen} — copié',
 	['target.identify.shown'] = 'Serveur {server} / Personnage {citizen}',
 	['target.key'] = 'Cibler (maintenir)',
-	['target.hint'] = 'Clic droit sur une cible',
 	['target.looking'] = 'Recherche…',
-	['target.back'] = 'Retour',
 	['target.unavailable'] = 'Action indisponible',
+	['target.confirm'] = 'Confirmer : {label}',
 }
 
 M.Catalogs = { en = EN, fr = FR }

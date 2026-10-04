@@ -124,17 +124,10 @@ interface Row {
  * other two. Lua's contract does not change because a page changed its mind.
  */
 interface Labels {
-  /** INSTRUCTION, and no longer drawn: it stood under the pointer telling the player
-      to click a target. The only thing on this surface that spoke to the player
-      instead of about the world. */
-  hint: string
   /** STATE: a pick is resolving. Drawn, beside the spinner. */
   looking: string
   /** STATE: Lua refused this pick. Drawn, above the rows that are still live. */
   unavailable: string
-  /** A CONTROL'S LABEL, and no longer drawn: with the parent column on screen there
-      is nothing to go back FROM, so the row it named does not exist. */
-  back: string
 }
 
 /** One drawn line: an action Lua sent, or a folder standing for the rows below it. */
@@ -229,7 +222,7 @@ const loading = ref(false)
 const failed = ref(false)
 const rows = ref<Row[]>([])
 const path = ref<string[]>([])
-const labels = ref<Labels>({ hint: '', looking: '', unavailable: '', back: '' })
+const labels = ref<Labels>({ looking: '', unavailable: '' })
 const pendingToken = ref('')
 
 /** 0..1 of the viewport: where the pointer is, and where the click that built this
@@ -392,9 +385,9 @@ const showList = computed(
   () => open.value && (loading.value || failed.value || (columns.value[0]?.entries.length ?? 0) > 0)
 )
 
-/* `showHint` is gone with the plate it gated. `labels.hint` is still parsed off the
-   payload and drawn by nobody: this surface carries no instructions. A player who
-   is holding the key already knows they are holding it. */
+/* `showHint` is gone with the plate it gated, and the hint and back labels with it:
+   this surface carries no instructions. A player who is holding the key already
+   knows they are holding it. */
 
 /* NO FOOT. It carried the trail and a row count as pass-02 "technical filler", and
    the owner does not want it. It is not missed by the cascade either: a crumb is what
@@ -897,10 +890,8 @@ useBridge('opx:target:open', (payload: Payload) => {
     hoverMs = clamp(num(payload.hoverMs, 90), 30, 1000)
     const given = table(payload.labels)
     labels.value = {
-      hint: text(given.hint),
       looking: text(given.looking),
-      unavailable: text(given.unavailable),
-      back: text(given.back)
+      unavailable: text(given.unavailable)
     }
     view.value = { w: window.innerWidth, h: window.innerHeight }
     eye.value = { x: 0.5, y: 0.5 }
@@ -971,6 +962,20 @@ useBridge('opx:target:busy', (payload: Payload) => {
   cancelIntent()
   busy.value = true
   pendingToken.value = text(payload.token)
+})
+
+// A confirm row's first click: the row is relabelled in place, wherever it sits in
+// the folders, and the next click on it is the one Lua runs.
+useBridge('opx:target:confirm', (payload: Payload) => {
+  guard('target:confirm', () => {
+    if (!mine(payload)) return
+    const token = text(payload.token)
+    const label = text(payload.label)
+    busy.value = false
+    pendingToken.value = ''
+    if (token === '' || label === '') return
+    rows.value = rows.value.map((row) => (row.token === token ? { ...row, label } : row))
+  }, undefined)
 })
 
 useBridge('opx:target:error', (payload: Payload) => {

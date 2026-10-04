@@ -409,12 +409,15 @@ local function buildRows()
 			grant = links.INVENTORY_OPEN,
 			select = links.INVENTORY_OPEN and onPlayer(links.INVENTORY_OPEN) or nil },
 		{ id = 'playerKick', folder = 'moderation', kind = 'player', label = 'admin.target.kick',
-			icon = 'door', danger = true, grant = Command.MODERATE_KICK, select = function(context)
+			-- `confirm = false`: these open the kick form, which confirms on its own.
+			icon = 'door', danger = true, confirm = false, grant = Command.MODERATE_KICK,
+			select = function(context)
 				local id = idOf(context, 'playerId')
 				return id ~= nil and M.Menu.OpenAt('player', tonumber(id), 'kick')
 			end },
 		{ id = 'playerBan', folder = 'moderation', kind = 'player', label = 'admin.target.ban',
-			icon = 'ban', danger = true, grant = Command.MODERATE_BAN, select = function(context)
+			icon = 'ban', danger = true, confirm = false, grant = Command.MODERATE_BAN,
+			select = function(context)
 				local id = idOf(context, 'playerId')
 				return id ~= nil and M.Menu.OpenAt('player', tonumber(id), 'ban')
 			end },
@@ -635,6 +638,9 @@ local function wanted()
 				group = group,
 				icon = row.icon,
 				danger = row.danger == true,
+				-- A danger row asks for a second click on the eye unless it says
+				-- otherwise (the vehicle remove does not; kick and ban open a form).
+				confirm = row.confirm,
 				distance = distance,
 				order = 100 + index,
 				-- Plain functions, called in-process. This is what makes three dozen

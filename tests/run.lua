@@ -6714,6 +6714,13 @@ do
 			roster and #roster.vehicles)
 		check('and says of each whether it is parked here or somewhere else',
 			roster ~= nil and roster.vehicles[1].here == false)
+		-- A list of bare plates is a list nobody finds their car in.
+		check('and names each by its model, as its key does',
+			roster ~= nil and type(roster.vehicles[1].name) == 'string'
+				and roster.vehicles[1].name ~= '' and roster.vehicles[1].name:find('Vehicle.', 1, true) == nil,
+			roster and tostring(roster.vehicles[1].name))
+		check('the readable name drops the engine\'s filing',
+			env.OPX.Vehicle.DisplayName('Vehicle.v_standard2_villefort_cortes_player') == 'Villefort Cortes')
 
 		-- THE OTHER LOCATION ANSWERS THE SAME LIST. Two menu points, sixty metres
 		-- apart, one garage: a list that differed between them would be two
@@ -13022,6 +13029,357 @@ do
 	end
 end
 
+-- ── the X key: a cancelable bar takes the press, not the call ───────────────
+-- The progress bar cancels on X and a call declines or hangs up on X, and the
+-- host fires BOTH mappings for one press, in either order: cancelling an eat or
+-- a repair during a call ended the call. A cancelable bar that is up owns the
+-- press; with no bar, X is the call's again.
+section('the X key: a cancelable progress bar takes the press, not the call')
+do
+	local env, control, why = boot('client')
+	check('the client boots with progress and calls', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		local progress = OPX.Api.Get('progress')
+		local cancel = control.keyMappings.byId['opx.progress.cancel']
+		local decline = control.keyMappings.byId['opx.calls.decline']
+		check('both keys are mapped, on the same key out of the box',
+			cancel ~= nil and decline ~= nil and cancel.key == decline.key,
+			cancel and decline and ('%s / %s'):format(tostring(cancel.key), tostring(decline.key)))
+
+		local hungUp = 0
+		local real = calls.DeclineOrHangUp
+		calls.DeclineOrHangUp = function() hungUp = hungUp + 1; return true end
+
+		local function bar()
+			return progress.Start('test', { label = 'Eating', durationMs = 5000, cancelable = true })
+		end
+
+		-- The bar's handler first.
+		check('a cancelable bar goes up', bar().ok)
+		if cancel and decline then cancel.pressed(); decline.pressed() end
+		check('the press cancels the bar', progress.State().value.open == false)
+		check('and does not hang up, with the bar handled first', hungUp == 0, hungUp)
+
+		-- The call's handler first.
+		control.Pump(10)
+		check('a second cancelable bar goes up', bar().ok)
+		if cancel and decline then decline.pressed(); cancel.pressed() end
+		check('the press cancels that bar too', progress.State().value.open == false)
+		check('and does not hang up, with the call handled first', hungUp == 0, hungUp)
+
+		-- No bar: X is the call's key again.
+		control.Pump(10)
+		if decline then decline.pressed() end
+		check('with no bar up, the key declines or hangs up as before', hungUp == 1, hungUp)
+
+		-- A bar that cannot be cancelled does not take the press.
+		progress.Start('test', { label = 'Locked', durationMs = 5000 })
+		if decline then decline.pressed() end
+		check('and a bar that cannot be cancelled does not take it', hungUp == 2, hungUp)
+		progress.Stop('test')
+		calls.DeclineOrHangUp = real
+	end
+end
+
+-- ── a refusal carries its sentence's params ─────────────────────────────────
+-- `OPX.Refuse` could not carry params, so a module whose sentence names a thing
+-- followed it with `OPX.NotifyLocale`, and the player read the sentence twice --
+-- once with `{garage}` still in it. The refusal carries them now, bounded to
+-- plain strings and numbers so it still carries no internals.
+section('OPX.Refuse carries params, and only plain ones')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		control.Admit(61, 'account-refuse')
+		local before = #control.clientEvents
+		OPX.Refuse(61, 'shops.tooMany', 'test', nil,
+			{ max = 5, name = 'Vee', nested = { 'x' }, ['bad key'] = 'y', long = string.rep('z', 400) })
+		local sent = control.clientEvents[#control.clientEvents]
+		local payload = sent and sent[1] or nil
+		check('the refusal went out', #control.clientEvents == before + 1)
+		check('carrying the plain params',
+			type(payload) == 'table' and type(payload.params) == 'table'
+				and payload.params.max == 5 and payload.params.name == 'Vee')
+		check('and dropping a table, a key that is not a name, and bounding a long string',
+			type(payload) == 'table' and type(payload.params) == 'table'
+				and payload.params.nested == nil and payload.params['bad key'] == nil
+				and #payload.params.long <= 64)
+		OPX.Refuse(61, 'error.tooFast', 'test')
+		sent = control.clientEvents[#control.clientEvents]
+		check('and a refusal with no params sends none',
+			sent ~= nil and type(sent[1]) == 'table' and sent[1].params == nil)
+	end
+end
+
+section('a refusal with params reads as a sentence on the client')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local shown
+		local real = env.OPX.Toast.Show
+		env.OPX.Toast.Show = function(definition) shown = definition; return real(definition) end
+		local handler = control.netEvents['opx:notify'] or nil
+		for name, fn in pairs(control.netEvents) do
+			if handler == nil and tostring(name):match('notify$') then handler = fn end
+		end
+		check('the refusal handler is wired', type(handler) == 'function')
+		if type(handler) == 'function' then
+			handler({ kind = 'error', code = 'shops.tooMany', params = { max = 5 } })
+		end
+		check('and the sentence has its number in it, not the placeholder',
+			shown ~= nil and type(shown.message) == 'string'
+				and shown.message:find('5', 1, true) ~= nil and shown.message:find('{max}', 1, true) == nil,
+			shown and shown.message)
+		env.OPX.Toast.Show = real
+	end
+end
+
+-- ── a row that destroys something asks first ────────────────────────────────
+-- The menu contract builds the confirmation from `confirm` on a row, and the eye
+-- asks for a second click on any `danger` row unless it opts out -- the staff
+-- vehicle remove ran on one stray click.
+section('confirm: menu rows and eye rows ask before they destroy')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local heard = {}
+		local opened = menu.Open({
+			owner = 'test', id = 'test.confirm', title = 'MENU',
+			items = {
+				{ id = 'wipe', label = 'Delete outfit', data = { verb = 'delete' }, confirm = true },
+				{ id = 'other', label = 'Other' },
+			},
+			on = function(payload)
+				heard[#heard + 1] = { action = payload.action, id = payload.itemId, data = payload.data }
+			end,
+		})
+		check('a menu with a confirm row opens', type(opened) == 'table' and opened.ok,
+			type(opened) == 'table' and tostring(opened.error))
+		control.Pump(5)
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local handle = opened.ok and opened.value.handle or 0
+		local function key(name)
+			if page ~= nil then control.PageEmit(page, 'opx:menu:key', { handle = handle, key = name }) end
+			control.Pump(2)
+		end
+		local selects = function()
+			local count = 0
+			for _, entry in ipairs(heard) do if entry.action == 'select' then count = count + 1 end end
+			return count
+		end
+
+		key('enter')
+		local state = menu.State()
+		check('enter on the row opens the question, on the row that keeps things first',
+			state.ok and state.value.itemId == 'wipe_keep', state.ok and tostring(state.value.itemId))
+		check('and nothing was done yet', selects() == 0, selects())
+
+		key('enter')
+		state = menu.State()
+		check('enter on the keep row goes back and does nothing',
+			state.ok and state.value.itemId == 'wipe' and selects() == 0,
+			state.ok and tostring(state.value.itemId))
+
+		key('enter'); key('down'); key('enter')
+		local last = heard[#heard]
+		check('the yes row is the select the caller always heard, same id and data',
+			last ~= nil and last.action == 'select' and last.id == 'wipe'
+				and type(last.data) == 'table' and last.data.verb == 'delete',
+			last and ('%s %s'):format(tostring(last.action), tostring(last.id)))
+		menu.Close(handle)
+
+		-- ── the eye ──
+		local target = OPX.Modules.Get('target')
+		local registered = target and OPX.Api.Get('target').RegisterPlayers('calls', {
+			{ id = 'wipe', label = 'Wipe', danger = true, onSelect = function() return true end },
+			{ id = 'form', label = 'Kick...', danger = true, confirm = false,
+				onSelect = function() return true end },
+			{ id = 'plain', label = 'Wave', onSelect = function() return true end },
+		})
+		check('three test rows register on the eye', registered and registered.ok,
+			registered and tostring(registered.error))
+		local rows = {}
+		for _, listed in ipairs(target and target.Registry.List('calls') or {}) do
+			local row = target.Registry.Get(listed.token)
+			if row then rows[row.id] = row end
+		end
+		check('a danger row asks for a second click', rows.wipe ~= nil and rows.wipe.confirm == true)
+		check('unless it opts out', rows.form ~= nil and rows.form.confirm == false)
+		check('and an ordinary row does not', rows.plain ~= nil and rows.plain.confirm == false)
+		check('and the confirm label is written', OPX.Locale.Text('target.confirm', { label = 'Wipe' })
+			:find('Wipe', 1, true) ~= nil)
+	end
+end
+
+-- ── the appearance panel: no level for one row ──────────────────────────────
+-- `Body` opened a level holding one disabled row and `Outfits` a level holding
+-- one row: two presses to read a fact and two to open the fitting room. Both are
+-- top-level rows now, and no level of the panel holds a single row.
+section('appearance panel: no submenu exists to hold a single row')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the appearance module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spec
+		env.AddEventHandler(appearance.Event.ON_VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'panel' then spec = payload end
+		end)
+		if type(appearance.Face) == 'table' then appearance.Face.citizenId = 'CIT-PANEL' end
+		-- No native mirror on screen: this host has no appearance namespace.
+		env.Open77.appearance = env.Open77.appearance or { isOpen = function() return false end }
+		local opened, refusal = appearance.Panel.Open('test')
+		check('the panel opens for a loaded character', opened == true, tostring(refusal))
+
+		local lonely, ids = {}, {}
+		local function walk(items, path)
+			for _, item in ipairs(items or {}) do
+				if not item.separator then
+					if path == '' then ids[item.id] = item end
+					if type(item.items) == 'table' then
+						local rows = 0
+						for _, child in ipairs(item.items) do
+							if not child.separator then rows = rows + 1 end
+						end
+						if rows <= 1 then lonely[#lonely + 1] = path .. tostring(item.id) end
+						walk(item.items, path .. tostring(item.id) .. '/')
+					end
+				end
+			end
+		end
+		walk(spec and spec.items, '')
+		check('the panel was drawn', spec ~= nil)
+		check('and no level of it holds a single row', #lonely == 0, table.concat(lonely, ' '))
+		check('the fitting room is one press from the top, worded as the action',
+			ids.wardrobe ~= nil and ids.wardrobe.items == nil
+				and ids.wardrobe.label == 'Open fitting room', ids.wardrobe and ids.wardrobe.label)
+		check('and the body type is a fact on the top level, not a level of its own',
+			ids.family ~= nil and ids.family.disabled == true and ids.family.items == nil)
+	end
+end
+
+-- ── one money format, in the player's language ──────────────────────────────
+-- Prices reached the screen as bare numbers (`Paid 4500 at Jinguji.`, `You
+-- received 500 BANK`). One formatter now: the language's thousands separator and
+-- the catalogue's word for the currency.
+section('money: one format, with the language\'s separator and the currency\'s word')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		OPX.Locale.Set('en')
+		check('English groups with a comma and names eddies',
+			OPX.Locale.Money(4500) == '4,500 €$', OPX.Locale.Money(4500))
+		check('and a bank balance says it is the bank',
+			OPX.Locale.Money(1234567, 'BANK') == '1,234,567 €$ (bank)', OPX.Locale.Money(1234567, 'BANK'))
+		check('and a type with no word is named, not dropped',
+			OPX.Locale.Money(12, 'TOKENS') == '12 TOKENS', OPX.Locale.Money(12, 'TOKENS'))
+		OPX.Locale.Set('fr')
+		check('French groups with a narrow no-break space, intact',
+			OPX.Locale.Money(4500) == '4\u{202F}500 €$', OPX.Locale.Money(4500))
+		check('across more than one group too',
+			OPX.Locale.Money(1234567, 'BANK') == '1\u{202F}234\u{202F}567 €$ (banque)',
+			OPX.Locale.Money(1234567, 'BANK'))
+		OPX.Locale.Set('en')
+		local character = OPX.Modules.Get('character')
+		check('and the character module formats with it',
+			character ~= nil and character.FormatMoney(29000, 'EDDIES') == '29,000 €$',
+			character and character.FormatMoney(29000, 'EDDIES'))
+	end
+end
+
+-- ── spawn: "where I left off" is a card ─────────────────────────────────────
+-- Keeping your position used to mean picking nothing and waiting out an
+-- invisible forty-five seconds. A character whose row holds a position is
+-- offered it as a card; one that has never stood anywhere is not.
+section('spawn: where I left off is a card, for a character that has somewhere to go back to')
+do
+	local env, control, why = boot('server')
+	check('server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local character = OPX.Modules.Get('character')
+		local function lastTo(source, name)
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == source then return sent[1] end
+			end
+			return nil
+		end
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
+
+		local returning = 41
+		character.Players[returning] = { PlayerData = { citizenId = 'citizen-back',
+			position = { x = 1.0, y = 2.0, z = 3.0, heading = 0.0 } } }
+		character.AwaitingPlacement[returning] = 'citizen-back'
+		check('a returning character is offered the menu', character.PlacePending(returning) == true)
+		local offer = lastTo(returning, spawn.Event.OFFER)
+		check('and the offer says it may go back where it was',
+			type(offer) == 'table' and offer.resume == true)
+		spawn.Choose(returning, { id = spawn.RESUME_ID })
+		local closed = lastTo(returning, spawn.Event.CLOSE)
+		check('choosing the card settles the choice as a resume',
+			type(closed) == 'table' and closed.reason == 'resumed', closed and tostring(closed.reason))
+		check('and nothing is left outstanding', spawn.IsPending(returning) == false)
+
+		local fresh = 42
+		character.Players[fresh] = { PlayerData = { citizenId = 'citizen-new' } }
+		character.AwaitingPlacement[fresh] = 'citizen-new'
+		check('a brand new character is offered the menu', character.PlacePending(fresh) == true)
+		offer = lastTo(fresh, spawn.Event.OFFER)
+		check('without a card for a place it has never been',
+			type(offer) == 'table' and offer.resume ~= true)
+		spawn.Choose(fresh, { id = spawn.RESUME_ID })
+		check('and asking for it anyway is refused, the choice still open',
+			spawn.IsPending(fresh) == true)
+		spawn.Abandon(fresh, 'citizen-new')
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'first'
+	end
+end
+
+-- ── no raw key before the catalogue lands ───────────────────────────────────
+-- The page answers a missing key with the key itself, which is right once the
+-- catalogue is there and wrong before it: on a cold join every label painted as
+-- its raw key (`hud.voice.state.idle`) until the parts arrived. Read off the
+-- SOURCE, because the suite has no browser: the page draws nothing for a miss
+-- until a whole catalogue has landed, and swaps a catalogue in whole.
+section('the page draws no raw key before the catalogue has landed')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+	local localeTs = read('ui/src/composables/useLocale.ts')
+	local storeTs = read('ui/src/stores/ui.ts')
+	check('the locale composable and the store were read', #localeTs > 0 and #storeTs > 0)
+	check('a miss draws nothing until the catalogue is ready, and the key after',
+		localeTs:find("ui.stringsReady ? key : ''", 1, true) ~= nil)
+	check('the store says ready only when the last part has landed',
+		storeTs:find('if (!done) return', 1, true) ~= nil
+			and storeTs:find('state.stringsReady = true', 1, true) ~= nil)
+	check('and swaps the catalogue in whole rather than emptying the live one first',
+		storeTs:find('state.strings = incomingStrings', 1, true) ~= nil)
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
@@ -16474,6 +16832,7 @@ do
 			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
 				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					charInfo = { firstName = 'Vee', lastName = tostring(id) },
 					money = { EDDIES = balance, BANK = 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
@@ -16502,6 +16861,13 @@ do
 		local bobBag = load(BOB, 'citizen-eddies-b', 0)
 		check('both bags are held for their characters',
 			Players.Bag(ALICE) == aliceBag and Players.Bag(BOB) == bobBag)
+
+		-- THE GIVE LIST NAMES PEOPLE. It read `#12`; it says the character's name.
+		local near = Actions.Nearby(ALICE)
+		check('the player in reach is listed for a give, by their character\'s name',
+			near[1] ~= nil and near[1].id == BOB and type(near[1].name) == 'string'
+				and near[1].name == 'Vee ' .. tostring(BOB),
+			near[1] and tostring(near[1].name))
 
 		--- What one player is worth: the balance plus every note they carry.
 		local function worth(source, bag)

@@ -377,9 +377,20 @@ function OPX.Toast.Attach()
 		-- RefusalKey, so rendering it raw is never a leak of an internal code.
 		local code = payload.code
 		if type(code) ~= 'string' then return end
+		-- The params are the server's (`refusalParams`, core/server/answer.lua),
+		-- re-checked here: only strings and numbers reach the sentence.
+		local params = nil
+		if type(payload.params) == 'table' then
+			params = {}
+			for key, value in pairs(payload.params) do
+				if type(key) == 'string' and (type(value) == 'string' or type(value) == 'number') then
+					params[key] = value
+				end
+			end
+		end
 		local raised, why = OPX.Toast.Show({
 			kind = payload.kind or 'error',
-			message = locale(code),
+			message = locale(code, params),
 			icon = wireIcon(payload.icon, 'a refusal'),
 		})
 		if raised == nil then undrawn('a server refusal', why) end

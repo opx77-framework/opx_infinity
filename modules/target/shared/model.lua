@@ -41,9 +41,10 @@ local MAX_DATA_BYTES = 2048
 
 -- The fields a definition keeps; anything else is dropped. `onSelect` runs when
 -- the row is chosen, `canInteract` decides whether it is listed at all, and
--- `checked` answers true or false to draw a box.
+-- `checked` answers true or false to draw a box. `confirm` asks for a second
+-- click before `onSelect` runs; a `danger` row asks unless it says `confirm = false`.
 local FIELDS = { 'id', 'label', 'onSelect', 'canInteract', 'checked', 'description', 'group', 'icon',
-	'enabled', 'networked', 'allowSelf', 'selfOnly', 'danger', 'distance', 'order', 'types', 'records',
+	'enabled', 'networked', 'allowSelf', 'selfOnly', 'danger', 'confirm', 'distance', 'order', 'types', 'records',
 	'entities', 'spheres', 'data' }
 
 -- Largest radius of one sphere, in metres.
@@ -284,7 +285,7 @@ function Model.New(alive)
 		if d.description ~= nil and not Model.Text(d.description, 180) then return nil, 'invalid_description' end
 		if d.group ~= nil and not Model.Text(d.group, 40) then return nil, 'invalid_group' end
 		if d.icon ~= nil and not Model.ICONS[d.icon] then return nil, 'invalid_icon' end
-		for _, field in ipairs({ 'enabled', 'networked', 'allowSelf', 'selfOnly', 'danger' }) do
+		for _, field in ipairs({ 'enabled', 'networked', 'allowSelf', 'selfOnly', 'danger', 'confirm' }) do
 			if d[field] ~= nil and type(d[field]) ~= 'boolean' then return nil, 'invalid_' .. field end
 		end
 		local distance = d.distance or 3.0
@@ -341,6 +342,7 @@ function Model.New(alive)
 			checked = checked, types = types, records = records, distance = distance, order = order,
 			enabled = d.enabled ~= false, networked = d.networked, allowSelf = d.allowSelf == true,
 			selfOnly = d.selfOnly == true, danger = d.danger == true,
+			confirm = d.confirm == true or (d.danger == true and d.confirm ~= false),
 			entities = copy(d.entities), spheres = copy(d.spheres), data = copy(d.data), definition = kept,
 		}
 		if undo ~= nil then undo[#undo + 1] = { token = token } end

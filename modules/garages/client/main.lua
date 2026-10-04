@@ -248,9 +248,12 @@ local function openList(payload)
 	local items = {}
 	for index = 1, #rows do
 		local row = rows[index]
+		-- THE MODEL FIRST, then the plate, the way the vehicle's key is labelled:
+		-- `8XK2L0P` alone is not a car anybody recognises in two seconds.
+		local name = type(row.name) == 'string' and row.name ~= '' and row.name or nil
 		items[#items + 1] = {
 			id = tostring(row.plate),
-			label = tostring(row.plate),
+			label = name and ('%s · %s'):format(name, tostring(row.plate)) or tostring(row.plate),
 			value = locale(row.here and 'garages.list.here' or 'garages.list.away'),
 			data = { plate = row.plate },
 		}

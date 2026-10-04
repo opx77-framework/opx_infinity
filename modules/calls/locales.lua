@@ -18,30 +18,8 @@
 local M = OPX.Modules.Get('calls')
 
 local EN = {
-	-- ── the incoming card ────────────────────────────────────────────────────
-	['calls.incoming.eyebrow'] = 'NETWATCH RELAY // INBOUND',
-	['calls.incoming.title'] = 'INCOMING CALL',
-	['calls.incoming.join'] = 'CONFERENCE INVITE',
-	['calls.incoming.contact'] = 'CONTACT OFFERED',
-	['calls.incoming.from'] = 'FROM',
-	['calls.incoming.accept'] = 'ACCEPT',
-	['calls.incoming.decline'] = 'DECLINE',
-	-- The card says how it is answered rather than assuming the player knows.
-	-- The eye is the only way in, and a card that did not say so would be a
-	-- screen asking a question with no visible answer.
-	['calls.incoming.hint'] = 'Hold ALT on yourself to answer.',
-	['calls.incoming.expires'] = 'Expires in {time}',
-
-	-- ── the live chip ────────────────────────────────────────────────────────
-	-- The chip used to say "Show the call again", which named a row on the target
-	-- eye. That row is gone with the rest of them; the way back is the hologram
-	-- key, and the chip does not know which key that is -- a player may rebind it
-	-- -- so it says what is TRUE rather than guessing at an instruction.
-	['calls.live.waiting'] = 'A call is waiting.',
-	['calls.live.title'] = 'CALL',
-	['calls.live.elapsed'] = 'ELAPSED',
-	['calls.live.with'] = 'WITH',
-	['calls.live.others'] = '+{count}',
+	-- The incoming card and the live chip are gone with the eye rows they named;
+	-- the hologram below is the whole feature, and their strings went with them.
 
 	-- ── the rows on the eye ──────────────────────────────────────────────────
 	-- One row is left: handing your contact to the player you are pointing at.
@@ -77,11 +55,8 @@ local EN = {
 	['calls.holo.add'] = 'ADD',
 	['calls.holo.share'] = 'SHARE',
 	['calls.holo.tab.contacts'] = 'CONTACTS',
-	['calls.holo.tab.nearby'] = 'AROUND ME',
 	['calls.holo.tab.recent'] = 'RECENT',
 	['calls.holo.noContacts'] = 'No contacts yet. Ask someone nearby to give you theirs.',
-	['calls.holo.noNear'] = 'Nobody close enough to hand a contact to.',
-	['calls.holo.noneNear'] = 'Nobody close enough to hand a contact to.',
 	['calls.holo.noRecent'] = 'Nothing yet.',
 	-- Four outcomes and four sentences, because "they did not pick up" and "you
 	-- missed one" are the same event from two sides and a system that said the
@@ -128,25 +103,8 @@ local EN = {
 }
 
 local FR = {
-	['calls.incoming.eyebrow'] = 'RELAIS NETWATCH // ENTRANT',
-	['calls.incoming.title'] = 'APPEL ENTRANT',
-	['calls.incoming.join'] = 'INVITATION CONFÉRENCE',
-	['calls.incoming.contact'] = 'CONTACT PROPOSÉ',
-	['calls.incoming.from'] = 'DE',
-	['calls.incoming.accept'] = 'ACCEPTER',
-	['calls.incoming.decline'] = 'REFUSER',
-	['calls.incoming.hint'] = 'Maintenez ALT sur vous-même pour répondre.',
-	['calls.incoming.expires'] = 'Expire dans {time}',
-
-	['calls.live.title'] = 'APPEL',
-	['calls.live.elapsed'] = 'DURÉE',
-	['calls.live.with'] = 'AVEC',
-	['calls.live.others'] = '+{count}',
-	['calls.live.waiting'] = 'Un appel attend.',
-
 	-- ── la ligne de l'oeil ───────────────────────────────────────────────────
 	['calls.row.share'] = 'Donner mon contact',
-
 
 	-- ── l'hologramme ─────────────────────────────────────────────────────────
 	['calls.key.holo'] = 'Ouvrir le holo-appel',
@@ -172,11 +130,8 @@ local FR = {
 	['calls.holo.add'] = 'AJOUTER',
 	['calls.holo.share'] = 'PARTAGER',
 	['calls.holo.tab.contacts'] = 'CONTACTS',
-	['calls.holo.tab.nearby'] = 'AUTOUR DE MOI',
 	['calls.holo.tab.recent'] = 'RÉCENTS',
 	['calls.holo.noContacts'] = "Aucun contact pour l'instant. Demandez à quelqu'un près de vous de vous donner le sien.",
-	['calls.holo.noNear'] = 'Personne d\'assez proche pour donner un contact.',
-	['calls.holo.noneNear'] = 'Personne d\'assez proche pour donner un contact.',
 	['calls.holo.noRecent'] = 'Rien pour le moment.',
 	['calls.holo.outcome.missed'] = 'Appel manqué',
 	['calls.holo.outcome.unanswered'] = 'Pas de réponse',
