@@ -13354,6 +13354,32 @@ do
 	end
 end
 
+-- ── no raw key before the catalogue lands ───────────────────────────────────
+-- The page answers a missing key with the key itself, which is right once the
+-- catalogue is there and wrong before it: on a cold join every label painted as
+-- its raw key (`hud.voice.state.idle`) until the parts arrived. Read off the
+-- SOURCE, because the suite has no browser: the page draws nothing for a miss
+-- until a whole catalogue has landed, and swaps a catalogue in whole.
+section('the page draws no raw key before the catalogue has landed')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+	local localeTs = read('ui/src/composables/useLocale.ts')
+	local storeTs = read('ui/src/stores/ui.ts')
+	check('the locale composable and the store were read', #localeTs > 0 and #storeTs > 0)
+	check('a miss draws nothing until the catalogue is ready, and the key after',
+		localeTs:find("ui.stringsReady ? key : ''", 1, true) ~= nil)
+	check('the store says ready only when the last part has landed',
+		storeTs:find('if (!done) return', 1, true) ~= nil
+			and storeTs:find('state.stringsReady = true', 1, true) ~= nil)
+	check('and swaps the catalogue in whole rather than emptying the live one first',
+		storeTs:find('state.strings = incomingStrings', 1, true) ~= nil)
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
