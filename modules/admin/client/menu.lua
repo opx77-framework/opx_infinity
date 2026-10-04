@@ -239,7 +239,10 @@ local SEARCH_FROM = 12
 local BREATHE_EVERY = 25
 local breaths = 0
 local drawThread = nil
-local drawThreads = setmetatable({}, { __mode = 'k' })
+-- A plain table, not a weak one: the client sandbox has no `setmetatable`. A
+-- thread removes itself when it ends; only one the budget killed stays, and
+-- that is one entry per kill.
+local drawThreads = {}
 
 -- Whether the code running now is one of the redraw's threads, where a yield is
 -- safe and wanted.
@@ -1747,6 +1750,7 @@ local function draw(inPlace)
 				Open77.log.error(('[admin] menu redraw raised: %s'):format(tostring(failure)))
 			end
 		end
+		drawThreads[me] = nil
 		-- A thread that was taken over leaves the take-over's state alone.
 		if drawThread == me then
 			drawThread = nil
