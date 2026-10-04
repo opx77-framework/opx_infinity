@@ -26950,6 +26950,26 @@ do
 
 		check('both garages are pinned', pinned('First') ~= nil and pinned('Second') ~= nil)
 
+		-- ONE BAD HAULING ROW DOES NOT EMPTY THE MAP. `site.JOBS` was read off a
+		-- site before anything checked it was a table, so a row written as a
+		-- boolean or a number raised inside the pass, every pass, and no change
+		-- to any category was ever drawn again.
+		local sites = OPX.Config.MODULES.hauling and OPX.Config.MODULES.hauling.SITES
+		if type(sites) == 'table' then
+			sites.zz_broken = true
+			list.three = { key = 'three', label = 'Third', x = 70.0, y = 80.0, z = 90.0 }
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+			sites.zz_broken = nil
+			list.three = nil
+			check('a hauling site that is not a table does not stop a new garage being pinned',
+				pinned('Third') ~= nil and pinned('First') ~= nil)
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+		end
+
 		-- THE SPOT GOES AWAY. The server stopped naming it -- deleted, or a bucket
 		-- this player is no longer in.
 		list.two = nil
