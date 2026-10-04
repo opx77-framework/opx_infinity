@@ -117,6 +117,21 @@ local downHeard = 0
 -- for the same answer and the only thing it can ever do is drift.
 local finite = OPX.Math.IsFinite
 
+local find = string.find
+
+--- `Text.Clean` with the common case answered in place.
+-- Every row of a spec is cleaned field by field inside the caller's resume --
+-- label, description, value, the toggle words -- and most of those fields are
+-- absent or are short plain text already. Those come back as they are without
+-- a copy through `gsub`: no control character and no more bytes than the limit
+-- in characters means nothing to replace and nothing to cut. Anything else goes
+-- through `Text.Clean` exactly as before.
+local function clean(value, maximum)
+	if value == nil then return nil end
+	if type(value) == 'string' and #value <= maximum and not find(value, '%c') then return value end
+	return Text.Clean(value, maximum)
+end
+
 --- Whether a value is a bounded identifier: word characters, `_`, `:`, `-`, `.`.
 local function validName(value, maximum)
 	return type(value) == 'string' and #value > 0 and #value <= maximum
@@ -201,7 +216,7 @@ local function normalizeSlider(slider)
 	if value < low then value = low end
 	if value > high then value = high end
 	return { min = low, max = high, step = step, value = value,
-		suffix = Text.Clean(slider.suffix, MAX_SUFFIX) or '' }
+		suffix = clean(slider.suffix, MAX_SUFFIX) or '' }
 end
 
 --- Validates a choice list and settles which entry starts current.
@@ -209,7 +224,7 @@ local function normalizeChoices(item)
 	if type(item.choices) ~= 'table' then return nil, 'invalid_choices' end
 	local labels = {}
 	for index = 1, #item.choices do
-		local label = Text.Clean(item.choices[index], MAX_VALUE)
+		local label = clean(item.choices[index], MAX_VALUE)
 		if label == nil then return nil, 'invalid_choice' end
 		labels[index] = label
 	end
@@ -223,6 +238,50 @@ end
 
 -- Recurses, so it is declared before the row normaliser reaches for it.
 local normalizeItems
+
+-- ── checking a spec in steps ────────────────────────────────────────────────
+--
+-- A SPEC IS CHECKED ROW BY ROW, about 240 instructions a row, inside the resume
+-- that hands it over -- a twenty-row staff page was 6,000 to 9,000 on top of
+-- whatever the caller had already spent. A caller running on a thread of its
+-- own may say so with `yield = true` on the spec, and the rows are then checked
+-- `PACE_ROWS` at a time with a frame between. Everything else is unchanged:
+-- the same checks, the same refusals, the whole spec or nothing, and a caller
+-- that does not say so -- or that says so from somewhere it cannot yield --
+-- gets exactly the path it always had.
+--
+-- What a frame can change is checked again before anything is installed: the
+-- surface, the down state and who holds the menu for an open; the handle for an
+-- update. A caller is answered as though it had arrived after the change.
+local PACE_ROWS = 6
+
+-- Set while a paced check runs, nil otherwise: called once per row.
+local pacing = nil
+
+-- Checks a spec's rows, paced when the caller asked and can yield. Answers the
+-- rows, the node count and whether it yielded, or nil and the refusal.
+local function checkRows(spec)
+	local paced = spec.yield == true and type(Wait) == 'function' and coroutine.isyieldable()
+	local budget = { nodes = 0 }
+	if not paced then
+		local items, reason = normalizeItems(spec.items, 1, budget)
+		if items == nil then return nil, reason end
+		return { items = items, nodes = budget.nodes, yielded = false }
+	end
+	local count, yielded = 0, false
+	pacing = function()
+		count = count + 1
+		if count % PACE_ROWS == 0 then
+			yielded = true
+			Wait(0)
+		end
+	end
+	local ran, items, reason = pcall(normalizeItems, spec.items, 1, budget)
+	pacing = nil
+	if not ran then error(items, 0) end
+	if items == nil then return nil, reason end
+	return { items = items, nodes = budget.nodes, yielded = yielded }
+end
 
 --- Normalises one row and derives its kind from its shape.
 -- The tests run in a fixed order and the first match wins, so a row carrying
@@ -243,14 +302,14 @@ local function normalizeItem(item, index, depth, budget)
 	-- A separator returns before anything else is read: a description, a data
 	-- table or a disabled flag on one is dropped rather than refused.
 	if item.separator == true then
-		return { id = id, kind = 'separator', label = Text.Clean(item.label, MAX_LABEL) or '' }
+		return { id = id, kind = 'separator', label = clean(item.label, MAX_LABEL) or '' }
 	end
 
-	local label = Text.Clean(item.label or item.text, MAX_LABEL)
+	local label = clean(item.label or item.text, MAX_LABEL)
 	if label == nil or label == '' then return nil, 'invalid_item_label' end
 
 	-- Cleaned once and kept: the row below used to clean it a second time.
-	local description = Text.Clean(item.description, MAX_DESCRIPTION)
+	local description = clean(item.description, MAX_DESCRIPTION)
 	if item.description ~= nil and description == nil then
 		return nil, 'invalid_item_description'
 	end
@@ -301,8 +360,8 @@ local function normalizeItem(item, index, depth, budget)
 		if children == nil then return nil, reason end
 		entry.kind = 'submenu'
 		entry.items = children
-		entry.title = Text.Clean(item.title, MAX_LABEL) or label
-		entry.value = Text.Clean(item.value, MAX_VALUE)
+		entry.title = clean(item.title, MAX_LABEL) or label
+		entry.value = clean(item.value, MAX_VALUE)
 		entry.cursor = item.cursor
 		return entry
 	end
@@ -313,8 +372,8 @@ local function normalizeItem(item, index, depth, budget)
 		entry.kind = 'toggle'
 		entry.on = item.toggle
 		entry.labels = {
-			on = Text.Clean(item.onLabel, MAX_VALUE),
-			off = Text.Clean(item.offLabel, MAX_VALUE),
+			on = clean(item.onLabel, MAX_VALUE),
+			off = clean(item.offLabel, MAX_VALUE),
 		}
 		return entry
 	end
@@ -349,7 +408,7 @@ local function normalizeItem(item, index, depth, budget)
 	end
 
 	entry.kind = 'action'
-	entry.value = Text.Clean(item.value, MAX_VALUE)
+	entry.value = clean(item.value, MAX_VALUE)
 	return entry
 end
 
@@ -363,6 +422,7 @@ normalizeItems = function(items, depth, budget)
 
 	local list = {}
 	for index = 1, total do
+		if pacing ~= nil then pacing() end
 		local entry, reason = normalizeItem(items[index], index, depth, budget)
 		if entry == nil then return nil, reason end
 		list[index] = entry
@@ -562,7 +622,7 @@ end
 -- ── building and rebuilding ─────────────────────────────────────────────────
 
 --- Builds a menu record from a caller's spec, or refuses it whole.
-local function build(owner, spec)
+local function build(owner, spec, checked)
 	if type(spec.on) ~= 'function' then return nil, 'callback_required' end
 
 	local id = spec.id
@@ -625,9 +685,16 @@ local function build(owner, spec)
 	-- the rows of the menu that is up and is not the moment to move it.
 	local where = geometry(spec)
 
-	local budget = { nodes = 0 }
-	local items, reason = normalizeItems(spec.items, 1, budget)
-	if items == nil then return nil, reason end
+	local items, nodes
+	if checked ~= nil then
+		items, nodes = checked.items, checked.nodes
+	else
+		local budget = { nodes = 0 }
+		local reason
+		items, reason = normalizeItems(spec.items, 1, budget)
+		if items == nil then return nil, reason end
+		nodes = budget.nodes
+	end
 
 	return {
 		owner = owner,
@@ -645,7 +712,7 @@ local function build(owner, spec)
 		closeOnSelect = spec.closeOnSelect == true,
 		reportFocus = spec.reportFocus == true,
 		items = items,
-		nodes = budget.nodes,
+		nodes = nodes,
 		stack = { screen(items, title, nil, spec.cursor) },
 	}
 end
@@ -675,12 +742,14 @@ end
 --- Patches a live menu from a spec, keeping the player's position.
 -- `items` is all-or-nothing: the whole tree is rebuilt, or the whole call is
 -- refused and the live menu is untouched.
-local function rebuild(owned, spec)
+local function rebuild(owned, spec, checked)
 	if not validStatus(spec.status) then return false, 'invalid_status' end
 	if spec.on ~= nil and type(spec.on) ~= 'function' then return false, 'callback_required' end
 
 	local items, nodes
-	if spec.items ~= nil then
+	if checked ~= nil then
+		items, nodes = checked.items, checked.nodes
+	elseif spec.items ~= nil then
 		local budget = { nodes = 0 }
 		local built, reason = normalizeItems(spec.items, 1, budget)
 		if built == nil then return false, reason end
@@ -899,7 +968,7 @@ local setPolling
 -- replaced rather than a pile of them.
 local function writeStatus(owned, text, bad)
 	local clean = text ~= nil and Text.Clean(text, MAX_STATUS) or nil
-	if clean == nil or clean == '' then return false end
+	if clean == nil or clean == '' then return end
 	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
 	-- nil for a surface that is not up, and this used to discard that: the notice
 	-- went nowhere and said so to nobody. Six other modules already fall back to
@@ -911,7 +980,6 @@ local function writeStatus(owned, text, bad)
 		message = clean,
 	})
 	if raised == nil then Open77.log.info('[menu] ' .. clean) end
-	return false
 end
 
 --- Closes the open menu and tells its owner why.
@@ -971,9 +1039,25 @@ local function Open(spec)
 		return Result.Err('menu_busy')
 	end
 
+	-- A caller on its own thread may have the rows checked in steps (see
+	-- `checkRows`); whatever a frame changed is checked again before this goes on.
+	local checked
+	if spec.yield == true then
+		local rowsReason
+		checked, rowsReason = checkRows(spec)
+		if checked == nil then return Result.Err(rowsReason) end
+		if checked.yielded then
+			if OPX.UI.Interactive() == nil then return Result.Err('no_surface') end
+			if down and not allowedWhileDown(owner) then return Result.Err('player_down') end
+			if record ~= nil and record.owner ~= owner and spec.steal ~= true then
+				return Result.Err('menu_busy')
+			end
+		end
+	end
+
 	-- Built before the live menu is taken down, so a refused spec costs the
 	-- player nothing.
-	local built, reason = build(owner, spec)
+	local built, reason = build(owner, spec, checked)
 	if built == nil then return Result.Err(reason) end
 
 	if record ~= nil then
@@ -1031,7 +1115,21 @@ local function Update(handle, spec)
 	if record == nil then return Result.Err('no_menu_open') end
 	if handle ~= nil and handle ~= record.handle then return Result.Err('stale_handle') end
 
-	local ok, reason = rebuild(record, spec)
+	-- Paced like `Open`, and the menu it was asked about must still be the one
+	-- up afterwards: a frame can close it, or put another in its place.
+	local checked
+	if spec.yield == true and spec.items ~= nil then
+		local owned = record
+		local rowsReason
+		checked, rowsReason = checkRows(spec)
+		if checked == nil then return Result.Err(rowsReason) end
+		if checked.yielded then
+			if record == nil then return Result.Err('no_menu_open') end
+			if record ~= owned then return Result.Err('stale_handle') end
+		end
+	end
+
+	local ok, reason = rebuild(record, spec, checked)
 	if not ok then return Result.Err(reason) end
 	settle(record)
 	if spec.status ~= nil then writeStatus(record, spec.status, spec.statusBad) end
@@ -1039,17 +1137,18 @@ local function Update(handle, spec)
 	return Result.Ok(true)
 end
 
---- Writes the transient line under the list, or clears it with a nil text.
+--- Raises the caller's line as a toast (see `writeStatus`); a nil or empty text says nothing.
 -- @author dop42
 -- @param handle integer
 -- @param text string|number|nil
--- @param bad boolean|nil True draws the line as a failure.
+-- @param bad boolean|nil True raises it as a failure.
 -- @return Result
 local function SetStatus(handle, text, bad)
 	if record == nil then return Result.Err('no_menu_open') end
 	if handle ~= nil and handle ~= record.handle then return Result.Err('stale_handle') end
 	if not validStatus(text) then return Result.Err('invalid_status') end
-	if writeStatus(record, text, bad) then draw() end
+	-- A toast, not a line in the frame: there is nothing to redraw.
+	writeStatus(record, text, bad)
 	return Result.Ok(true)
 end
 

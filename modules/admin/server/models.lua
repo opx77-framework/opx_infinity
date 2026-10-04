@@ -181,7 +181,7 @@ function Models.Register()
 		params = { { name = 'playerId', help = 'admin.help.playerId' },
 			{ name = 'ped|off', help = 'admin.help.ped', optional = true } },
 		handler = function(source, args, raw)
-			local playerId = Server.Target(source, raw, args[1])
+			local playerId = Server.Target(source, raw, args[1], 'admin.player.model')
 			if playerId == nil then return end
 			setModel(source, raw, playerId, args[2], 'admin.player.model')
 		end,

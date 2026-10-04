@@ -1660,6 +1660,11 @@ local function drawNow(inPlace)
 	-- screen they were standing in.
 	local landing
 	if not inPlace then landing = current.cursor or firstBelowHead(items) end
+	-- ON THE DRAW THREAD THE CONTRACT CHECKS THE ROWS IN STEPS (`yield`), a few
+	-- rows a frame: the check was the dearest part of a redraw left in one
+	-- resume. A frame can then pass inside the call, so the screen is checked
+	-- again after it, exactly as after the builder's own breaths.
+	local paced = onDrawThread()
 	if handle ~= nil and not suspended then
 		local patched = contract.Update(handle, {
 			title = title,
@@ -1667,12 +1672,14 @@ local function drawNow(inPlace)
 			cursor = landing,
 			status = status and status.text or nil,
 			statusBad = status and status.ok == false or nil,
+			yield = paced or nil,
 		})
 		if patched.ok then return end
 		-- The live menu is no longer ours to patch (it was closed under us, or
 		-- another owner has the surface). Refuse rather than guess, and open a
-		-- fresh one below.
+		-- fresh one below -- unless the screen itself went while the call ran.
 		handle = nil
+		if suspended or top() ~= current or not ownsDraw() then return end
 	end
 
 	local opened = contract.Open({
@@ -1689,7 +1696,14 @@ local function drawNow(inPlace)
 		maxHeight = MAX_HEIGHT_VH,
 		items = items,
 		on = onAction,
+		yield = paced or nil,
 	})
+	-- Closed, put aside or replaced while the rows were being checked: the menu
+	-- that just opened belongs to a screen that is gone.
+	if opened.ok and (suspended or top() ~= current or not ownsDraw()) then
+		contract.Close(opened.value.handle, 'superseded')
+		return
+	end
 	if mine ~= drawn then return end
 	if not opened.ok then
 		handle = nil

@@ -189,6 +189,9 @@ server_script "core/server/publish.lua"
 
 client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
+-- The client half of a placed spot: markers and the key, shared by every spot
+-- module. After `lib/shared/spots.lua`, which it extends.
+client_script "lib/client/spots.lua"
 -- Before anything a module can reach, so `OPX.Note` is already there for a module
 -- that fails while it is still coming up.
 client_script "core/client/note.lua"
@@ -472,10 +475,11 @@ shared_script "modules/vehiclekeys/locales.lua"
 server_script "modules/vehiclekeys/server/main.lua"
 client_script "modules/vehiclekeys/client/main.lua"
 
--- Door locks. After `character`, `inventory`, `target`, `prompts`, `menu`,
--- `form` and `progress`, every one of them optional and every one ordered
--- above, so the file reads in the order it runs. Before `admin`, whose World
--- screen opens its panel by command. `world.doors` is already declared below
+-- Door locks, ox_doorlock's port. After `character`, `inventory`, `target`,
+-- `prompts`, `form` and `progress`, every one of them optional and every one
+-- ordered above, so the file reads in the order it runs. Before `admin`, whose
+-- World screen opens the panel by command; the panel itself is the Vue view
+-- `ui/src/modules/doorlock`, driven by `client/panel.lua`. `world.doors` is already declared below
 -- for the staff door switch; the server half calls `open77_doors` through
 -- `Open77.exports.call`, which needs no permission of its own.
 shared_script "modules/doorlock/module.lua"
@@ -485,7 +489,7 @@ server_script "modules/doorlock/server/storage.lua"
 server_script "modules/doorlock/server/backend.lua"
 server_script "modules/doorlock/server/main.lua"
 client_script "modules/doorlock/client/main.lua"
-client_script "modules/doorlock/client/staff.lua"
+client_script "modules/doorlock/client/panel.lua"
 client_script "modules/doorlock/client/exports.lua"
 
 -- Clothing shops. After `appearance`, whose fitting room it opens, and after

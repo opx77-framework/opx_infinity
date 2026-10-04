@@ -22,6 +22,11 @@ local Runtime = M.Runtime
 -- Milliseconds between two reports of one unadopted lift.
 local SIGHT_RETRY_MS = 5000
 
+-- Milliseconds between two reports of a lift the host already calls MANAGED
+-- that this client was never bound to. Slower, because the likeliest answer is
+-- "another owner holds it" and the server says so in its journal each time.
+local MANAGED_RETRY_MS = 30000
+
 -- Elevator key to when its lift was last reported.
 local sighted = {}
 
@@ -88,8 +93,15 @@ local function scan()
 			State.Sighted(key, lift, at, playerX, playerY)
 			local ready = lift.floorCount ~= nil and lift.floorCount > 0 and
 				lift.activeFloor ~= nil and lift.activeFloor >= 0
-			local due = sighted[key] == nil or at - sighted[key] >= SIGHT_RETRY_MS
-			if ready and not lift.managed and State.bound[key] == nil and due then
+			-- A MANAGED LIFT THIS CLIENT WAS NEVER BOUND TO IS REPORTED TOO. Only
+			-- unmanaged lifts used to be, so the server's re-claim branch -- a lift
+			-- this module adopted before a restart, still adopted and locked on the
+			-- host -- could never be reached: the shaft stayed locked and every
+			-- floor request answered `not_adopted`. The server decides whether it
+			-- is ours (it re-locks it) or another owner's (it refuses).
+			local wait = lift.managed and MANAGED_RETRY_MS or SIGHT_RETRY_MS
+			local due = sighted[key] == nil or at - sighted[key] >= wait
+			if ready and State.bound[key] == nil and due then
 				sighted[key] = at
 				local accepted, reason = TriggerServerEvent(M.Event.SIGHTED,
 					lift.engineEntity, position.x, position.y, position.z,

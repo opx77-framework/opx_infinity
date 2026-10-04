@@ -824,12 +824,62 @@ end
 --- Writes back everything that is out before the resource goes.
 -- @author dop42
 --
--- On the stop handler's own stack and NOT on a thread: a stop does not resume
--- one. The save loop is what guarantees the condition survives; this is the last
--- chance to write the rest.
+-- ON THE STOP HANDLER'S OWN STACK, which is not a coroutine, so nothing here may
+-- await. This used to call `StoreAll`, whose every `Store` begins with a
+-- `FetchOne` -- and a database read off a coroutine does not wait, it fails. So
+-- every vehicle out at a stop logged "its condition is not written" and went
+-- with its row still saying OUT: the damage since the last save pass was lost,
+-- and the garage list showed cars in the street that were not there.
+--
+-- Now the condition is read from the engine on this stack, while it still
+-- answers, and written with the bridge's callback form, which sends the
+-- statement before it returns (`Storage.SaveConditionNow`). Best effort: the
+-- save loop is still what guarantees damage survives a crash.
+--
+-- BOUNDED: at most STOP_SAVE_MAX vehicles are written, two engine reads and one
+-- statement each, inside the one resume a stop handler gets; the rest keep the
+-- last save pass.
+local STOP_SAVE_MAX = 64
+
 function M.Stop()
-	local stored = M.StoreAll(nil)
-	if stored > 0 then
-		Open77.log.info(('[vehicles] stored %d vehicle(s) on stop'):format(stored))
+	local plates = {}
+	for plateId in pairs(live) do plates[#plates + 1] = plateId end
+	table.sort(plates)
+
+	local dispatched = 0
+	for index = 1, #plates do
+		local record = live[plates[index]]
+		if index <= STOP_SAVE_MAX then
+			local read, snapshot = pcall(Open77.vehicles.get, record.id)
+			if read and type(snapshot) == 'table' then
+				local gotDamage, damage = pcall(Open77.vehicles.getDamage, record.id)
+				local entity = {
+					plate = plates[index],
+					state = STATE.STORED,
+					health = finiteNumber(snapshot.health) or 1.0,
+					damage = gotDamage and type(damage) == 'table' and damage or nil,
+					flags = finiteNumber(snapshot.flags),
+				}
+				local sent, why = Store.SaveConditionNow(entity, function(ok, reason)
+					if not ok then
+						Open77.log.warn(('[vehicles] %s: the condition taken at stop was not written (%s)')
+							:format(entity.plate, tostring(reason)))
+					end
+				end)
+				if sent then
+					dispatched = dispatched + 1
+				else
+					Open77.log.warn(('[vehicles] %s: the condition taken at stop could not be sent (%s)')
+						:format(entity.plate, tostring(why)))
+				end
+			end
+		end
+		pcall(Open77.vehicles.remove, record.id)
+	end
+	live, claiming, storing = {}, {}, {}
+
+	if #plates > 0 then
+		Open77.log.info(('[vehicles] stopping: %d vehicle(s) out, %d condition save(s) sent, ' ..
+			'best effort'):format(#plates, dispatched))
 	end
 end

@@ -179,6 +179,53 @@ function M.Storage.SetState(plate, state, garage)
 		{ plate = plate, state = state, garage = garage })
 end
 
+--- Writes back the condition of a vehicle and files it as stored, SENT NOW and
+--- answered later. The resource-stop path, and the one statement here that does
+--- not await.
+-- @author dop42
+--
+-- A stop handler is not a coroutine: every `.await` in this file fails there,
+-- and a `CreateThread` is not promised another resume once the resource is
+-- going. The bridge's CALLBACK form sends the statement before it returns and
+-- needs neither, so the write leaves while the engine can still be asked what
+-- the car looked like. No read first -- that would be an await -- so `flags`,
+-- which lives inside the metadata blob, is set in place with `JSON_SET`.
+-- @param entity table { plate, state, health, damage, flags }
+-- @param onDone function|nil (ok, reason), when the database answers
+-- @return boolean sent
+-- @return string|nil why not
+function M.Storage.SaveConditionNow(entity, onDone)
+	local api = MySQL
+	local update = api and api.update
+	if update == nil then return false, 'no-database' end
+	local params = {
+		plate = entity.plate,
+		state = entity.state,
+		health = entity.health,
+		body = Storage.Nullable(entity.damage),
+	}
+	local sql = [[
+UPDATE opx77_vehicles
+   SET state = @state, health = @health, body = NULLIF(@body, '')
+ WHERE plate = @plate
+  ]]
+	if entity.flags ~= nil then
+		params.flags = entity.flags
+		sql = [[
+UPDATE opx77_vehicles
+   SET state = @state, health = @health, body = NULLIF(@body, ''),
+       metadata = JSON_SET(metadata, '$.flags', @flags)
+ WHERE plate = @plate
+  ]]
+	end
+	local called, sent, why = pcall(update, sql, params, function(affected, reason)
+		if onDone ~= nil then onDone(reason == nil, reason) end
+	end)
+	if not called then return false, tostring(sent) end
+	if sent == false then return false, tostring(why) end
+	return true
+end
+
 --- Deletes a vehicle row by its plate.
 -- @author dop42
 -- @param plate string

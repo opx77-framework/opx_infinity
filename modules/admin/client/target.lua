@@ -36,7 +36,13 @@ local Target = M.Target
 -- The cost is per ROW -- validation and a generation read each -- so halving the
 -- batch halves the work per resume. It costs frames at registration, which
 -- happens on an access change and not per tick.
-local BATCH = 4
+--
+-- TWO, NOT FOUR. Four rows measured 4,600 to 6,400 instructions a resume once
+-- every grant was held -- the registry's own walks (the sweep, the limit count)
+-- on top of four validations -- which is the budget's neighbourhood, not its
+-- margin. Two rows and a registry that counts once per batch keep a resume
+-- near a third of that. Forty rows is twenty frames, on an access change.
+local BATCH = 2
 
 -- Milliseconds before the first access request, then between two. A grant taken
 -- away has to reach the eye without the operator opening the menu.
@@ -614,6 +620,9 @@ local function wanted()
 	-- Once, not once per row: the same word heads every folder.
 	local heading = locale('admin.target.group')
 	for index, row in ipairs(ROWS) do
+		-- Built on the registration thread, a few rows a resume: the first
+		-- registration builds every granted row, about 8,000 instructions in one go.
+		if index % 8 == 0 and coroutine.isyieldable() then Wait(0) end
 		if granted(row.grant) then
 			byKind[row.kind] = byKind[row.kind] or {}
 			local group = heading
@@ -719,6 +728,9 @@ local function register(contract, byKind, signature)
 		end
 	end
 	registered = signature
+	-- The closing line walks every row again for the grants it dropped; it does
+	-- not need to share a resume with the last batch.
+	if coroutine.isyieldable() then Wait(0) end
 	local total = 0
 	for _, rows in pairs(byKind) do total = total + #rows end
 	-- THE ROWS THAT ARE NOT THERE ARE THE HALF WORTH READING. A count alone said

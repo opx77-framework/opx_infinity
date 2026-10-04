@@ -42,6 +42,7 @@ local EN = {
 	-- is wrong and what to do about it rather than apologising.
 	['garages.noFreeExit'] =
 		'Every exit at {garage} is blocked. Move what is parked there and try again.',
+	['garages.passengers'] = 'Your passengers have to get out before the car goes into {garage}.',
 	['garages.rateLimited'] = 'Slow down and try again in a moment.',
 	['garages.noVehicles'] = 'Vehicles are unavailable on this server.',
 
@@ -78,6 +79,7 @@ local FR = {
 	['garages.notYours'] = "Ce véhicule ne sort pas ici.",
 	['garages.noFreeExit'] =
 		'Toutes les sorties de {garage} sont bloquées. Dégagez-en une et réessayez.',
+	['garages.passengers'] = 'Vos passagers doivent descendre avant de ranger le véhicule dans {garage}.',
 	['garages.rateLimited'] = 'Ralentissez et réessayez dans un instant.',
 	['garages.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
 
