@@ -24832,6 +24832,21 @@ do
 			end
 		end
 		check('and nothing goes out on the old private notice event', private == 0, private)
+
+		-- THE CONTRACT CHECKS WHAT IT IS GIVEN. `SetTime` trusted its argument as
+		-- validated by the command; a contract caller's string or NaN went into
+		-- the clock, every snapshot built from it raised, and the bad value was
+		-- carried into the next start.
+		local weather = OPX.Api.Get('weather')
+		local bad = weather.SetTime('noon', 'test')
+		local nan = weather.SetTime(0 / 0, 'test')
+		check('the published SetTime refuses a time that is not a number',
+			type(bad) == 'table' and bad.ok == false and bad.error == 'invalid_time'
+				and type(nan) == 'table' and nan.ok == false,
+			type(bad) == 'table' and tostring(bad.error) or type(bad))
+		local fine = weather.SetTime(90000, 'test')
+		check('and folds one past midnight into the day',
+			type(fine) == 'table' and fine.ok == true and weather.Status().ok ~= false)
 	end
 end
 
