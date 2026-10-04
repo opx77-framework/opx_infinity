@@ -20195,6 +20195,134 @@ do
 	end
 end
 
+section('vehicles: two stores of one plate leave it STORED, once, and a stale save cannot undo it')
+do
+	-- A save pass that finds the owner gone and the departure sweep both put the
+	-- same car away; a STORE request can land inside a recall. Both stores read
+	-- the snapshot and yield on the row, and the loser's `remove` answers false
+	-- for a car the winner already took away -- so it wrote OUT over STORED and
+	-- told the player the store was refused. And a save pass whose read was in
+	-- flight wrote the whole row back as it had read it: OUT, under the old garage.
+	--
+	-- The save pass is a local of the module, so it is caught where it is handed
+	-- to the scheduler and driven by hand, beside a store.
+	local savePass
+	local env, control, why = boot('server', nil, nil, function(env, file)
+		if file:find('core/server/scheduler.lua', 1, true) then
+			local every = env.OPX.Scheduler.Every
+			env.OPX.Scheduler.Every = function(name, ms, step)
+				if name == 'vehicles:save' then savePass = step end
+				return every(name, ms, step)
+			end
+		end
+	end)
+	check('the server boots for the store race', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('and the save pass was caught', type(savePass) == 'function')
+
+	if type(vehicles) == 'table' and type(character) == 'table' and type(savePass) == 'function' then
+		local DRIVER, PLATE, CITIZEN = 72, 'STORE01', 'citizen-storer'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-72' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-72'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+
+		-- THE ROW, kept here so the last write is what the next read sees. Every
+		-- read and every full save yields once, as the real bridge does.
+		local STATE = vehicles.Storage.STATE
+		local row = { plate = PLATE, citizenId = CITIZEN,
+			record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+			state = STATE.STORED, health = 1.0, metadata = {} }
+		local real = {
+			FetchOne = vehicles.Storage.FetchOne, Save = vehicles.Storage.Save,
+			SetState = vehicles.Storage.SetState,
+		}
+		vehicles.Storage.FetchOne = function(plate)
+			if plate ~= PLATE then return OPX.Result.Err('vehicle.notFound', plate) end
+			local read = {}
+			for key, value in pairs(row) do read[key] = value end
+			env.Wait(0)
+			return OPX.Result.Ok(read)
+		end
+		-- Written BEFORE the yield: a statement lands in the order it was sent,
+		-- and awaiting its answer is what suspends.
+		vehicles.Storage.Save = function(entity)
+			row.state, row.garage = entity.state, entity.garage
+			env.Wait(0)
+			return OPX.Result.Ok(true)
+		end
+		vehicles.Storage.SetState = function(_, state, garage)
+			row.state = state
+			if garage ~= nil then row.garage = garage end
+			return OPX.Result.Ok(true)
+		end
+		-- The engine's answer for a vehicle that no longer exists.
+		local realRemove = env.Open77.vehicles.remove
+		local gone = {}
+		env.Open77.vehicles.remove = function(id)
+			if gone[id] then return false end
+			gone[id] = true
+			return realRemove(id)
+		end
+		local announced = 0
+		local realPublish = OPX.Publish
+		OPX.Publish = function(name, ...)
+			if name == vehicles.Event.ON_STORED then announced = announced + 1 end
+			return realPublish(name, ...)
+		end
+
+		local function bringOut()
+			local out
+			env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+			return settle(control, function() return out ~= nil end, 60) and out.ok == true, out
+		end
+
+		local brought, out = bringOut()
+		check('the car is out to begin with', brought, out and tostring(out.error))
+
+		local a, b
+		env.CreateThread(function() a = vehicles.Store(PLATE, 'garage_a') end)
+		env.CreateThread(function() b = vehicles.Store(PLATE, 'garage_a') end)
+		check('both stores settle',
+			settle(control, function() return a ~= nil and b ~= nil end, 60))
+		local won = (a and a.ok and 1 or 0) + (b and b.ok and 1 or 0)
+		check('exactly one store puts it away, and the other is told it is busy',
+			won == 1 and ((a.ok and b.error == 'vehicle.busy') or (b.ok and a.error == 'vehicle.busy')),
+			('%s / %s'):format(tostring(a and (a.error or 'ok')), tostring(b and (b.error or 'ok'))))
+		check('and the row is STORED under the garage asked for, not written back to OUT',
+			row.state == STATE.STORED and row.garage == 'garage_a',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+		check('and the put-away is announced once', announced == 1, announced)
+
+		-- A SAVE PASS IN FLIGHT WHEN THE STORE LANDS. Both read the row while it
+		-- says OUT; the store's answer comes back first and it sends STORED under
+		-- the new garage, and then the pass's answer comes back and it sent the
+		-- row as it had read it -- OUT, under the old garage -- after it.
+		brought = bringOut()
+		check('the car is out again', brought)
+		local passed, stored = false, nil
+		env.CreateThread(function() stored = vehicles.Store(PLATE, 'garage_b') end)
+		env.CreateThread(function() savePass(); passed = true end)
+		check('the pass and the store both settle',
+			settle(control, function() return passed and stored ~= nil end, 60)
+				and stored.ok == true, stored and tostring(stored.error))
+		check('and the stale pass did not write the row back to OUT under the old garage',
+			row.state == STATE.STORED and row.garage == 'garage_b',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+
+		OPX.Publish = realPublish
+		env.Open77.vehicles.remove = realRemove
+		vehicles.Storage.FetchOne, vehicles.Storage.Save, vehicles.Storage.SetState =
+			real.FetchOne, real.Save, real.SetState
+		character.Players[DRIVER] = nil
+	end
+end
+
 -- ── vehicle keys ─────────────────────────────────────────────────────────────
 -- THE OWNER: "faire les clé de voiture en item, quand même les véhicules admin,
 -- avant le menu ou alt on peut se donner la clé du véhicule précis". A key is an

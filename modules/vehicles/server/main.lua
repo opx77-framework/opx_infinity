@@ -21,6 +21,16 @@ local live
 -- out again.
 local claiming
 
+-- Plates an `M.Store` is part-way through. NOT `claiming`: a recall holds the
+-- claim and then calls `M.Store` itself, so the two have to be separate sets.
+-- Without it two stores of one plate -- a save pass finding the owner gone while
+-- the departure sweep puts the same car away, or a STORE request landing inside
+-- a recall -- both read the snapshot and both yield on the row, and the one that
+-- lost the removal saw `remove` answer false for a car that was already gone: it
+-- wrote OUT over the STORED the winner had just written, logged "could not be
+-- removed", and told the player the store was refused. Rebuilt with `live`.
+local storing
+
 -- The last citizen id each connection had a vehicle out for. The character
 -- module logs a player out on its own disconnect handler, which runs before
 -- this module's -- this module requires it, so it starts after it and registers
@@ -445,6 +455,14 @@ end
 function M.Store(plateId, garage)
 	local record = live[plateId]
 	if record == nil then return Result.Err('vehicle.notSpawned', tostring(plateId)) end
+	-- One store per plate at a time; see `storing`. Tested and set with nothing
+	-- in between that yields, and every exit below goes through `done`.
+	if storing[plateId] then return Result.Err('vehicle.busy', plateId) end
+	storing[plateId] = true
+	local function done(result)
+		storing[plateId] = nil
+		return result
+	end
 
 	-- The snapshot is read BEFORE the removal: it disappears with the vehicle.
 	local snapshot = Open77.vehicles.get(record.id)
@@ -477,10 +495,11 @@ function M.Store(plateId, garage)
 		Open77.log.error(('[vehicles] %s could not be removed from the world; leaving it ' ..
 			'spawned rather than recording it as stored'):format(plateId))
 		Store.SetState(plateId, STATE.OUT, garage)
-		return Result.Err('vehicle.storeRefused', plateId)
+		return done(Result.Err('vehicle.storeRefused', plateId))
 	end
 
 	live[plateId] = nil
+	done(nil)
 	-- The owner's connection, when they are still here: the plate's owner is a
 	-- citizen id, and a store from a sweep after they left has nobody to name.
 	local owner = character ~= nil and character.GetPlayerByCitizenId(record.citizenId) or nil
@@ -599,6 +618,12 @@ local function savePlate(plateId)
 	if snapshot == nil then return end
 	local fetched = Store.FetchOne(plateId)
 	if not fetched.ok then return end
+	-- READ AGAIN AFTER THE YIELD. `Save` writes the whole row, state and garage
+	-- included, as this read found them -- OUT, under the old garage. A store
+	-- that ran while the read was awaited had already written STORED under the
+	-- garage the player chose, and this write put it back: the car was in the
+	-- garage and the row said it was in the street, filed where it used to be.
+	if live[plateId] ~= record or storing[plateId] then return end
 	local vehicle = fetched.value
 	applyCondition(vehicle, record, snapshot)
 	Store.Save(vehicle)
@@ -647,6 +672,10 @@ end
 local function removed(id, reason)
 	id = tonumber(id)
 	for plateId, record in pairs(live) do
+		-- A STORE IN FLIGHT OWNS THIS PLATE: it is what is removing the car, and
+		-- it writes the row and publishes the store itself. Handling the removal
+		-- here as well announced one put-away twice.
+		if record.id == id and storing[plateId] then return end
 		if record.id == id then
 			-- Forgotten immediately, and the state written on a thread: the
 			-- platform lets an event handler yield, but this one returns at once
@@ -736,6 +765,7 @@ end
 function M.Init()
 	live = {}
 	claiming = {}
+	storing = {}
 	owners = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
