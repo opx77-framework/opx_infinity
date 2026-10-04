@@ -1088,15 +1088,6 @@ local function raiseFloor()
 	end
 end
 
---- How many previews one dealer's floor already holds.
-local function floorCount(dealerKey, except)
-	local total = 0
-	for key, spot in pairs(previews) do
-		if spot.dealer == dealerKey and key ~= except then total = total + 1 end
-	end
-	return total
-end
-
 -- THE TWO WRITERS ARE GONE. `M.PlacePreview` and `M.RemovePreview` stood here,
 -- and the whole of what they wrote is now `PREVIEW.POINTS` in
 -- `config/dealership.lua`. The reader below is untouched: rows an operator
