@@ -12976,6 +12976,52 @@ do
 	end
 end
 
+-- ── deleting your own character asks twice ──────────────────────────────────
+-- `/opx.delete <id>` deleted at once, taking clothes, items, vehicles and
+-- groups with it; one mistyped character in a citizen id was somebody else of
+-- yours. The bare command now says what it would do, and `confirm` does it.
+section('character: /opx.delete asks for confirm before it deletes anything')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+	}))
+	check('the server boots with the character module', why == nil, why)
+	if why == nil then
+		local character = env.OPX.Modules.Get('character')
+		local command = control.commands['opx.delete']
+		check('the delete command is registered', command ~= nil)
+		local asked = {}
+		local real = character.DeleteCharacter
+		character.DeleteCharacter = function(source, citizenId)
+			asked[#asked + 1] = citizenId
+			return { ok = true }
+		end
+		local src = 52
+		control.Admit(src, 'account-delete')
+		if command ~= nil then
+			command.run(src, { 'ABC123' })
+			control.Pump(4)
+		end
+		check('the bare command deletes nothing', #asked == 0, #asked)
+		-- Past the command's one-second cooldown.
+		control.Pump(15)
+		if command ~= nil then
+			command.run(src, { 'ABC123', 'confirm' })
+			control.Pump(4)
+		end
+		check('and the confirmed one deletes the character named',
+			#asked == 1 and asked[1] == 'ABC123', asked[1])
+		check('and the warning names the command that goes ahead',
+			env.OPX.Locale.Text('character.deleteConfirm', { citizenId = 'ABC123' })
+				:find('/opx.delete ABC123 confirm', 1, true) ~= nil)
+		character.DeleteCharacter = real
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

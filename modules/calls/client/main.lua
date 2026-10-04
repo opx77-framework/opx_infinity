@@ -497,7 +497,8 @@ function M.PlayerRows()
 			id = 'callShare',
 			label = locale('calls.row.share'),
 			icon = 'person',
-			group = locale('calls.group'),
+			-- NO FOLDER. It sat alone inside a `Holocall` folder on the eye: one
+			-- more press to reach the only row in it.
 			order = 60,
 			distance = ROW_DISTANCE,
 			canInteract = function(context) return targetOf(context) ~= nil end,

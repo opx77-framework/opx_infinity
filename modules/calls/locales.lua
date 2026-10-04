@@ -46,7 +46,6 @@ local EN = {
 	-- ── the rows on the eye ──────────────────────────────────────────────────
 	-- One row is left: handing your contact to the player you are pointing at.
 	['calls.row.share'] = 'Give my contact',
-	['calls.group'] = 'Holocall',
 
 	-- ── the hologram ─────────────────────────────────────────────────────────
 	-- The whole feature's vocabulary now: the eye rows above are gone and these
@@ -147,7 +146,6 @@ local FR = {
 
 	-- ── la ligne de l'oeil ───────────────────────────────────────────────────
 	['calls.row.share'] = 'Donner mon contact',
-	['calls.group'] = 'Holo-appel',
 
 
 	-- ── l'hologramme ─────────────────────────────────────────────────────────

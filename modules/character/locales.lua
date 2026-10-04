@@ -21,6 +21,7 @@ OPX.Locale.Register('en', {
 	['character.unnamed'] = 'no name yet',
 	['character.created'] = 'Character created. Your citizen ID is {citizenId}.',
 	['character.deleted'] = 'Character deleted.',
+	['character.deleteConfirm'] = 'This deletes {citizenId} with its clothes, items and vehicles, for good. Run /opx.delete {citizenId} confirm to go ahead.',
 	['character.deleteNotAllowed'] = 'Deleting your own character is turned off on this server. Ask a member of staff.',
 	['character.inUse'] = 'That character is already in the world.',
 	['character.alreadyPlaying'] = 'You are playing that character right now.',
@@ -58,7 +59,7 @@ OPX.Locale.Register('en', {
 	['command.inGameOnly'] = 'That command has to be run in game.',
 	['command.usage.select'] = 'usage: /opx.select <citizenId>',
 	['command.usage.create'] = 'usage: /opx.create (no arguments; it disconnects you)',
-	['command.usage.delete'] = 'usage: /opx.delete <citizenId>',
+	['command.usage.delete'] = 'usage: /opx.delete <citizenId> confirm',
 	['command.usage.money'] =
 		'usage: /opx.money <playerId|citizenId> <TYPE> <amount> (negative removes)',
 	['command.usage.job'] = 'usage: /opx.job <playerId|citizenId> <job> [grade]',
@@ -112,6 +113,7 @@ OPX.Locale.Register('fr', {
 	['character.unnamed'] = 'sans nom',
 	['character.created'] = 'Personnage créé. Votre identifiant citoyen est {citizenId}.',
 	['character.deleted'] = 'Personnage supprimé.',
+	['character.deleteConfirm'] = 'Cela supprime {citizenId} avec ses vêtements, objets et véhicules, définitivement. Tapez /opx.delete {citizenId} confirm pour continuer.',
 	['character.deleteNotAllowed'] = "La suppression de votre propre personnage est désactivée sur ce serveur. Demandez à un membre de l'équipe.",
 	['character.inUse'] = 'Ce personnage est déjà en jeu.',
 	['character.alreadyPlaying'] = 'Vous jouez déjà ce personnage.',
@@ -148,7 +150,7 @@ OPX.Locale.Register('fr', {
 	['command.inGameOnly'] = 'Cette commande doit être lancée en jeu.',
 	['command.usage.select'] = 'usage : /opx.select <identifiantCitoyen>',
 	['command.usage.create'] = 'usage : /opx.create (sans argument ; vous serez déconnecté)',
-	['command.usage.delete'] = 'usage : /opx.delete <identifiantCitoyen>',
+	['command.usage.delete'] = 'utilisation : /opx.delete <identifiantCitoyen> confirm',
 	['command.usage.money'] =
 		'usage : /opx.money <numéroJoueur|identifiantCitoyen> <TYPE> <montant> (négatif pour retirer)',
 	['command.usage.job'] = 'usage : /opx.job <numéroJoueur|identifiantCitoyen> <métier> [grade]',
