@@ -29281,6 +29281,104 @@ do
 end
 
 
+-- ── staff commands: a kill by another name, a flood of announcements, a veil ─
+-- `player.health 0` killed on the health grant alone; announcements had no
+-- floor but the 400ms action floor; `NOCLIP.HIDE_BODY = false` was never read
+-- on the server, so the body was hidden anyway; and a staff bag opened through
+-- the menu left no audit line where the typed command leaves one.
+section('staff commands: health zero, the announcement floor, the noclip veil, read audits')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the staff command checks', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src, target = 12, 13
+		control.Admit(src, 'account-staff')
+		control.Admit(target, 'account-target')
+		OPX.EnsureSession(src)
+		OPX.EnsureSession(target)
+		control.Allow(src, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(src, 'command.' .. admin.Command.WORLD_ANNOUNCE)
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+
+		control.commands[admin.Command.PLAYER_HEALTH].run(src, { tostring(target), '0' })
+		control.Pump(4)
+		local refused = lastAudit('admin.player.health')
+		check('health 0 without the kill grant is refused, and audited',
+			refused ~= nil and refused.ok == false, refused and refused.detail)
+
+		-- A second operator, so the first one's action floor is not what answers.
+		local killer = 14
+		control.Admit(killer, 'account-killer')
+		OPX.EnsureSession(killer)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_KILL)
+		local function zeroRefusals()
+			local seen = 0
+			for _, entry in ipairs(admin.Server.Recent(20)) do
+				if entry.detail == 'zero without the kill grant' then seen = seen + 1 end
+			end
+			return seen
+		end
+		local before = zeroRefusals()
+		control.commands[admin.Command.PLAYER_HEALTH].run(killer, { tostring(target), '0' })
+		control.Pump(4)
+		check('while an operator granted the kill is not stopped by that check',
+			before == 1 and zeroRefusals() == 1, ('%d then %d'):format(before, zeroRefusals()))
+
+		local function announcements()
+			local seen = 0
+			for _, event in ipairs(control.clientEvents) do
+				if event.name == admin.Event.ANNOUNCE then seen = seen + 1 end
+			end
+			return seen
+		end
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'first' })
+		control.Pump(10)
+		local first = announcements()
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'second' })
+		control.Pump(10)
+		check('a second announcement inside the floor is refused',
+			first > 0 and announcements() == first, ('%d then %d'):format(first, announcements()))
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(0, { 'console' })
+		control.Pump(4)
+		check('while the console is not held to it', announcements() > first)
+
+		admin.Settings.NOCLIP = admin.Settings.NOCLIP or {}
+		local hide = admin.Settings.NOCLIP.HIDE_BODY
+		admin.Settings.NOCLIP.HIDE_BODY = false
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'on' })
+		control.Pump(4)
+		check('with HIDE_BODY off, noclip leaves the body visible',
+			admin.Players.IsNoclip(src) == true and control.bodies.visible[src] ~= false,
+			tostring(control.bodies.visible[src]))
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'off' })
+		control.Pump(4)
+		admin.Settings.NOCLIP.HIDE_BODY = hide
+
+		-- A bag opened through the menu is a read, and audited once.
+		control.Allow(src, 'command.' .. admin.OPENER)
+		control.Allow(src, 'command.' .. admin.Command.INVENTORY_VIEW)
+		control.Pump(10)
+		env.source = src
+		control.netEvents[admin.Event.REFRESH]('bag', tostring(target))
+		control.Pump(10)
+		local read = lastAudit('admin.inventory.view')
+		check('a bag opened through the menu leaves an audit line',
+			read ~= nil and tostring(read.detail):find('menu', 1, true) ~= nil, read and read.detail)
+	end
+end
+
+
 -- ── doorlock ─────────────────────────────────────────────────────────────────
 -- The door locks. The server is booted against a bridge that keeps what it was
 -- given, with three config doors patched in after `config/doorlock.lua` loads,

@@ -44,6 +44,7 @@ local ERRORS = {
 	gate_unreadable = 'admin.error.gateUnreadable',
 	no_position = 'admin.error.noPosition',
 	kill_refused = 'admin.error.killRefused',
+	kill_not_granted = 'admin.error.killNotGranted',
 	respawn_refused = 'admin.error.respawnRefused',
 	refused = 'admin.error.refused',
 	bad_coordinates = 'admin.error.badCoordinates',

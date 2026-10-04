@@ -180,6 +180,10 @@ OPX.Config.MODULES.admin = {
 		CHAT = true,
 		MAX_CHARACTERS = 240,
 
+		-- Least time between two announcements, from any operator; the console is
+		-- exempt. 0 turns the floor off.
+		COOLDOWN_MS = 10000,
+
 		-- THE TWO STINGERS THAT WRAP THE MESSAGE, by BARE FILE NAME.
 		--
 		-- They are files in this resource -- `ui/public/audio/` here, `web/audio/`
