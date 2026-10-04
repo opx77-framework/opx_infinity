@@ -16302,6 +16302,71 @@ do
 	end
 end
 
+-- The queue cap was read in one round trip and filed in another, so two orders
+-- placed together both read the same count and both landed. The insert carries
+-- the cap now; an order it turns away gives back what it took.
+section('crafting: an order the full shelf turns away gives everything back')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local contract = OPX.Api.Get('crafting')
+		local registered = contract.RegisterBench('tests:race', { owner = 'tests', queue = 1,
+			recipes = { { KEY = 'rounds', OUTPUT = 'ammo_handgun', SECONDS = 60, PRICE = 25,
+				MONEY = 'EDDIES', INPUTS = { scrap_metal = 2 } } } })
+		check('the bench registers', registered.ok == true, tostring(registered.error))
+
+		local bag, purse = { scrap_metal = 2 }, 100
+		local realInventory, realCharacter = crafting.Contracts.inventory,
+			crafting.Contracts.character
+		crafting.Contracts.inventory = setmetatable({
+			GetItemCount = function(_, name) return OPX.Result.Ok(bag[name] or 0) end,
+			RemoveItem = function(_, name, count)
+				if (bag[name] or 0) < count then return OPX.Result.Err('not_enough') end
+				bag[name] = bag[name] - count
+				return OPX.Result.Ok(true)
+			end,
+			AddItem = function(_, name, count)
+				bag[name] = (bag[name] or 0) + count
+				return OPX.Result.Ok(true)
+			end,
+		}, { __index = realInventory })
+		crafting.Contracts.character = setmetatable({
+			GetPlayer = function() return { PlayerData = { citizenId = 'ABC12345' } } end,
+			GetMoney = function() return { EDDIES = purse } end,
+			RemoveMoney = function(_, _, amount) purse = purse - amount return true end,
+			AddMoney = function(_, _, amount) purse = purse + amount return true end,
+		}, { __index = realCharacter })
+
+		-- The shelf read says there is room; by the time the row is filed,
+		-- another order has taken it.
+		local realShelf, realPlace = crafting.Storage.Shelf, crafting.Storage.Place
+		crafting.Storage.Shelf = function() return OPX.Result.Ok({ cooking = 0, tail = 0 }) end
+		local queued
+		crafting.Storage.Place = function(_, _, _, _, queue)
+			queued = queue
+			return OPX.Result.Ok(nil)
+		end
+
+		local answer
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the order is refused as a full shelf',
+			answer ~= nil and answer.ok == false and answer.error == crafting.Refusal.QUEUE_FULL,
+			answer and tostring(answer.error))
+		check('the bench\'s cap travels with the insert', queued == 1, tostring(queued))
+		check('the materials come back', bag.scrap_metal == 2, bag.scrap_metal)
+		check('and so does the fee', purse == 100, purse)
+
+		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
+		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
+		contract.UnregisterBenches('tests')
+	end
+end
+
 -- ── crafting: the statements, and the one that makes a collection exactly-once
 -- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
 -- whether it affected a row, so the bridge is stubbed rather than the storage:
@@ -16310,6 +16375,7 @@ section('crafting: the shelf is the database\'s, and so is the clock')
 do
 	local seen = {}
 	local affected = 1
+	local mintedId = 4242
 	local db = Host.Database({
 		scalar = function() return 1 end,
 		update = function(sql, params)
@@ -16327,7 +16393,7 @@ do
 		end,
 		insert = function(sql, params)
 			seen[#seen + 1] = { sql = sql, params = params }
-			return 4242
+			return mintedId
 		end,
 	})
 
@@ -16385,7 +16451,7 @@ do
 			orders.ok and #orders.value or orders.error)
 
 		-- ── placing one ──────────────────────────────────────────────────
-		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150)
+		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
 		check('placing an order answers the id the database minted',
 			placed.ok and placed.value == 4242, placed.ok and placed.value or placed.error)
 		local insert = seen[#seen]
@@ -16393,6 +16459,18 @@ do
 			insert.sql:find('DATE_ADD(UTC_TIMESTAMP(), INTERVAL @seconds SECOND)', 1, true) ~= nil)
 		check('with the seconds bound by name, never spliced into the text',
 			insert.params['@seconds'] == 150, tostring(insert.params['@seconds']))
+		-- THE CAP IS IN THE SAME STATEMENT as the row. Read in one round trip and
+		-- filed in another, two orders placed together both read the same count
+		-- and a queue of three held four.
+		check('AND THE QUEUE CAP IS TESTED BY THE INSERT ITSELF, not by an earlier read',
+			insert.sql:find('SELECT COUNT(*) FROM opx77_crafting_orders', 1, true) ~= nil
+				and insert.sql:find('< @queue', 1, true) ~= nil
+				and insert.params['@queue'] == 3, tostring(insert.params['@queue']))
+		mintedId = 0
+		local full = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
+		check('an insert the cap turned away answers no id, and is not a failure',
+			full.ok and full.value == nil, full.ok and tostring(full.value) or full.error)
+		mintedId = 4242
 
 		-- ── the claim ────────────────────────────────────────────────────
 		affected = 1
