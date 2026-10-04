@@ -35530,6 +35530,15 @@ do
 		check('another resource cannot unregister it',
 			call('rival', 'UnregisterUsableItem', 'my_burger').value == false
 				and Actions.UsableOwner('my_burger') == 'ext:my_shop')
+		-- A stop that reaches this VM after the caller came back (a restart: the
+		-- stop is queued, the new instance registered first) or a stop another
+		-- resource raised by name must not wipe a RUNNING caller's handlers.
+		local realState = env.GetResourceState
+		env.GetResourceState = function(name) return name == 'my_shop' and 'running' or 'stopped' end
+		control.Fire('onResourceStop', 'my_shop')
+		check('a stop naming a caller that is running again leaves its use handlers',
+			Actions.UsableOwner('my_burger') == 'ext:my_shop')
+		env.GetResourceState = realState
 		control.Fire('onResourceStop', 'my_shop')
 		check('the caller stopping takes its use handlers with it, and nobody else\'s',
 			Actions.UsableOwner('my_burger') == nil and Actions.UsableOwner('lockpick') == 'heists_module')

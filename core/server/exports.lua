@@ -1231,6 +1231,16 @@ end)
 -- them are in bags -- and so does everything it wrote.
 AddEventHandler(OPX.Host.RESOURCE_STOP, function(name)
 	if type(name) ~= 'string' or name == GetCurrentResourceName() then return end
+	-- ONLY A CALLER THAT IS STILL GONE. Another resource's stop reaches this VM
+	-- QUEUED, on a later tick (devkit, server-api "Resource lifecycle events":
+	-- "a stop/start can occur before the next tick", check `GetResourceState`),
+	-- so on a `restart` the new instance can have registered its handlers,
+	-- benches and bars before this runs -- and wiping by name would take those.
+	-- And the server bus is host-wide: any resource can raise `onResourceStop`
+	-- naming a running one. Either way, a caller that is running is left alone;
+	-- its new registrations replace its old ones.
+	local read, state = pcall(GetResourceState, name)
+	if read and (state == 'running' or state == 'starting') then return end
 	local owner = 'ext:' .. name
 	local api = inventory()
 	if api ~= nil and api.UnregisterUsables ~= nil then api.UnregisterUsables(owner) end
