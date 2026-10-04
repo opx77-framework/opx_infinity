@@ -3866,6 +3866,60 @@ do
 	end
 end
 
+-- A REFUSED TOAST UPDATE PUTS BACK A FALSE, IT DOES NOT DELETE IT. The rollback
+-- was `was ~= ABSENT and was or nil`, the and/or trap the `ABSENT` sentinel was
+-- written to avoid.
+section('a refused toast update restores what it changed')
+do
+	local refuse = false
+	local lastToast
+	local env = {
+		Open77 = { log = keptLog() },
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Glyphs = {},
+			UI = { Send = function(_, _, payload)
+				lastToast = payload
+				return true, refuse
+			end },
+			Note = function() end,
+		},
+		locale = function(key) return key end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, pairs = pairs,
+		ipairs = ipairs, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/client/notify.lua', 't', env)
+	check('the toasts load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local id = env.OPX.Toast.Show({ message = 'hello', title = false })
+		local toast = lastToast
+		check('a toast with a false title goes up',
+			id ~= nil and toast ~= nil and toast.title == false)
+
+		refuse = true
+		local updated, reason = env.OPX.Toast.Update(id, { title = 'changed', extra = 1 })
+		check('the host refusing the patch is reported',
+			updated == false and reason == 'payload_refused', tostring(reason))
+		check('the false it overwrote is put back, not deleted', toast.title == false,
+			tostring(toast.title))
+		check('and a key the patch added is taken off again', toast.extra == nil)
+
+		-- A refused REPLACEMENT must leave the toast still on screen addressable.
+		refuse = false
+		env.OPX.Toast.Show({ id = 'kept', message = 'first' })
+		refuse = true
+		local replaced = env.OPX.Toast.Show({ id = 'kept', message = 'second' })
+		refuse = false
+		check('a refused replacement is reported', replaced == nil)
+		check('and the toast it would have replaced can still be updated',
+			env.OPX.Toast.Update('kept', { message = 'third' }) == true)
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
