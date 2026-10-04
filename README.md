@@ -347,8 +347,9 @@ edit it in a panel built like ox's.
 | — | `onDuty` | carried over from the first version: a job group only counts on duty |
 | `doorRate` | — | **not here**: Open77's door natives have no speed to set |
 
-**Who may turn it** is ox's `isAuthorised`, in ox's order: staff with
-`command.opx.doorlock.bypass` (ox's `PlayerAceAuthorised`) or the ACL entry
+**Who may turn it** is ox's `isAuthorised`, in ox's order: staff with the plain ACL
+right `opx.doorlock.bypass` when `STAFF_BYPASS` is on (ox's `PlayerAceAuthorised`, off
+by default, and not carried by `command.*`, so an admin is asked like anybody) or the ACL entry
 `doorlock.<id>` (ox's ace `doorlock.<name>`); a listed **character** opens outright;
 else the **groups** decide (through `OPX.JobGate`); else, when no group let them in, an
 **item** does; and whoever got that far still types the **code** if the door has one —
@@ -437,7 +438,7 @@ refused) and audits:
 | `command.opx.doorlock.save` | create and edit (the panel's Confirm) |
 | `command.opx.doorlock.remove` / `.lock` / `.key` | delete, lock / unlock from anywhere, cut a key — in the panel and as commands |
 | `command.opx.doorlock.list` | `/opx.doorlock.list [door]` |
-| `command.opx.doorlock.bypass` | turning any door without a key or a code |
+| `opx.doorlock.bypass` | turning any door without a key or a code, only when `STAFF_BYPASS` is on (a plain right, not under `command.*`) |
 | `command.opx.admin.player.tp` | the panel's *Teleport to door* |
 
 So an operator role needs `command.opx.doorlock` **and** `command.opx.doorlock.*`.
