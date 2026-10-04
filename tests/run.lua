@@ -12876,6 +12876,42 @@ do
 	end
 end
 
+-- ── the lock rows say which way ─────────────────────────────────────────────
+-- `Lock / unlock` with a tick box made the player decode a check mark, while
+-- the key strip already said `Lock {door}`. Each module now registers a row per
+-- direction and shows the one that applies.
+section('the door and vehicle lock rows on the eye say which way they go')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the lock rows', why == nil, why)
+	if why == nil then
+		local target = env.OPX.Modules.Get('target')
+		local function rowsOf(owner)
+			local found = {}
+			for _, listed in ipairs(target ~= nil and target.Registry.List(owner) or {}) do
+				local row = target.Registry.Get(listed.token)
+				if row ~= nil then found[row.id] = row end
+			end
+			return found
+		end
+
+		local doors = rowsOf('doorlock')
+		check('a door has a Lock row and an Unlock row',
+			doors['doorlock.lock'] ~= nil and doors['doorlock.unlock'] ~= nil)
+		check('worded as the action, not as a toggle',
+			doors['doorlock.lock'] ~= nil and doors['doorlock.lock'].label == 'Lock door'
+				and doors['doorlock.unlock'].label == 'Unlock door')
+		check('and the two-way row is gone', doors['doorlock.toggle'] == nil)
+
+		local keys = rowsOf('vehiclekeys')
+		check('a vehicle has a Lock row and an Unlock row',
+			keys['vehiclekeys.lock'] ~= nil and keys['vehiclekeys.unlock'] ~= nil)
+		check('worded as the action',
+			keys['vehiclekeys.lock'] ~= nil and keys['vehiclekeys.lock'].label == 'Lock vehicle'
+				and keys['vehiclekeys.unlock'].label == 'Unlock vehicle')
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

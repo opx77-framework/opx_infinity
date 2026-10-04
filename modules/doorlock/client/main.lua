@@ -396,16 +396,34 @@ local function registerRows()
 		return
 	end
 	local registered = target.RegisterDoors(OWNER, {
+		-- TWO ROWS THAT SAY WHICH WAY, not one `Lock / unlock` with a tick box.
+		-- The key strip already said `Lock {door}` or `Unlock {door}` from the
+		-- door's state, while the eye made the player decode a check mark; the
+		-- eye now shows the one row that applies. Both send the same flip, which
+		-- the server re-checks against the state it holds.
 		{
-			id = 'doorlock.toggle',
-			label = locale('doorlock.row.toggle'),
+			id = 'doorlock.lock',
+			label = locale('doorlock.row.lock'),
 			icon = 'lock',
 			distance = Access.MaxReach(),
-			canInteract = function(context) return Runtime.Targeted(context) ~= nil end,
-			checked = function(context)
+			canInteract = function(context)
 				local door = Runtime.Targeted(context)
-				if door == nil then return nil end
-				return door.state == 1
+				return door ~= nil and door.state ~= 1
+			end,
+			onSelect = function(context)
+				local door = Runtime.Targeted(context)
+				return door ~= nil and Runtime.Toggle(door.id)
+			end,
+			order = 10,
+		},
+		{
+			id = 'doorlock.unlock',
+			label = locale('doorlock.row.unlock'),
+			icon = 'lock',
+			distance = Access.MaxReach(),
+			canInteract = function(context)
+				local door = Runtime.Targeted(context)
+				return door ~= nil and door.state == 1
 			end,
 			onSelect = function(context)
 				local door = Runtime.Targeted(context)

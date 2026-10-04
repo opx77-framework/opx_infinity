@@ -8,6 +8,8 @@
 
 OPX.Locale.Register('en', {
 	['vehiclekeys.row.toggle'] = 'Lock / unlock',
+	['vehiclekeys.row.lock'] = 'Lock vehicle',
+	['vehiclekeys.row.unlock'] = 'Unlock vehicle',
 	['vehiclekeys.locked'] = '{label}: locked.',
 	['vehiclekeys.unlocked'] = '{label}: unlocked.',
 	['vehiclekeys.given'] = 'You have the key to {label}.',
@@ -22,7 +24,9 @@ OPX.Locale.Register('en', {
 })
 
 OPX.Locale.Register('fr', {
-	['vehiclekeys.row.toggle'] = 'Verrouiller / Déverrouiller',
+	['vehiclekeys.row.toggle'] = 'Verrouiller / déverrouiller',
+	['vehiclekeys.row.lock'] = 'Verrouiller le véhicule',
+	['vehiclekeys.row.unlock'] = 'Déverrouiller le véhicule',
 	['vehiclekeys.locked'] = '{label} : verrouillé.',
 	['vehiclekeys.unlocked'] = '{label} : déverrouillé.',
 	['vehiclekeys.given'] = 'Vous avez la clé de {label}.',
