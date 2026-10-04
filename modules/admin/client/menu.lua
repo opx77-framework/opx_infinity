@@ -164,7 +164,8 @@ local function guarded(id, labelKey, tokens, confirmKey, refresh, popAfter)
 	-- for a confirmation. A guarded row carrying `back = true` therefore popped on
 	-- press and never confirmed and never ran: the delete row did nothing at all,
 	-- silently, while looking exactly like a row that had been pressed.
-	item.data = { confirm = tokens, key = confirmKey, refresh = refresh, popAfter = popAfter }
+	item.data = { confirm = tokens, key = confirmKey, refresh = refresh, popAfter = popAfter,
+		label = item.label }
 	return item
 end
 
@@ -612,7 +613,9 @@ SCREENS.players = function()
 	if #list >= SEARCH_FROM or state ~= 'all' then extras[1] = stateRow(state) end
 	local title, listed = paged(matched, 'players', nil, locale('admin.menu.players'), function(entry)
 		local value = locale('admin.state.' .. entry.state)
-		if entry.bucket ~= 0 then value = value .. ' b' .. entry.bucket end
+		if entry.bucket ~= 0 then
+			value = value .. ' ' .. locale('admin.menu.bucket', { bucket = entry.bucket })
+		end
 		if entry.distance then value = value .. ' ' .. entry.distance .. 'm' end
 		return go('player_' .. entry.id,
 			{ text = ('[%d] %s'):format(entry.id, entry.name) }, 'player', entry.id,
@@ -1040,8 +1043,13 @@ SCREENS.vehicles = function()
 	local flags = {}
 	for _, flag in ipairs(M.Section('VEHICLES').FLAGS or {}) do
 		if type(flag) == 'string' and flag:match('^[%w_]+$') then
-			flags[#flags + 1] = icon(command('flag_' .. flag,
-				{ text = locale('admin.menu.flag', { flag = flag }) },
+			-- THE FLAG'S OWN WORDS, and its config name only for a flag nobody wrote
+			-- any for. This row read `Toggle engineOn`: a code name, and a verb that
+			-- says nothing about what pressing it does.
+			local worded = 'admin.menu.flag.' .. flag
+			local label = OPX.Locale.Exists(worded) and locale(worded)
+				or locale('admin.menu.flag', { flag = flag })
+			flags[#flags + 1] = icon(command('flag_' .. flag, { text = label },
 				{ Command.VEHICLE_FLAG, 'near', flag }), 'flag')
 		end
 	end
@@ -1330,10 +1338,13 @@ SCREENS.saved = function()
 			if matches(query, entry.label, entry.name) then rows[#rows + 1] = entry end
 		end
 	end
+	-- CONFIRMED, like every other row that destroys something. A spot saved in
+	-- game exists nowhere else, and this list is twenty identical trash rows an
+	-- arrow key apart: one press used to forget it on the spot.
 	local title, listed = paged(rows, 'saved', nil, locale('admin.menu.saved'), function(entry)
-		return icon(command('forget_' .. entry.name,
+		return icon(guarded('forget_' .. entry.name,
 			{ text = locale('admin.menu.forget', { label = entry.label }) },
-			{ Command.WORLD_LOC_REMOVE, entry.name }, 'locations'), 'trash')
+			{ Command.WORLD_LOC_REMOVE, entry.name }, 'admin.confirm.forget', 'locations'), 'trash')
 	end)
 	local items = append(searchRows(#rows, runtime), listed)
 	if #rows == 0 then
@@ -1414,6 +1425,7 @@ end
 -- this menu under Self -> Position and on the eye's own row. It copies the
 -- position AND the facing the operator is standing at straight to the operating
 -- system clipboard, ready to paste into whichever `config/` file wants it. That
+-- command is the whole of the capture path and the config headers name it.
 
 -- ── the Dev screen ───────────────────────────────────────────────────────────
 --
@@ -1461,7 +1473,7 @@ SCREENS.dev = function()
 
 	return locale('admin.menu.dev'), items
 end
--- command is the whole of the capture path and the config headers name it.
+
 SCREENS.weather = function()
 	local link = links()
 	local items = {}
@@ -1469,7 +1481,11 @@ SCREENS.weather = function()
 		local presets = M.Settings.WEATHER_PRESETS
 		for _, preset in ipairs(type(presets) == 'table' and presets or {}) do
 			if type(preset) == 'string' and preset:match('^[%w_%-]+$') then
-				items[#items + 1] = icon(command('preset_' .. preset, { text = preset },
+				-- The preset's own words where the catalogue has them -- the eye's
+				-- weather rows already drew them -- and the config name otherwise.
+				local worded = 'admin.weather.' .. preset
+				local label = OPX.Locale.Exists(worded) and locale(worded) or preset
+				items[#items + 1] = icon(command('preset_' .. preset, { text = label },
 					{ link.WEATHER_SET, preset }), 'weather')
 			end
 		end
@@ -1544,7 +1560,12 @@ SCREENS.confirm = function(arg)
 	-- Cancel first, so the cursor starts on the harmless row.
 	return locale(arg.key), {
 		row('cancel', locale('admin.menu.cancel'), { back = true }, { icon = 'back' }),
-		row('confirm', locale('admin.menu.confirm'), { confirmed = true },
+		-- THE CONFIRM ROW SAYS THE ACTION. It read `Confirm` under a question,
+		-- which is one more thing to read before knowing what Enter does; the
+		-- row that asked for the confirmation carries its own words here, and
+		-- `Confirm` is only for a caller that names none.
+		row('confirm', type(arg.label) == 'string' and arg.label or locale('admin.menu.confirm'),
+			{ confirmed = true },
 			{ description = table.concat(arg.tokens, ' '), icon = 'warning' }),
 	}
 end
@@ -2143,12 +2164,16 @@ end
 -- @author dop42
 -- @param tokens table
 -- @param key string
-function Menu.Confirm(tokens, key, refresh, popAfter)
+-- @param refresh string|nil
+-- @param popAfter boolean|nil
+-- @param label string|nil what the confirm row says; `Confirm` when nil
+function Menu.Confirm(tokens, key, refresh, popAfter, label)
 	suspended = false
 	if #stack == 0 then return end
 	top().cursor = nil
 	stack[#stack + 1] = { screen = 'confirm',
-		arg = { tokens = tokens, key = key, refresh = refresh, back = popAfter == true } }
+		arg = { tokens = tokens, key = key, refresh = refresh, back = popAfter == true,
+			label = label } }
 	draw()
 end
 
@@ -2384,7 +2409,7 @@ onAction = function(payload)
 		return
 	end
 	if type(data.confirm) == 'table' and type(data.key) == 'string' then
-		return Menu.Confirm(data.confirm, data.key, data.refresh, data.popAfter)
+		return Menu.Confirm(data.confirm, data.key, data.refresh, data.popAfter, data.label)
 	end
 	if type(data.form) == 'string' then return Forms.Open(data.form, data.arg) end
 end
