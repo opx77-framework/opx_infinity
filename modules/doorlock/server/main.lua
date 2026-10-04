@@ -365,6 +365,15 @@ local function toggle(player, payload)
 	answer(player, true, wanted and 'locked' or 'unlocked', door, { locked = wanted, how = how })
 end
 
+--- How many of the lockpick item a player's bag holds. Yields on a load.
+local function picksHeld(player, item)
+	local api = OPX.Api.Get('inventory')
+	if api == nil or type(api.GetItemCount) ~= 'function' then return 0 end
+	local read, counted = pcall(api.GetItemCount, player, item)
+	if not read or type(counted) ~= 'table' or counted.ok ~= true then return 0 end
+	return tonumber(counted.value) or 0
+end
+
 --- Starts a pick, if this player may try one here. Yields.
 local function pickStart(player, payload)
 	if OPX.Cooling(player, 'doorlock.request', 600) then return answer(player, false, 'too_fast') end
@@ -378,15 +387,7 @@ local function pickStart(player, payload)
 	local far = outOfReach(player, door)
 	if far ~= nil then return answer(player, false, far, door) end
 	if isDown(player) then return answer(player, false, 'player_down', door) end
-	local api = OPX.Api.Get('inventory')
-	local held = 0
-	if api ~= nil and type(api.GetItemCount) == 'function' then
-		local read, counted = pcall(api.GetItemCount, player, pick.item)
-		if read and type(counted) == 'table' and counted.ok == true then
-			held = tonumber(counted.value) or 0
-		end
-	end
-	if held < 1 then return answer(player, false, 'no_lockpick', door) end
+	if picksHeld(player, pick.item) < 1 then return answer(player, false, 'no_lockpick', door) end
 
 	local level = pick.difficulty[door.difficulty] or pick.difficulty[pick.default]
 	picking[player] = { key = door.key, at = OPX.Now(), durationMs = level.durationMs,
@@ -414,7 +415,15 @@ local function pickEnd(player, payload)
 	local far = outOfReach(player, door)
 	if far ~= nil then return answer(player, false, far, door) end
 
+	-- THE PICK IS STILL IN HAND, AND SO IS THE PLAYER, at the moment it turns.
+	-- Both were asked only when the bar started, so one lockpick passed from bag
+	-- to bag let a whole crew start bars on it -- and the break roll, finding no
+	-- pick left to take, took nothing, so it never wore out. A player knocked
+	-- down mid-bar finished the pick from the floor the same way.
+	if isDown(player) then return answer(player, false, 'player_down', door) end
 	local pick = Access.Lockpick()
+	if picksHeld(player, pick.item) < 1 then return answer(player, false, 'no_lockpick', door) end
+
 	local state = states[door.key]
 	if not state.locked and not pick.canPickUnlocked then
 		return answer(player, true, 'already_unlocked', door, { locked = false })

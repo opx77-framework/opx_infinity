@@ -30067,6 +30067,22 @@ do
 		check('a bad roll holds, and the break roll takes the pick',
 			answer ~= nil and answer.code == 'pick_broke' and locked('front')
 				and fakes.counts[60].lockpick == 1, answer and tostring(answer.code))
+
+		-- The pick handed away mid-bar: one lockpick passed bag to bag let a
+		-- crew start bars on it, and a break found nothing to take.
+		dl.Roll = function() return 0 end
+		control.Pump(8)
+		env.source = 60
+		control.netEvents[dl.Event.PICK]({ key = 'front' })
+		control.Pump(45)
+		fakes.counts[60] = { lockpick = 0 }
+		env.source = 60
+		control.netEvents[dl.Event.PICKED]({ key = 'front', finished = true })
+		control.Pump(4)
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick that left the bag during the bar turns nothing',
+			answer ~= nil and answer.code == 'no_lockpick' and locked('front'),
+			answer and tostring(answer.code))
 		dl.Roll = math.random
 	end
 end
