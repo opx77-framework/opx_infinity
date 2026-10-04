@@ -16636,7 +16636,9 @@ do
 		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
 		ccontrol.Pump(20)
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
-		ccontrol.Pump(20)
+		-- Settled: two rows a resume, so how many frames this takes is the number
+		-- of rows the map grants.
+		settle(ccontrol, function() return reached['admin_devInspect_world'] == true end, 120)
 		check('the inspector is offered on a prop', reached['admin_devInspect_prop'] == true)
 		check('on an NPC', reached['admin_devInspect_npc'] == true)
 		check('and on a plain world surface, which is most of the city',
@@ -16699,7 +16701,11 @@ do
 		-- Settled, not counted: one resume per registration CALL means a kind that
 		-- needs two batches takes two frames, and a fixed pump reads a
 		-- registration that is still running.
-		settle(ccontrol, function() return has('admin_skyTime') end, 80)
+		settle(ccontrol, function() return has('admin_skyTime') end, 120)
+		-- The closing line goes out on the resume after the last batch.
+		settle(ccontrol, function()
+			return tostring(reports[#reports] or ''):find('staff rows on the eye', 1, true) ~= nil
+		end, 20)
 
 		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
 		-- one resume gets through `self` and stops; `sky` is the last of eight.
@@ -31978,7 +31984,7 @@ do
 		local count, more = listed('player_')
 		check('a 150-player roster draws one page of it', admin.Menu.Screen() == 'players'
 			and count == 20 and more ~= nil, ('%d rows'):format(count))
-		check('and no resume of that redraw is dear', worst < 12000, ('%d instructions'):format(worst))
+		check('and no resume of that redraw is dear', worst < 5000, ('%d instructions'):format(worst))
 
 		-- The next page is the same screen, one deeper, and Back is a page back.
 		-- An update carries no callback; the open before it does.
@@ -32008,7 +32014,7 @@ do
 		count = listed('slot_')
 		check('a 120-slot bag draws one page of it', admin.Menu.Screen() == 'bag' and count == 20,
 			('%d rows'):format(count))
-		check('and no resume of that redraw is dear either', worst < 12000, ('%d instructions'):format(worst))
+		check('and no resume of that redraw is dear either', worst < 5000, ('%d instructions'):format(worst))
 
 		-- A category whose name has a space no longer refuses the whole screen.
 		control.netEvents[admin.Event.ITEMS]({ rows = {
@@ -32612,6 +32618,134 @@ do
 			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
 			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
 		end
+	end
+end
+
+
+-- ── the two near-limit resumes: a paced menu spec, and the eye's staff rows ──
+-- A menu spec is checked about 240 instructions a row in the resume that hands
+-- it over; a caller on a thread may ask (`yield = true`) for the rows to be
+-- checked a few at a time. The eye's staff rows were registered four a resume,
+-- 4,600 to 6,400 instructions each with every grant held. Both are counted here
+-- by the dearest resume of the threads they run on.
+section('a paced menu spec and the eye staff rows stay well inside a resume')
+do
+	local env, control, why = boot('client')
+	check('client boots for the paced checks', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+
+		-- The dearest resume of every thread started while `fn` runs.
+		local function dearest(fn, rounds)
+			local worst, spent = 0, 0
+			local realCreate, realWait = env.CreateThread, env.Wait
+			env.Wait = function(ms)
+				if spent > worst then worst = spent end
+				spent = 0
+				return realWait(ms)
+			end
+			env.CreateThread = function(body)
+				return realCreate(function(...)
+					spent = 0
+					debug.sethook(function() spent = spent + 1 end, '', 1)
+					body(...)
+					debug.sethook()
+					if spent > worst then worst = spent end
+				end)
+			end
+			fn()
+			env.CreateThread = realCreate
+			control.Pump(rounds or 40)
+			env.Wait = realWait
+			return worst
+		end
+
+		local function rows(count, bad)
+			local items = {}
+			for index = 1, count do
+				items[index] = { id = 'row_' .. index, label = 'Row number ' .. index,
+					description = 'A description for row ' .. index, icon = 'person',
+					data = { go = 'player', arg = index, page = 1 } }
+			end
+			if bad then items[count].icon = 'not_an_icon' end
+			return items
+		end
+
+		-- Paced, from a thread.
+		local answer
+		local worst = dearest(function()
+			env.CreateThread(function()
+				answer = menu.Open({ owner = 'probe', id = 'probe.paced', title = 'Paced', items = rows(30),
+					on = function() end, yield = true })
+			end)
+		end)
+		check('a paced 30-row open lands', answer ~= nil and answer.ok, answer and answer.error)
+		check('and no resume of it is dear', worst < 4000, ('%d instructions'):format(worst))
+
+		-- The same refusal as the unpaced path, for the same fault.
+		local refused
+		dearest(function()
+			env.CreateThread(function()
+				refused = menu.Update(answer.value.handle, { items = rows(30, true), yield = true })
+			end)
+		end)
+		local unpaced = menu.Update(answer.value.handle, { items = rows(30, true) })
+		check('a paced update refuses a bad row exactly as an unpaced one does',
+			refused ~= nil and not refused.ok and refused.error == unpaced.error, refused and refused.error)
+
+		-- A menu closed while the rows were being checked is answered as gone.
+		local late
+		env.CreateThread(function()
+			late = menu.Update(answer.value.handle, { items = rows(30), yield = true })
+		end)
+		control.Pump(1)
+		menu.Close(answer.value.handle)
+		control.Pump(20)
+		check('an update whose menu closed in the meantime is refused, not applied',
+			late ~= nil and not late.ok and late.error == 'no_menu_open', late and late.error)
+
+		-- From somewhere it cannot yield, `yield` changes nothing.
+		local direct = menu.Open({ owner = 'probe', id = 'probe.direct', title = 'Direct', items = rows(10),
+			on = function() end, yield = true })
+		check('a spec asking to yield where it cannot is checked in one go, as before', direct.ok)
+		if direct.ok then menu.Close(direct.value.handle) end
+
+		-- The eye: every staff row granted.
+		local admin = OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local eyeWorst = dearest(function()
+			admin.Target.Access({ access = setmetatable({}, { __index = function() return true end }),
+				aclKnown = true })
+		end, 120)
+		check('registering every staff row on the eye stays well inside a resume', eyeWorst < 5000,
+			('%d instructions'):format(eyeWorst))
+		check('and every row still lands', #(OPX.Modules.Get('target').Registry.List('admin') or {}) > 30,
+			#(OPX.Modules.Get('target').Registry.List('admin') or {}))
+
+		-- A batch refused part way puts back exactly what it replaced, and takes
+		-- out what it added: the census and the undo log replaced a copy of the
+		-- whole registry, so the rollback is checked on its own.
+		local Model = OPX.Modules.Get('target').Model
+		local registry = Model.New(function() return true end)
+		local function def(id, label, icon)
+			return { id = id, label = label, icon = icon, onSelect = function() return true end }
+		end
+		registry.RegisterMany('probe', 1, { def('a', 'First A'), def('b', 'First B') })
+		local refusedBatch = registry.RegisterMany('probe', 1,
+			{ def('a', 'Second A'), def('c', 'New C'), def('d', 'Bad D', 'not_an_icon') })
+		local listed = {}
+		for _, row in ipairs(registry.List('probe')) do listed[row.id] = row.label end
+		check('a refused batch is refused', refusedBatch == nil)
+		check('and leaves the registry exactly as it was',
+			listed.a == 'First A' and listed.b == 'First B' and listed.c == nil and listed.d == nil,
+			('a=%s b=%s c=%s'):format(tostring(listed.a), tostring(listed.b), tostring(listed.c)))
+		local accepted = registry.RegisterMany('probe', 1, { def('a', 'Second A'), def('c', 'New C') })
+		listed = {}
+		for _, row in ipairs(registry.List('probe')) do listed[row.id] = row.label end
+		check('while an accepted one replaces by id and adds the rest',
+			accepted ~= nil and listed.a == 'Second A' and listed.b == 'First B' and listed.c == 'New C'
+				and #registry.List('probe') == 3)
 	end
 end
 

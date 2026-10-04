@@ -36,7 +36,13 @@ local Target = M.Target
 -- The cost is per ROW -- validation and a generation read each -- so halving the
 -- batch halves the work per resume. It costs frames at registration, which
 -- happens on an access change and not per tick.
-local BATCH = 4
+--
+-- TWO, NOT FOUR. Four rows measured 4,600 to 6,400 instructions a resume once
+-- every grant was held -- the registry's own walks (the sweep, the limit count)
+-- on top of four validations -- which is the budget's neighbourhood, not its
+-- margin. Two rows and a registry that counts once per batch keep a resume
+-- near a third of that. Forty rows is twenty frames, on an access change.
+local BATCH = 2
 
 -- Milliseconds before the first access request, then between two. A grant taken
 -- away has to reach the eye without the operator opening the menu.
