@@ -2838,6 +2838,79 @@ do
 			appearance.Face.playerResetDone == false)
 	end
 
+	-- A SAVE THE SHOP COULD NOT CHARGE PUTS THE STORED LOOK BACK, end to end. The
+	-- server refuses a priced room's save with `clothing.unpaid`; this client has
+	-- to take the unpaid jacket back off the puppet, not keep wearing (and
+	-- publishing) it, and not keep offering the same save.
+	do
+		local env, control, appearance = restartedClient('complete')
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = 'Items.Underwear_Basic_01_Bottom' } }
+
+		-- A puppet that wears whatever it is told and reads back what it wears.
+		local worn, applied = {}, {}
+		for slot, item in pairs(STORED.equipment) do worn[slot] = false end
+		env.Open77.equipment = {
+			registry = function()
+				local copy = {}
+				for slot, item in pairs(worn) do copy[slot] = item end
+				return copy
+			end,
+			apply = function(slots)
+				for slot, item in pairs(slots) do worn[slot] = item end
+				applied[#applied + 1] = slots.OuterChest
+				return true
+			end,
+			info = function() return nil end,
+			records = function() return {} end,
+		}
+		local outfit = { registry = function() return {} end, apply = function() return true end }
+		env.Open77.wardrobe = {
+			active = function() return false end,
+			activate = function() return true end,
+			outfit = function() return outfit end,
+		}
+
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-PAYS', charInfo = { gender = 'female' }, clothing = STORED,
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 2 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local dressed = settle(control, function() return appearance.Clothing.Report() == 'worn' end, 120)
+		check('the stored clothes are on before the room', dressed and worn.OuterChest == 'Items.Jacket_01',
+			('%s, %s'):format(appearance.Clothing.Report(), tostring(worn.OuterChest)))
+
+		-- The room kept a jacket: the clothing half sees it hold and saves it.
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local function saves()
+			local count, last = 0, nil
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == SAVE then count, last = count + 1, sent[1] end
+			end
+			return count, last
+		end
+		worn.OuterChest = 'Items.Jacket_Bought'
+		local sent = settle(control, function() return saves() >= 1 end, 120)
+		local count, payload = saves()
+		check('the kept jacket goes to the server as a save', sent and type(payload) == 'table' and
+			payload.clothing.equipment.OuterChest == 'Items.Jacket_Bought', tostring(count))
+
+		-- The shop could not take the money.
+		local refuse = control.netEvents[appearance.Event.REFUSED]
+		refuse('clothing.unpaid', appearance.Operation.SAVE_CLOTHING)
+		local back = settle(control, function() return worn.OuterChest == 'Items.Jacket_01' end, 120)
+		check('AN UNPAID SAVE PUTS THE STORED JACKET BACK ON THE PUPPET', back,
+			('wearing %s, last put-on %s'):format(tostring(worn.OuterChest), tostring(applied[#applied])))
+		control.Pump(60)
+		local after = saves()
+		check('and the unpaid look is not offered to the server again', after == count,
+			('%d save(s) before, %d after'):format(count, after))
+		check('the clothing half is back to worn and still saving',
+			appearance.Clothing.Report() == 'worn', appearance.Clothing.Report())
+	end
+
 	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
 	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
 	-- minute in the world on no face, with the clothing gate held behind it.
@@ -20902,6 +20975,91 @@ do
 		end
 
 		character.Players[PLAYER] = nil
+	end
+end
+
+-- ── a published look: two seconds apart, and never sent twice ───────────────
+-- One accepted look is re-sent to every connected player and may weigh 48 KiB.
+-- The floor was 500 ms, so a modified client publishing a new body on every
+-- floor pushed about 96 KiB a second to each of N players, and an identical
+-- re-publication -- every missed acknowledgement -- was fanned out again in full.
+section('a published look is floored at two seconds and not re-sent unchanged')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the look fan-out', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+
+	if type(appearance) == 'table' then
+		local PRESENT = appearance.Event.PRESENT
+		local LOOK, ACK = appearance.Event.LOOK, appearance.Event.PRESENT_ACK
+		local REPLAY, REPLAYED = appearance.Event.REPLAY, appearance.Event.REPLAYED
+		local ABSENT = appearance.Event.ABSENT
+		local ME = 41
+		env.Open77.players.all = function() return { 41, 42, 43 } end
+
+		local function body(seed)
+			return { family = 'female', groups = { {
+				part = 'head', name = '0x00000000000000a1',
+				keys = { { '0x00000000000000b1', ('0x%016x'):format(seed) } },
+			} } }
+		end
+		local EQUIPMENT = { OuterChest = 'Items.Jacket_01' }
+
+		--- Fires one of the player's doors; answers the LOOKs fanned out, the
+		--- acknowledgements and the replay answers that followed.
+		local function fire(name, ...)
+			local mark = #control.clientEvents
+			env.source = ME
+			control.netEvents[name](...)
+			env.source = nil
+			local looks, acks, replayed = 0, 0, 0
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == LOOK then looks = looks + 1 end
+				if sent.name == ACK then acks = acks + 1 end
+				if sent.name == REPLAYED then replayed = replayed + 1 end
+			end
+			return looks, acks, replayed
+		end
+
+		local looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 1)
+		check('a first look goes to every other player and is acknowledged',
+			looks == 2 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(10)
+		looks, acks = fire(PRESENT, body(2), EQUIPMENT, {}, 2)
+		check('A NEW BODY ONE SECOND LATER IS INSIDE THE FLOOR: not sent, not acknowledged',
+			looks == 0 and acks == 0, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 3)
+		check('AN UNCHANGED LOOK IS ACKNOWLEDGED AND NOT FANNED OUT AGAIN',
+			looks == 0 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 4)
+		check('a changed jacket is a changed look, and goes out', looks == 2, tostring(looks))
+
+		check('the fingerprint does not follow the order a table was built in',
+			appearance.LookFingerprint({ body = body(5), equipment = { Head = false, Legs = 'Items.A' },
+				wardrobe = { outfits = {} } }) ==
+			appearance.LookFingerprint({ body = body(5), equipment = { Legs = 'Items.A', Head = false },
+				wardrobe = { outfits = {} } }))
+
+		-- A look coming back after a withdrawal is news to everybody, unchanged or not.
+		fire(ABSENT)
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 5)
+		check('an unchanged look coming back after a withdrawal is sent again', looks == 2,
+			tostring(looks))
+
+		-- The replay goes to the asker alone and keeps its short floor.
+		local _, _, first = fire(REPLAY, 1)
+		control.Pump(6)
+		local _, _, second = fire(REPLAY, 2)
+		check('a replay keeps the short floor', first == 1 and second == 1,
+			('%d then %d'):format(first, second))
 	end
 end
 
