@@ -44,6 +44,8 @@ OPX.Locale.Register('en', {
 	['inventory.ui.m'] = 'm',
 	['inventory.ui.slots'] = 'slots',
 	['inventory.ui.groundHint'] = 'Hand over or drop',
+	['inventory.ui.character'] = 'Bag',
+	['inventory.ui.cancel'] = 'Cancel',
 
 	['inventory.tab.all'] = 'Everything',
 	['inventory.tab.weapons'] = 'Weapons and ammunition',
@@ -406,6 +408,8 @@ OPX.Locale.Register('fr', {
 	['inventory.ui.m'] = 'm',
 	['inventory.ui.slots'] = 'emplacements',
 	['inventory.ui.groundHint'] = 'Donner ou poser',
+	['inventory.ui.character'] = 'Sac',
+	['inventory.ui.cancel'] = 'Annuler',
 
 	['inventory.tab.all'] = 'Tout',
 	['inventory.tab.weapons'] = 'Armes et munitions',

@@ -10,6 +10,7 @@ OPX.Locale.Register('en', {
 	['form.key.change'] = 'Change',
 	['form.key.confirm'] = 'Confirm',
 	['form.key.cancel'] = 'Cancel',
+	['form.eyebrow'] = 'FORM',
 
 	['form.refuse.required'] = 'This field cannot be left empty.',
 	['form.refuse.format'] = 'That is not a value this field accepts.',
@@ -23,6 +24,7 @@ OPX.Locale.Register('fr', {
 	['form.key.change'] = 'Changer',
 	['form.key.confirm'] = 'Valider',
 	['form.key.cancel'] = 'Annuler',
+	['form.eyebrow'] = 'FORMULAIRE',
 
 	['form.refuse.required'] = 'Ce champ ne peut pas rester vide.',
 	['form.refuse.format'] = "Cette valeur n'est pas acceptée ici.",

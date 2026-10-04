@@ -10,6 +10,7 @@ local M = OPX.Modules.Get('spawn')
 
 local EN = {
 	['spawn.title'] = 'CHOOSE A SPAWN',
+	['spawn.eyebrow'] = 'SPAWN',
 	['spawn.about'] = 'Pick where you start.',
 	['spawn.hint'] = 'Click a location to spawn there.',
 	['spawn.placed'] = 'Spawned at {place}.',
@@ -20,6 +21,7 @@ local EN = {
 
 local FR = {
 	['spawn.title'] = 'CHOISISSEZ OÙ APPARAÎTRE',
+	['spawn.eyebrow'] = 'APPARITION',
 	['spawn.about'] = 'Choisissez où vous commencez.',
 	['spawn.hint'] = 'Cliquez sur un lieu pour y apparaître.',
 	['spawn.placed'] = 'Apparition à {place}.',
