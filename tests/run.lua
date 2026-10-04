@@ -3541,12 +3541,13 @@ do
 		local env, control = joinClient('never', 400)
 		local appearance = env.OPX.Modules.Get('appearance')
 
+		-- BUILT ONCE, OUT HERE. The native answers from C; a stub that built two
+		-- thousand records in Lua inside the room's thread charged ~21,000
+		-- instructions of test fixture to the room's resume on the budget meter.
+		local coats = {}
+		for index = 1, 2000 do coats[index] = { record = ('Items.Coat_%04d'):format(index) } end
 		env.Open77.equipment.records = function(options)
-			local out = {}
-			if options.slot == 'OuterChest' then
-				for index = 1, 2000 do out[index] = { record = ('Items.Coat_%04d'):format(index) } end
-			end
-			return out
+			return options.slot == 'OuterChest' and coats or {}
 		end
 		env.Open77.equipment.apply = function() return true end
 		env.Open77.character.state = function()
@@ -3636,17 +3637,44 @@ do
 		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
 		appearance.Clothing.EndPreview = function() return true end
 
-		appearance.Wardrobe.Open('appearance')
-		control.Pump(60)
+		-- THE OPEN AND EVERY SCROLL ARE COUNTED, a resume at a time. The room
+		-- used to do its borrow, its dressing, the panel's open with sixty boxes
+		-- in it and the shop's category strip in the resume of its last catalogue
+		-- breath -- ~19,000 instructions (29,000 on the budget meter) against a
+		-- client budget of ~10,000 that unwinds the thread silently, with the
+		-- puppet out on loan -- and a scroll published its sixty boxes in one
+		-- resume, ~16,000.
+		local opening, openResumes = resumeCost(env, control,
+			function() appearance.Wardrobe.Open('appearance') end, 60)
 		check('the room opened on the one category with anything in it',
 			appearance.Wardrobe.IsOpen())
+		check('and no resume of the opening cost more than 6,000 instructions',
+			opening < 6000, ('%d instructions, dearest of %d resumes'):format(opening, openResumes))
 
-		--- Every grid window the page has been sent, in order.
-		local windows = {}
-		for index = 1, #page.sent do
-			local given = page.sent[index].payload.tiles
-			if type(given) == 'table' then windows[#windows + 1] = given end
+		--- Every grid publication the page has been sent from `first` on, in order.
+		local function windowsFrom(first)
+			local found = {}
+			for index = first, #page.sent do
+				local given = page.sent[index].payload.tiles
+				if type(given) == 'table' then found[#found + 1] = given end
+			end
+			return found
 		end
+
+		--- The slices of one window joined back up, or nil when they leave a hole.
+		local function joined(slices)
+			if #slices == 0 then return nil end
+			local whole = { slot = slices[1].slot, from = slices[1].from, entries = {} }
+			for index = 1, #slices do
+				if slices[index].from ~= whole.from + #whole.entries then return nil end
+				for at = 1, #slices[index].entries do
+					whole.entries[#whole.entries + 1] = slices[index].entries[at]
+				end
+			end
+			return whole
+		end
+
+		local windows = windowsFrom(1)
 		local handle = nil
 		for index = 1, #page.sent do
 			if page.sent[index].channel == 'opx:panel:open' then
@@ -3665,26 +3693,27 @@ do
 		check('the room opens on the first category with anything in it',
 			openedOn == 'OuterChest', tostring(openedOn))
 
-		check('the first frame carries one window and not the category',
-			#windows == 1 and windows[1].from == 1 and #windows[1].entries == 60,
-			#windows == 1 and ('%d entries'):format(#windows[1].entries)
-				or ('%d window(s)'):format(#windows))
+		-- ONE WINDOW AND NOT THE CATEGORY, pushed behind the first frame in slices
+		-- the page appends: the same sixty boxes the frame used to carry, with no
+		-- request in between.
+		local first = joined(windows)
+		check('the first window follows the first frame, sixty boxes and not the category',
+			first ~= nil and first.from == 1 and #first.entries == 60,
+			first ~= nil and ('%d entries over %d slice(s)'):format(#first.entries, #windows)
+				or ('%d slice(s) that do not join up'):format(#windows))
 
-		--- Asks for the window after everything sent so far, and answers the new one.
+		--- Asks for the window after everything sent so far, and answers the new
+		--- one joined up, with the dearest resume it cost.
 		local function scrollOn(from)
 			local before = #page.sent
-			control.PageEmit(page, 'opx:panel:tiles',
-				{ handle = handle, slot = 'OuterChest', from = from })
-			-- Built on frames of its own; see `warmTiles`.
-			control.Pump(10)
-			for index = before + 1, #page.sent do
-				local given = page.sent[index].payload.tiles
-				if type(given) == 'table' then return given end
-			end
-			return nil
+			local spent = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:panel:tiles',
+					{ handle = handle, slot = 'OuterChest', from = from })
+			end, 20)
+			return joined(windowsFrom(before + 1)), spent
 		end
 
-		local second = scrollOn(61)
+		local second, scrolling = scrollOn(61)
 		check('scrolling to the bottom asks for the next window and gets it',
 			type(second) == 'table' and second.from == 61 and #second.entries == 60,
 			type(second) == 'table' and ('from %s, %d'):format(tostring(second.from),
@@ -3692,6 +3721,8 @@ do
 		check('and it starts exactly where the last one ended, so the grid has no hole',
 			type(second) == 'table' and second.entries[1] == 'Items.Coat_061',
 			type(second) == 'table' and tostring(second.entries[1]) or 'nothing came back')
+		check('and no resume of answering it cost more than 6,000 instructions',
+			scrolling < 6000, ('%d instructions'):format(scrolling))
 
 		-- The tail is short, and short is correct: the window is a slice and not a
 		-- fixed-size page, so the last one carries whatever is left.
@@ -3712,7 +3743,9 @@ do
 			scrollOn(TOTAL + 1) == nil)
 
 		-- ONE PAYLOAD NEVER CARRIES THE CATEGORY. This is the check that would go
-		-- red if somebody answered a scroll with the rest of the list.
+		-- red if somebody answered a scroll with the rest of the list -- and it
+		-- holds a publication to a slice now, because the page's check of every
+		-- box it is handed is what made a sixty-box payload a budget overrun.
 		local biggest = 0
 		for index = 1, #page.sent do
 			local given = page.sent[index].payload.tiles
@@ -3720,8 +3753,8 @@ do
 				biggest = #given.entries
 			end
 		end
-		check('and no single window ever carried more than the wire bound',
-			biggest == 60, tostring(biggest))
+		check('and no single publication ever carried more than a slice of ten boxes',
+			biggest == 10, tostring(biggest))
 
 		appearance.Wardrobe.Close('caller')
 	end
