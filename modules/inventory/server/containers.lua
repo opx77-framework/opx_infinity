@@ -169,6 +169,51 @@ function Containers.All()
 	return loaded
 end
 
+-- ── slots held by a use in progress ──────────────────────────────────────────
+--
+-- A USE HANDLER YIELDS, and the units it is about to consume sat in a slot the
+-- player could still drag, split, swap, hand over or drop while it ran -- or
+-- use a second time. The handler applied its effect, the consume afterwards
+-- found the stack gone, and the effect was free. While a slot is held, nothing
+-- may MOVE its stack (`Move`, `Split`, `Sort`) and `Remove`, which takes by name
+-- from wherever it finds the item, never takes from a held slot. `TakeFromSlot`
+-- is still allowed: it names the slot itself, and a handler consuming its own
+-- stack (the currency deposit) is the one caller that has to.
+
+--- Holds one slot of a container for a use in progress. False when it is held.
+-- @author dop42
+-- @param container table
+-- @param slot integer
+-- @return boolean
+function Containers.Hold(container, slot)
+	container.held = container.held or {}
+	if container.held[slot] then return false end
+	container.held[slot] = true
+	return true
+end
+
+--- Releases a slot held by `Hold`.
+-- @author dop42
+-- @param container table
+-- @param slot integer
+function Containers.Release(container, slot)
+	if container.held == nil then return end
+	container.held[slot] = nil
+	if next(container.held) == nil then container.held = nil end
+end
+
+--- Whether a slot of a container is held by a use in progress.
+-- @author dop42
+-- @param container table|nil
+-- @param slot any
+-- @return boolean
+function Containers.IsHeld(container, slot)
+	return container ~= nil and container.held ~= nil and slot ~= nil and
+		container.held[slot] == true
+end
+
+local isHeld = Containers.IsHeld
+
 --- The grams a container holds.
 -- @author dop42
 -- @param container table
@@ -569,7 +614,15 @@ function Containers.Remove(container, name, count, metadata)
 	if not container then return false, 'not_found' end
 	count = Common.Integer(count, 1, Options.MAX_STACK)
 	if not count then return false, 'bad_count' end
-	if Containers.CountIn(container, name, metadata) < count then return false, 'not_enough' end
+	-- Only units that are not held by a use in progress can be taken by name.
+	local available = 0
+	for slot, entry in pairs(container.items) do
+		if not isHeld(container, slot) and entry.name == name and
+			(metadata == nil or Common.SameMetadata(entry.metadata, metadata)) then
+			available = available + entry.count
+		end
+	end
+	if available < count then return false, 'not_enough' end
 
 	local remaining = count
 	-- A stack may sit beyond the current slot count -- a container that was
@@ -582,7 +635,7 @@ function Containers.Remove(container, name, count, metadata)
 	for slot = last, 1, -1 do
 		if remaining <= 0 then break end
 		local current = container.items[slot]
-		if current and current.name == name and
+		if current and not isHeld(container, slot) and current.name == name and
 			(metadata == nil or Common.SameMetadata(current.metadata, metadata)) then
 			local taken = math.min(current.count, remaining)
 			current.count = current.count - taken
@@ -665,6 +718,18 @@ function Containers.Move(from, fromSlot, to, toSlot, count)
 	if not from or not to then return false, 'not_found' end
 	local source = from.items[fromSlot]
 	if not source then return false, 'empty_slot' end
+	-- A stack a use is consuming stays where it is, and nothing is swapped or
+	-- stacked into its place (see `Hold`).
+	if isHeld(from, fromSlot) then return false, 'in_use' end
+	if toSlot ~= nil and isHeld(to, Common.Integer(toSlot, 1, to.slots)) then
+		return false, 'in_use'
+	end
+	-- A drawn weapon leaves the bag only once its rounds have been read back
+	-- (see `Weapons.BeforeLeave`).
+	if to.id ~= from.id then
+		local refusal = M.Weapons.BeforeLeave(from, source)
+		if refusal then return false, refusal end
+	end
 
 	-- WHAT MAY NOT BE LEFT ON THE FLOOR MAY NOT BE LEFT ANYWHERE THAT IS NEVER
 	-- WRITTEN, and until this line the rule only covered the floor. `DROP = false`
@@ -768,6 +833,7 @@ function Containers.Split(container, slot, count)
 	if not container then return false, 'not_found' end
 	local source = container.items[slot]
 	if not source then return false, 'empty_slot' end
+	if isHeld(container, slot) then return false, 'in_use' end
 	-- At most one less than the stack: splitting all of it is a move, and would
 	-- otherwise leave an empty stack behind.
 	count = Common.Integer(count, 1, source.count - 1)
@@ -793,6 +859,8 @@ end
 function Containers.Sort(container, mode)
 	if not container then return false, 'not_found' end
 	if mode ~= 'weight' and mode ~= 'name' then return false, 'bad_request' end
+	-- Sorting moves every stack, a held one with the rest.
+	if container.held ~= nil then return false, 'in_use' end
 	local entries = {}
 	for slot, entry in pairs(container.items) do
 		entries[#entries + 1] = {

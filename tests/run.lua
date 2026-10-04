@@ -16676,6 +16676,71 @@ do
 	end
 end
 
+-- The queue cap was read in one round trip and filed in another, so two orders
+-- placed together both read the same count and both landed. The insert carries
+-- the cap now; an order it turns away gives back what it took.
+section('crafting: an order the full shelf turns away gives everything back')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local contract = OPX.Api.Get('crafting')
+		local registered = contract.RegisterBench('tests:race', { owner = 'tests', queue = 1,
+			recipes = { { KEY = 'rounds', OUTPUT = 'ammo_handgun', SECONDS = 60, PRICE = 25,
+				MONEY = 'EDDIES', INPUTS = { scrap_metal = 2 } } } })
+		check('the bench registers', registered.ok == true, tostring(registered.error))
+
+		local bag, purse = { scrap_metal = 2 }, 100
+		local realInventory, realCharacter = crafting.Contracts.inventory,
+			crafting.Contracts.character
+		crafting.Contracts.inventory = setmetatable({
+			GetItemCount = function(_, name) return OPX.Result.Ok(bag[name] or 0) end,
+			RemoveItem = function(_, name, count)
+				if (bag[name] or 0) < count then return OPX.Result.Err('not_enough') end
+				bag[name] = bag[name] - count
+				return OPX.Result.Ok(true)
+			end,
+			AddItem = function(_, name, count)
+				bag[name] = (bag[name] or 0) + count
+				return OPX.Result.Ok(true)
+			end,
+		}, { __index = realInventory })
+		crafting.Contracts.character = setmetatable({
+			GetPlayer = function() return { PlayerData = { citizenId = 'ABC12345' } } end,
+			GetMoney = function() return { EDDIES = purse } end,
+			RemoveMoney = function(_, _, amount) purse = purse - amount return true end,
+			AddMoney = function(_, _, amount) purse = purse + amount return true end,
+		}, { __index = realCharacter })
+
+		-- The shelf read says there is room; by the time the row is filed,
+		-- another order has taken it.
+		local realShelf, realPlace = crafting.Storage.Shelf, crafting.Storage.Place
+		crafting.Storage.Shelf = function() return OPX.Result.Ok({ cooking = 0, tail = 0 }) end
+		local queued
+		crafting.Storage.Place = function(_, _, _, _, queue)
+			queued = queue
+			return OPX.Result.Ok(nil)
+		end
+
+		local answer
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the order is refused as a full shelf',
+			answer ~= nil and answer.ok == false and answer.error == crafting.Refusal.QUEUE_FULL,
+			answer and tostring(answer.error))
+		check('the bench\'s cap travels with the insert', queued == 1, tostring(queued))
+		check('the materials come back', bag.scrap_metal == 2, bag.scrap_metal)
+		check('and so does the fee', purse == 100, purse)
+
+		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
+		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
+		contract.UnregisterBenches('tests')
+	end
+end
+
 -- ── crafting: the statements, and the one that makes a collection exactly-once
 -- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
 -- whether it affected a row, so the bridge is stubbed rather than the storage:
@@ -16684,6 +16749,7 @@ section('crafting: the shelf is the database\'s, and so is the clock')
 do
 	local seen = {}
 	local affected = 1
+	local mintedId = 4242
 	local db = Host.Database({
 		scalar = function() return 1 end,
 		update = function(sql, params)
@@ -16701,7 +16767,7 @@ do
 		end,
 		insert = function(sql, params)
 			seen[#seen + 1] = { sql = sql, params = params }
-			return 4242
+			return mintedId
 		end,
 	})
 
@@ -16759,7 +16825,7 @@ do
 			orders.ok and #orders.value or orders.error)
 
 		-- ── placing one ──────────────────────────────────────────────────
-		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150)
+		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
 		check('placing an order answers the id the database minted',
 			placed.ok and placed.value == 4242, placed.ok and placed.value or placed.error)
 		local insert = seen[#seen]
@@ -16767,6 +16833,18 @@ do
 			insert.sql:find('DATE_ADD(UTC_TIMESTAMP(), INTERVAL @seconds SECOND)', 1, true) ~= nil)
 		check('with the seconds bound by name, never spliced into the text',
 			insert.params['@seconds'] == 150, tostring(insert.params['@seconds']))
+		-- THE CAP IS IN THE SAME STATEMENT as the row. Read in one round trip and
+		-- filed in another, two orders placed together both read the same count
+		-- and a queue of three held four.
+		check('AND THE QUEUE CAP IS TESTED BY THE INSERT ITSELF, not by an earlier read',
+			insert.sql:find('SELECT COUNT(*) FROM opx77_crafting_orders', 1, true) ~= nil
+				and insert.sql:find('< @queue', 1, true) ~= nil
+				and insert.params['@queue'] == 3, tostring(insert.params['@queue']))
+		mintedId = 0
+		local full = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
+		check('an insert the cap turned away answers no id, and is not a failure',
+			full.ok and full.value == nil, full.ok and tostring(full.value) or full.error)
+		mintedId = 4242
 
 		-- ── the claim ────────────────────────────────────────────────────
 		affected = 1
@@ -22361,6 +22439,161 @@ do
 			check('and it is not the same statement as deleting one container',
 				#purged == 1 and #dropped == 1 and purged[1].sql ~= dropped[1].sql)
 		end
+	end
+end
+
+-- A drawn weapon moved out of the bag was holstered WITHOUT a reading, so every
+-- round fired since the last sync came back with the item. It now leaves only
+-- once its rounds have been read back.
+section('inventory: a drawn weapon leaves the bag with the rounds it really has')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Weapons, Players, Catalog = inventory.Containers, inventory.Weapons,
+			inventory.Players, inventory.Catalog
+		local SLOT = inventory.Options.WEAPON_SLOT
+		local SHOOTER, CITIZEN = 961, 'GUN00001'
+
+		local weaponName
+		for _, name in ipairs(Catalog.Names()) do
+			local entry = Catalog.Get(name)
+			if entry.weapon and entry.weapon.ammo and entry.weapon.magazine then
+				weaponName = name
+				break
+			end
+		end
+		check('the catalogue carries a weapon that loads rounds', weaponName ~= nil)
+
+		local requests, sequence = {}, 0
+		local function ask(kind)
+			sequence = sequence + 1
+			requests[#requests + 1] = { id = sequence, kind = kind }
+			return sequence
+		end
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() return ask('assign') end,
+			remove = function() return ask('remove') end,
+			setAmmo = function() return ask('setAmmo') end,
+			requestSnapshot = function() return ask('snapshot') end,
+			get = function() return { fresh = true, drawn = true } end,
+		}
+		local function complete(id, result)
+			env.TriggerEvent('open77:weapons:completed', tostring(SHOOTER), id, 'op', true, nil,
+				result)
+		end
+
+		local realSourceOf, realCitizen = Players.SourceOf, Players.Citizen
+		Players.SourceOf = function(citizenId) return citizenId == CITIZEN and SHOOTER or nil end
+		Players.Citizen = function(source) return source == SHOOTER and CITIZEN or nil end
+
+		local bag = Containers.Transient('character', CITIZEN, 10, 100000)
+		local stash = Containers.Transient('stash', 'ammo_test_stash', 10, 100000)
+
+		if weaponName then
+			local magazine = Catalog.Get(weaponName).weapon.magazine
+			bag.items[1] = { name = weaponName, count = 1,
+				metadata = { serial = 'TS00000001', ammo = magazine } }
+
+			local used = Weapons.Use(SHOOTER, bag, 1, Catalog.Get(weaponName))
+			check('the weapon is drawn', used == true)
+			complete(requests[#requests].id, { tweakDbId = 'tweak-1',
+				ammo = { capacity = magazine, magazine = 0 } })
+			complete(requests[#requests].id, nil)
+			check('and armed', Weapons.Held(SHOOTER) ~= nil)
+
+			-- Fired down to three; no sync has run since.
+			local moved, refusal = Containers.Move(bag, 1, stash, nil, nil)
+			check('the first attempt to put it away holsters it and is refused',
+				not moved and refusal == 'holstering', tostring(refusal))
+			local read = requests[#requests]
+			check('with a reading of its rounds asked for', read ~= nil and read.kind == 'snapshot')
+			local again, againWhy = Containers.Move(bag, 1, stash, nil, nil)
+			check('and it cannot leave while that reading is in flight',
+				not again and againWhy == 'holstering', tostring(againWhy))
+
+			complete(read.id, { { slot = SLOT, tweakDbId = 'tweak-1', equipped = true,
+				ammo = { total = 3 } } })
+			local gone = Containers.Move(bag, 1, stash, nil, nil)
+			local landed = stash.items[1]
+			check('once the reading lands it leaves', gone == true and landed ~= nil)
+			check('carrying the rounds it really has, not the last sync',
+				landed ~= nil and landed.metadata.ammo == 3,
+				landed and tostring(landed.metadata.ammo))
+		end
+
+		env.Open77.weapons = realWeapons
+		Players.SourceOf, Players.Citizen = realSourceOf, realCitizen
+		Containers.Discard(bag.id)
+		Containers.Discard(stash.id)
+	end
+end
+
+-- A use handler yields, and the consume comes after it. While it ran, the stack
+-- could be dragged away, handed over, dropped, split or used again: the effect
+-- was applied and the consume found nothing. The slot is held for the handler.
+section('inventory: a stack being used cannot move until the use is settled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Actions, Players = inventory.Containers, inventory.Actions,
+			inventory.Players
+		local bag = Containers.Transient('stash', 'use_lock_bag', 10, 100000)
+		local other = Containers.Transient('stash', 'use_lock_other', 10, 100000)
+		bag.items[1] = { name = 'bandage', count = 1 }
+
+		local realBag, realMayAct = Players.Bag, Players.MayAct
+		Players.Bag = function() return bag end
+		Players.MayAct = function() return true end
+
+		local effects = 0
+		Actions.RegisterUsable('bandage', function()
+			env.Wait(300)
+			effects = effects + 1
+			return { ok = true, consume = 1 }
+		end, 'tests')
+
+		local first
+		env.CreateThread(function() first = { Actions.Use(951, 1) } end)
+		control.Pump(1)
+
+		local moved, movedWhy = Containers.Move(bag, 1, other, nil, nil)
+		check('the stack cannot be moved out while it is being used',
+			not moved and movedWhy == 'in_use', tostring(movedWhy))
+		bag.items[2] = { name = 'scrap_metal', count = 1 }
+		local swapped, swapWhy = Containers.Move(bag, 2, bag, 1, nil)
+		check('nor anything swapped into its slot', not swapped and swapWhy == 'in_use',
+			tostring(swapWhy))
+		bag.items[2] = nil
+		local sorted, sortWhy = Containers.Sort(bag, 'name')
+		check('nor the container sorted', not sorted and sortWhy == 'in_use', tostring(sortWhy))
+		local removed, removeWhy = Containers.Remove(bag, 'bandage', 1)
+		check('nor its units taken by name from elsewhere', not removed
+			and removeWhy == 'not_enough', tostring(removeWhy))
+		local again
+		env.CreateThread(function() again = { Actions.Use(952, 1) } end)
+		control.Pump(2)
+		check('and a second use of the same slot is refused while the first runs',
+			again ~= nil and again[1] == false and again[2] == 'in_use',
+			again and tostring(again[2]))
+
+		settle(control, function() return first ~= nil end, 40)
+		check('the use goes through', first ~= nil and first[1] == true,
+			first and tostring(first[2]))
+		check('its effect applied once and the unit consumed',
+			effects == 1 and bag.items[1] == nil, ('%d %s'):format(effects, tostring(bag.items[1])))
+		check('and the slot is free again', not Containers.IsHeld(bag, 1))
+
+		Actions.UnregisterUsable('bandage', 'tests')
+		Players.Bag, Players.MayAct = realBag, realMayAct
+		Containers.Discard(bag.id)
+		Containers.Discard(other.id)
 	end
 end
 
@@ -30313,6 +30546,125 @@ end
 -- une autre fois cela prend le drop a cote automatiquement retire cela". The
 -- open key used to TAKE the nearest pile, screen closed, whenever one was in
 -- reach -- so looking in the bag beside something just dropped put it back.
+-- The pile scan measured the distance to every known pile -- DROPS.MAX goes to
+-- 2,048, every bucket's -- and sorted them, inside one scheduler resume shared
+-- with three other jobs. The client budget is per resume and an overrun kills
+-- the loop silently. It now walks a slice per resume and draws only the
+-- player's own bucket. Counted in VM instructions with a debug hook: off the
+-- platform that is the one honest measure of what a resume costs.
+section('the client pile scan stays inside one resume\'s budget, and in its bucket')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local World, Screen = inventory.World, inventory.Screen
+		local realOwn = Screen.Own
+		Screen.Own = function() return {} end
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0, 0, 0 end },
+			{ __index = realCharacter })
+
+		-- 2,048 piles in 32 parts: half in bucket 0, half in bucket 5, and the
+		-- eight nearest of each right beside the player.
+		local TOTAL = 2048
+		for part = 0, TOTAL // 64 - 1 do
+			local drops = {}
+			for index = 1, 64 do
+				local n = part * 64 + index
+				local near = n <= 16
+				drops[index] = { id = -n, x = near and (n * 0.05) or (100 + n), y = 0, z = 0,
+					bucket = (n % 2 == 0) and 5 or 0 }
+			end
+			control.netEvents[inventory.Event.DROPS]({ first = part == 0,
+				done = part == TOTAL // 64 - 1, drops = drops, bucket = part == 0 and 5 or nil })
+		end
+		local known, bucket = World.Known()
+		check('every pile arrives, and the bucket with them', known == TOTAL and bucket == 5,
+			('%s in %s'):format(tostring(known), tostring(bucket)))
+
+		local function cost(fn)
+			local counted = 0
+			debug.sethook(function() counted = counted + 1 end, '', 100)
+			fn()
+			debug.sethook()
+			return counted * 100
+		end
+
+		local worst, passes = 0, 0
+		local target = inventory.Contracts.target
+		local spheres
+		local realRegister = target and target.RegisterSpheres
+		if target then
+			target.RegisterSpheres = function(owner, list, definition)
+				spheres = list
+				return realRegister(owner, list, definition)
+			end
+		end
+		repeat
+			passes = passes + 1
+			local spent = cost(World.Pass)
+			if spent > worst then worst = spent end
+		until spheres ~= nil or passes > 64
+		-- A slice of 128 costs about 8,000 here; the whole list in one pass cost
+		-- about 58,000, and ran beside three other jobs on the same resume.
+		check('no single pass spends more than 25,000 instructions on 2,048 piles',
+			worst <= 25000, worst)
+		check('the sweep is spread over several passes', passes >= TOTAL // 128, passes)
+		local wrongBucket = 0
+		for _, sphere in ipairs(spheres or {}) do
+			-- Even ids are bucket 5; the near ones sit at x = n * 0.05.
+			local n = math.floor(sphere.x / 0.05 + 0.5)
+			if n % 2 ~= 0 then wrongBucket = wrongBucket + 1 end
+		end
+		check('and the row points only at piles of the player\'s own bucket',
+			spheres ~= nil and #spheres == 8 and wrongBucket == 0,
+			spheres and ('%d rows, %d wrong'):format(#spheres, wrongBucket))
+
+		control.netEvents[inventory.Event.BUCKET](0)
+		local _, moved = World.Known()
+		check('a bucket move the server reports is taken', moved == 0, tostring(moved))
+
+		if target then target.RegisterSpheres = realRegister end
+		Screen.Own = realOwn
+		env.Open77.character = realCharacter
+	end
+end
+
+-- The client has no read of its own bucket, so the server says it: in the first
+-- part of the pile list, and on every move the host reports.
+section('the server tells a client which bucket its piles are in')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local MOVER = 962
+		control.Admit(MOVER, 'account-962')
+		control.Stand(MOVER, 10, 20, 30)
+		control.Bucket(MOVER, 7)
+		local told = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, payload, ...)
+			if target == MOVER then told[#told + 1] = { name = name, payload = payload } end
+			return realTrigger(name, target, payload, ...)
+		end
+		inventory.World.SendDrops(MOVER)
+		local first = told[1]
+		check('the first part of the pile list carries the bucket',
+			first ~= nil and first.name == inventory.Event.DROPS and first.payload.bucket == 7,
+			first and tostring(first.payload.bucket))
+		told = {}
+		control.Bucket(MOVER, 9)
+		env.TriggerEvent('onPlayerBucketChange', tostring(MOVER), '9', '7')
+		local said = told[#told]
+		check('and a move the host reports is said again',
+			said ~= nil and said.name == inventory.Event.BUCKET and said.payload == 9,
+			said and tostring(said.payload))
+		env.TriggerClientEvent = realTrigger
+	end
+end
+
 section('the inventory key opens the bag and never takes a pile')
 do
 	local env, control, why = boot('client')

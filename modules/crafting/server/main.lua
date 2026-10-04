@@ -351,7 +351,18 @@ local function order(player, benchKey, recipeKey)
 	end
 
 	local seconds = Recipes.ReadyIn(shelf.value.tail, recipe.seconds)
-	local placed = M.Storage.Place(citizenId, bench.key, recipe.key, seconds)
+	local placed = M.Storage.Place(citizenId, bench.key, recipe.key, seconds, bench.queue)
+	if placed.ok and placed.value == nil then
+		-- THE SHELF FILLED BETWEEN THE CHECK ABOVE AND THE ROW: another order of
+		-- this character's landed first. Nothing was promised, so everything
+		-- taken goes back, exactly as for a row that could not be written.
+		restore(player, taken)
+		if recipe.price > 0 then
+			M.Contracts.character.AddMoney(player, recipe.money, recipe.price,
+				('crafting:refund:%s'):format(bench.key))
+		end
+		return Result.Err(Refusal.QUEUE_FULL)
+	end
 	if not placed.ok then
 		-- THE ROW IS LAST FOR EXACTLY THIS CASE. Everything before it has an
 		-- inverse and every inverse is run here; nothing has been promised to the
@@ -371,7 +382,7 @@ local function order(player, benchKey, recipeKey)
 		data = { bench = bench.key, recipe = recipe.key, seconds = seconds,
 			price = recipe.price } })
 
-	return Result.Ok({ id = math.floor(tonumber(placed.value) or 0), seconds = seconds })
+	return Result.Ok({ id = placed.value, seconds = seconds })
 end
 
 --- Hands over one finished order. Yields.
