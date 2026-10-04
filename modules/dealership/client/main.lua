@@ -1091,11 +1091,12 @@ function Runtime.Start()
 			verdict.garage = value.garage
 			verdict.price = value.price
 		end
+		-- NO TOAST FROM HERE. Every refusal that reaches this handler was
+		-- already toasted by the server (`OPX.NotifyLocale` beside the ANSWER),
+		-- so a second one from here showed each refusal twice.
 		publish(verdict)
-		if not verdict.ok then
-			say('error', locale(verdict.error))
-		end
 	end)
+
 
 	-- THE OFFER A SALESPERSON MADE, and the one screen in this module that the
 	-- player did not open themselves. It is a menu and not a toast: a toast

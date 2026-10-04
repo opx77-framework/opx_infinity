@@ -7892,7 +7892,55 @@ do
 			table.concat(control.log.error, ' | '):sub(-200))
 		if vehiclesApi ~= nil then vehiclesApi.Register = realRegister end
 
+		-- ── a refund goes to who PAID, not to whoever holds the connection ──
+		-- `Register` yields. A buyer who went back to the selection screen and
+		-- loaded another character inside that window had the refund paid to the
+		-- character on the connection NOW -- money that character never spent.
+		if vehiclesApi ~= nil then
+			local otherCitizen = 'citizen-dealer-alt'
+			vehiclesApi.Register = function()
+				-- The swap, done inside the yield the real Register makes.
+				local alt = load(src, otherCitizen, 0)
+				alt.PlayerData.money.EDDIES = 0
+				return env.OPX.Result.Err('vehicle.limit', '1')
+			end
+			character.Players[src].PlayerData.money.EDDIES = 500000
+			local swapped = contract.Buy(src, 'yard', 'hella', nil)
+			check('a purchase refused after the buyer swapped character is refused',
+				swapped.ok == false, swapped and tostring(swapped.error))
+			check('and the refund does NOT land on the character who never paid',
+				character.Players[src].PlayerData.money.EDDIES == 0,
+				tostring(character.Players[src].PlayerData.money.EDDIES))
+			vehiclesApi.Register = realRegister
+			character.Registry.byCitizenId[otherCitizen] = nil
+			load(src, 'citizen-dealer', 2000000)
+		end
+
+		-- ── one purchase per character at a time ───────────────────────────
+		-- The ceiling is a count, a yield and an insert; two doors in one tick
+		-- both passed the count. The second is refused while the first is in
+		-- flight, whichever door it came through.
+		if vehiclesApi ~= nil then
+			local inner, outer
+			vehiclesApi.Register = function(...)
+				if inner == nil then inner = contract.Buy(src, 'yard', 'hella', nil) end
+				return realRegister(...)
+			end
+			character.Players[src].PlayerData.money.EDDIES = 2000000
+			outer = contract.Buy(src, 'yard', 'hella', nil)
+			vehiclesApi.Register = realRegister
+			check('a purchase started while the same character\'s is in flight is refused',
+				inner ~= nil and inner.ok == false and inner.error == 'error.tooFast',
+				inner and tostring(inner.error))
+			check('and the one in flight still completes', outer ~= nil and outer.ok == true,
+				outer and tostring(outer.error))
+			local again = contract.Buy(src, 'yard', 'hella', nil)
+			check('and the claim is given back afterwards', again.ok == true,
+				again and tostring(again.error))
+		end
+
 		-- ── the wire ───────────────────────────────────────────────────────
+
 		local wireBalance = character.Players[src].PlayerData.money.EDDIES
 		mark = #control.clientEvents
 		control.netEvents[dealership.Event.BUY]('yard', 'hella', nil)
