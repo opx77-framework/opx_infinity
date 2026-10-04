@@ -19,6 +19,7 @@ local EN = {
 	['target.looking'] = 'Looking…',
 	['target.back'] = 'Back',
 	['target.unavailable'] = 'Action unavailable',
+	['target.confirm'] = 'Confirm: {label}',
 }
 
 local FR = {
@@ -31,6 +32,7 @@ local FR = {
 	['target.looking'] = 'Recherche…',
 	['target.back'] = 'Retour',
 	['target.unavailable'] = 'Action indisponible',
+	['target.confirm'] = 'Confirmer : {label}',
 }
 
 M.Catalogs = { en = EN, fr = FR }

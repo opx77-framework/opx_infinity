@@ -973,6 +973,20 @@ useBridge('opx:target:busy', (payload: Payload) => {
   pendingToken.value = text(payload.token)
 })
 
+// A confirm row's first click: the row is relabelled in place, wherever it sits in
+// the folders, and the next click on it is the one Lua runs.
+useBridge('opx:target:confirm', (payload: Payload) => {
+  guard('target:confirm', () => {
+    if (!mine(payload)) return
+    const token = text(payload.token)
+    const label = text(payload.label)
+    busy.value = false
+    pendingToken.value = ''
+    if (token === '' || label === '') return
+    rows.value = rows.value.map((row) => (row.token === token ? { ...row, label } : row))
+  }, undefined)
+})
+
 useBridge('opx:target:error', (payload: Payload) => {
   if (!mine(payload)) return
   busy.value = false

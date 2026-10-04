@@ -13132,6 +13132,91 @@ do
 	end
 end
 
+-- ── a row that destroys something asks first ────────────────────────────────
+-- The menu contract builds the confirmation from `confirm` on a row, and the eye
+-- asks for a second click on any `danger` row unless it opts out -- the staff
+-- vehicle remove ran on one stray click.
+section('confirm: menu rows and eye rows ask before they destroy')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local heard = {}
+		local opened = menu.Open({
+			owner = 'test', id = 'test.confirm', title = 'MENU',
+			items = {
+				{ id = 'wipe', label = 'Delete outfit', data = { verb = 'delete' }, confirm = true },
+				{ id = 'other', label = 'Other' },
+			},
+			on = function(payload)
+				heard[#heard + 1] = { action = payload.action, id = payload.itemId, data = payload.data }
+			end,
+		})
+		check('a menu with a confirm row opens', type(opened) == 'table' and opened.ok,
+			type(opened) == 'table' and tostring(opened.error))
+		control.Pump(5)
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local handle = opened.ok and opened.value.handle or 0
+		local function key(name)
+			if page ~= nil then control.PageEmit(page, 'opx:menu:key', { handle = handle, key = name }) end
+			control.Pump(2)
+		end
+		local selects = function()
+			local count = 0
+			for _, entry in ipairs(heard) do if entry.action == 'select' then count = count + 1 end end
+			return count
+		end
+
+		key('enter')
+		local state = menu.State()
+		check('enter on the row opens the question, on the row that keeps things first',
+			state.ok and state.value.itemId == 'wipe_keep', state.ok and tostring(state.value.itemId))
+		check('and nothing was done yet', selects() == 0, selects())
+
+		key('enter')
+		state = menu.State()
+		check('enter on the keep row goes back and does nothing',
+			state.ok and state.value.itemId == 'wipe' and selects() == 0,
+			state.ok and tostring(state.value.itemId))
+
+		key('enter'); key('down'); key('enter')
+		local last = heard[#heard]
+		check('the yes row is the select the caller always heard, same id and data',
+			last ~= nil and last.action == 'select' and last.id == 'wipe'
+				and type(last.data) == 'table' and last.data.verb == 'delete',
+			last and ('%s %s'):format(tostring(last.action), tostring(last.id)))
+		menu.Close(handle)
+
+		-- ── the eye ──
+		local target = OPX.Modules.Get('target')
+		local registered = target and OPX.Api.Get('target').RegisterPlayers('calls', {
+			{ id = 'wipe', label = 'Wipe', danger = true, onSelect = function() return true end },
+			{ id = 'form', label = 'Kick...', danger = true, confirm = false,
+				onSelect = function() return true end },
+			{ id = 'plain', label = 'Wave', onSelect = function() return true end },
+		})
+		check('three test rows register on the eye', registered and registered.ok,
+			registered and tostring(registered.error))
+		local rows = {}
+		for _, listed in ipairs(target and target.Registry.List('calls') or {}) do
+			local row = target.Registry.Get(listed.token)
+			if row then rows[row.id] = row end
+		end
+		check('a danger row asks for a second click', rows.wipe ~= nil and rows.wipe.confirm == true)
+		check('unless it opts out', rows.form ~= nil and rows.form.confirm == false)
+		check('and an ordinary row does not', rows.plain ~= nil and rows.plain.confirm == false)
+		check('and the confirm label is written', OPX.Locale.Text('target.confirm', { label = 'Wipe' })
+			:find('Wipe', 1, true) ~= nil)
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
