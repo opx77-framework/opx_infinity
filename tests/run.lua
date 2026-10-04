@@ -12808,6 +12808,71 @@ do
 	end
 end
 
+-- ── the gunsmith rows resolve by position ───────────────────────────────────
+-- THE SHOPS BUG, A SECOND TIME. Both gunsmith rows read `payload.index` off a
+-- target context that has never carried one, so Workbench and the armoury stock
+-- did nothing when pressed: no screen, no toast, no log line.
+section('gunsmith: the eye rows resolve the armoury from where the eye landed')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the gunsmith module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local target = OPX.Modules.Get('target')
+		local rows = target ~= nil and target.Registry.List('gunsmith') or {}
+		local bench, chest
+		for _, listed in ipairs(rows) do
+			local row = target.Registry.Get(listed.token)
+			if row and row.id == 'gunsmith.bench' then bench = row end
+			if row and row.id == 'gunsmith.chest' then chest = row end
+		end
+		check('the gunsmith put a bench row and a chest row on the eye',
+			bench ~= nil and chest ~= nil, ('%d row(s)'):format(#rows))
+
+		local function chestsAsked()
+			local asked = {}
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == gunsmith.Event.CHEST then asked[#asked + 1] = sent[1] end
+			end
+			return asked
+		end
+
+		if chest ~= nil then
+			chest.onSelect({ position = { x = -1522.2, y = 889.6, z = 42.3 },
+				option = { id = 'gunsmith.chest', owner = 'gunsmith' } })
+		end
+		local asked = chestsAsked()
+		check('a press on the chest asks for that armoury\'s chest',
+			asked[#asked] == 'arasaka_armoury', tostring(asked[#asked]))
+
+		local before = #chestsAsked()
+		if chest ~= nil then
+			chest.onSelect({ position = { x = 0.0, y = 0.0, z = 0.0 } })
+			chest.onSelect({ screen = { x = 0.5, y = 0.5 } })
+			chest.onSelect(nil)
+		end
+		check('and a press nowhere near a chest, or with no position, asks for nothing',
+			#chestsAsked() == before)
+
+		-- The bench row opens the crafting screen for the bench it resolved.
+		local opened
+		local crafting = OPX.Api.Get('crafting')
+		if crafting ~= nil then
+			local realOpen = crafting.Open
+			crafting.Open = function(key) opened = key end
+			if bench ~= nil then
+				bench.onSelect({ position = { x = -1519.0, y = 889.2, z = 42.2 } })
+			end
+			crafting.Open = realOpen
+		end
+		check('a press on the bench opens that armoury\'s bench',
+			opened == gunsmith.BENCH_PREFIX .. 'arasaka_armoury', tostring(opened))
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
