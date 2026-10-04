@@ -1738,7 +1738,16 @@ local function draw(inPlace)
 		local me = coroutine.running()
 		drawThread = me
 		drawThreads[me] = true
+		local again = false
 		while drawQueued and drawThread == me do
+			-- A redraw asked for while the last was building starts on a fresh
+			-- resume: run straight on, it shared one with the contract call that
+			-- had just finished, and that pair was this thread's dearest resume.
+			if again then
+				Wait(0)
+				if not (drawQueued and drawThread == me) then break end
+			end
+			again = true
 			local place = drawQueuedInPlace
 			drawQueued, drawQueuedInPlace = false, true
 			drawingSince = Client.NowMs()
