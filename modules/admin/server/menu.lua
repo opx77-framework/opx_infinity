@@ -22,6 +22,20 @@ local Menu = M.Menu
 -- event carrying more than 1024 value nodes and says nothing.
 local CHUNK = 20
 
+-- AN OPEN BAG IS A READ, AND A READ IS AUDITED. The typed `inventory.view`,
+-- `character.list` and `character.find` each leave a line in the audit; the
+-- same reads through the menu left none, so an operator could page through
+-- anyone's bag -- an offline citizen's straight out of the database -- with
+-- nothing written down. One line per operator, read and target a minute: the
+-- menu re-asks on every redraw, and the audit is for who looked, not how often.
+local READ_AUDIT_MS = 60000
+
+local function auditRead(player, event, target)
+	local key = ('read:%s:%s'):format(event, tostring(target):sub(1, 64))
+	if Server.Cooled(player, key, READ_AUDIT_MS) then return end
+	Server.Audit(player, event, true, nil, ('menu: %s'):format(tostring(target):sub(1, 64)))
+end
+
 -- The refresh topics a client may ask for. Anything else is dropped.
 local TOPICS = { roster = true, locations = true, access = true, items = true, bag = true,
 	characters = true, found = true }
@@ -262,6 +276,7 @@ function Menu.Register()
 				Server.Permitted(player, Command.INVENTORY_REMOVE) ~= true then
 				return
 			end
+			auditRead(player, 'admin.inventory.view', arg)
 			CreateThread(function() pushBag(player, arg) end)
 		elseif topic == 'characters' then
 			-- The same idiom the bag uses one branch up: a list is served only to an
@@ -270,12 +285,15 @@ function Menu.Register()
 			-- all, and the list is a roster of what they could then rename or
 			-- delete.
 			if Server.Permitted(player, Command.CHARACTER_LIST) ~= true then return end
+			auditRead(player, 'admin.character.list', arg)
 			CreateThread(function() pushCharacters(player, arg) end)
 		elseif topic == 'found' then
 			-- The find is its own grant and is checked as its own grant: an operator
 			-- who may read the characters of the person in front of them has not
 			-- thereby been given the directory of everybody who has ever played.
 			if Server.Permitted(player, Command.CHARACTER_FIND) ~= true then return end
+			auditRead(player, 'admin.character.find',
+				type(request) == 'table' and (request.term or request.mode) or request)
 			CreateThread(function() pushFound(player, request) end)
 		else
 			local access, known = accessOf(player)

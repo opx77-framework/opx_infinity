@@ -475,7 +475,18 @@ local function pass()
 	local signature = table.concat(parts, '\n')
 	if signature == published then return end
 	published = signature
-	publish('rows', { rows = rows })
+	-- THE VIEW DRAWS ON A RESUME OF ITS OWN. This pass is a scheduler job, and
+	-- the scheduler runs up to four jobs in one resume of the client's only loop:
+	-- `ON_TAGS` is a local event, dispatched synchronously, so the view placing
+	-- and anchoring up to 32 tags -- creating every anchor on the first frame --
+	-- was spent on that same shared budget, on top of this pass's own walk over
+	-- 32 bodies. The frame is handed over on a one-shot thread instead, and
+	-- dropped there if a newer frame, a hide or a stop came after it.
+	if type(CreateThread) ~= 'function' then return publish('rows', { rows = rows }) end
+	CreateThread(function()
+		if published ~= signature or not shown then return end
+		publish('rows', { rows = rows })
+	end)
 end
 
 -- Saves the switch on this machine for this server.

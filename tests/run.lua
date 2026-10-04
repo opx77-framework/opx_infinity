@@ -57,6 +57,8 @@ local function boot(side, database, prelude, loaded)
 		-- After each file, before any module starts: where a test swaps a
 		-- shipped config for its fixture.
 		if loaded then loaded(env, file) end
+		-- The budget meter, when asked for, counts each scheduler job by name.
+		if file == 'core/client/scheduler.lua' then Host.MeterJobs(env.OPX.Scheduler) end
 	end
 
 	-- The host always raises this for a starting resource, and the client half
@@ -11207,7 +11209,7 @@ do
 		-- wrong the day the platform adds a field, silently, because the operator
 		-- sees four lines and cannot know a fifth existed. So the check feeds it a
 		-- field nothing in this resource has ever heard of and requires it back.
-		local report = admin.Inspect({
+		local report = admin.Target.Inspect({
 			kind = 'prop',
 			position = { x = 12.5, y = -30.25, z = 7.0 },
 			material = 'concrete',
@@ -11231,7 +11233,7 @@ do
 			report:find('somethingNobodyHasHeardOf=keep me', 1, true) ~= nil, report)
 
 		-- Nothing is invented for a pick that answered nothing.
-		local empty = admin.Inspect(nil)
+		local empty = admin.Target.Inspect(nil)
 		check('while a pick with nothing in it says so rather than printing blanks',
 			type(empty) == 'string' and empty:find('nothing', 1, true) ~= nil, empty)
 		-- not have, and an operator who pressed a stale keybind must not lose the
@@ -11718,17 +11720,19 @@ do
 		cctl.Pump(10)
 		check('the staff menu is open on the root', admin.Menu.Screen() == 'root')
 
-		-- ONE PUMP BETWEEN PRESSES, which is 100ms of host clock: this is somebody
+		-- TWO PUMPS BETWEEN PRESSES, which is 200ms of host clock: this is somebody
 		-- walking into a player's health screen at a normal pace, well inside the
-		-- 750ms floor. A test that pumped ten rounds between presses would be
-		-- asserting nothing -- it would have waited the floor out.
+		-- 750ms floor. Two, because a redraw takes two resumes now -- one to build
+		-- the screen, one to hand it to the menu contract -- and a row cannot be
+		-- pressed before its screen is up. A test that pumped ten rounds between
+		-- presses would be asserting nothing -- it would have waited the floor out.
 		asked = {}
 		local walked = act('players')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('player_3')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('health')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		check('the operator walks root -> Players -> a player -> Health', walked
 			and admin.Menu.Screen() == 'playerHealth', tostring(admin.Menu.Screen()))
 		check('and the three screens ask for the roster ONCE between them',
@@ -11829,12 +11833,28 @@ do
 		check('bodies with no name list are counted as a naming fault, not a native one',
 			said('no name 1') ~= nil, table.concat(notes, ' | '))
 
+		-- The view hears its rows on a resume of its own: the pass is a scheduler
+		-- job, and the view anchoring every tag inside it spent the shared budget.
+		local rowsHeard, underScheduler = 0, false
+		env.AddEventHandler(admin.Event.ON_TAGS, function(payload)
+			if type(payload) ~= 'table' or payload.kind ~= 'rows' then return end
+			rowsHeard = rowsHeard + 1
+			for level = 2, 40 do
+				local info = debug.getinfo(level, 'S')
+				if info == nil then break end
+				if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+					underScheduler = true
+				end
+			end
+		end)
 		notes = {}
 		control.netEvents[admin.Event.TAG_ROWS]({
 			rows = { { id = 2, name = 'vee' } }, offset = 0, done = true })
 		control.Pump(20)
 		check('and once the names arrive the pass reports a row drawn',
 			said('1 drawn') ~= nil, table.concat(notes, ' | '))
+		check('and the view is handed its rows outside the scheduler resume',
+			rowsHeard > 0 and not underScheduler, ('%d heard'):format(rowsHeard))
 
 		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
 		-- reason has to be carried out or it is indistinguishable from "nobody near".
@@ -31349,6 +31369,546 @@ do
 end
 
 
+-- ── every resume of a staff redraw stays small, and long lists are paged ────
+-- The roster, a bag, the saved places, an account's characters and the ammo
+-- kinds drew up to 190 rows on one screen, and the menu contract checks every
+-- row of a spec inside the resume that hands it over -- several hundred
+-- instructions a row. A full roster was one resume of tens of thousands, past
+-- the client's per-resume budget. Each list is paged now, the contract gets a
+-- resume of its own, and this counts the dearest resume the redraw's thread
+-- makes over a 150-player roster and a 120-slot bag.
+section('every resume of a staff redraw stays small, and long lists are paged')
+do
+	local env, control, why = boot('client')
+	check('client boots for the redraw budget', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 150 do
+			rows[index] = { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
+				user = 'user' .. index, citizenId = 'CID' .. index }
+		end
+		control.netEvents[admin.Event.ROSTER]({ rows = rows, offset = 0, total = 150, done = true })
+		control.Pump(10)
+
+		-- Counts the dearest resume of every thread started while `fn` runs.
+		local function dearest(fn)
+			local worst, spent = 0, 0
+			local realCreate, realWait = env.CreateThread, env.Wait
+			env.Wait = function(ms)
+				if spent > worst then worst = spent end
+				spent = 0
+				return realWait(ms)
+			end
+			env.CreateThread = function(body)
+				return realCreate(function(...)
+					spent = 0
+					debug.sethook(function() spent = spent + 1 end, '', 1)
+					body(...)
+					debug.sethook()
+					if spent > worst then worst = spent end
+				end)
+			end
+			fn()
+			env.CreateThread = realCreate
+			control.Pump(40)
+			env.Wait = realWait
+			return worst
+		end
+		local function listed(prefix)
+			local count, more = 0, nil
+			for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+				if tostring(item.id):sub(1, #prefix) == prefix then count = count + 1 end
+				if item.id == 'more' then more = item end
+			end
+			return count, more
+		end
+
+		local worst = dearest(function() admin.Menu.OpenAt('players') end)
+		local count, more = listed('player_')
+		check('a 150-player roster draws one page of it', admin.Menu.Screen() == 'players'
+			and count == 20 and more ~= nil, ('%d rows'):format(count))
+		check('and no resume of that redraw is dear', worst < 12000, ('%d instructions'):format(worst))
+
+		-- The next page is the same screen, one deeper, and Back is a page back.
+		-- An update carries no callback; the open before it does.
+		local on
+		for index = #specs, 1, -1 do
+			if specs[index].on then on = specs[index].on break end
+		end
+		if on and more then on({ action = 'select', itemId = 'more', handle = 1, data = more.data }) end
+		control.Pump(10)
+		local second = 0
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.id == 'player_21' then second = second + 1 end
+		end
+		check('the next-page row turns to the second page', second == 1
+			and tostring(specs[#specs].title):find('2/8', 1, true) ~= nil, tostring(specs[#specs].title))
+
+		-- A bare-id screen pages too: the bag takes the player's id as its argument.
+		admin.Menu.OpenAt('bag', 3)
+		control.Pump(4)
+		local slots = {}
+		for index = 1, 120 do
+			slots[index] = { slot = index, count = 1, name = 'item' .. index, label = 'Item ' .. index }
+		end
+		worst = dearest(function()
+			control.netEvents[admin.Event.BAG]({ target = '3', rows = slots, offset = 0, total = 120, done = true })
+		end)
+		count = listed('slot_')
+		check('a 120-slot bag draws one page of it', admin.Menu.Screen() == 'bag' and count == 20,
+			('%d rows'):format(count))
+		check('and no resume of that redraw is dear either', worst < 12000, ('%d instructions'):format(worst))
+
+		-- A category whose name has a space no longer refuses the whole screen.
+		control.netEvents[admin.Event.ITEMS]({ rows = {
+			{ name = 'vest', label = 'Vest', category = 'body armor' },
+			{ name = 'water', label = 'Water', category = 'food' },
+		}, offset = 0, total = 2, done = true })
+		admin.Menu.OpenAt('itemCategories', { t = 'me' })
+		control.Pump(10)
+		local named = false
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.label == 'body armor' then named = true end
+		end
+		check('a category named with a space is drawn, not refused',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'itemCategories' and named)
+
+		-- `OpenAt` is public, and a catalogue screen with no argument is drawn.
+		local errors = #control.log.error
+		admin.Menu.OpenAt('itemList')
+		control.Pump(10)
+		check('a catalogue screen opened with no argument does not raise',
+			#control.log.error == errors and admin.Menu.Screen() == 'itemList',
+			control.log.error[#control.log.error])
+
+		-- A build overtaken by a close never reopens a menu over an empty stack.
+		admin.Menu.OpenAt('players')
+		control.Pump(1)
+		admin.Menu.Close()
+		control.Pump(20)
+		check('a redraw overtaken by a close does not reopen the menu', not admin.Menu.IsOpen())
+	end
+end
+
+
+-- ── a polled menu key is played outside the scheduler's resume ──────────────
+-- The key poll is a scheduler job, and the scheduler runs up to four jobs in one
+-- resume of the client's only loop -- an overrun there retires the loop for the
+-- session. Enter used to run the owner's row callback inline, and an owner's
+-- callback routinely builds its next screen. The poll now only notices the edge;
+-- the callback must run with no scheduler frame under it.
+section('a polled menu key is played outside the scheduler resume')
+do
+	local env, control, why = boot('client')
+	check('client boots for the polled key', why == nil, why)
+	if why == nil then
+		local menu = env.OPX.Api.Get('menu')
+		local heard, underScheduler = {}, nil
+		local opened = menu.Open({
+			owner = 'probe', id = 'probe.keys', title = 'Probe',
+			items = { { id = 'first', label = 'First' }, { id = 'second', label = 'Second' } },
+			on = function(payload)
+				heard[#heard + 1] = payload.action
+				if payload.action ~= 'select' then return end
+				underScheduler = false
+				for level = 2, 40 do
+					local info = debug.getinfo(level, 'S')
+					if info == nil then break end
+					if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+						underScheduler = true
+					end
+				end
+			end,
+		})
+		check('a menu the page does not hold the keyboard for opens', opened.ok, opened.error)
+		-- Past the reopen grace, which is counted in POLLS, and the scheduler
+		-- rotates through every job four at a time.
+		control.Pump(200)
+		control.input.down.ENTER = true
+		settle(control, function() return underScheduler ~= nil end, 200)
+		control.input.down.ENTER = nil
+		control.Pump(2)
+		check('Enter selects the row', underScheduler ~= nil, table.concat(heard, ','))
+		check('and the owner hears it with no scheduler frame under it', underScheduler == false)
+		local state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- The row data count is walked without a call per scalar now; the limits
+		-- are the ones it always had. 64 nodes: the table, then a key and a value
+		-- for each entry.
+		local function withData(data)
+			return menu.Open({ owner = 'probe', id = 'probe.data', title = 'Probe',
+				items = { { id = 'only', label = 'Only', data = data } }, on = function() end })
+		end
+		local fits, over = {}, {}
+		for index = 1, 31 do fits['k' .. index] = index end
+		for index = 1, 32 do over['k' .. index] = index end
+		check('row data of 63 nodes is taken', withData(fits).ok)
+		check('and of 65 is refused as too large', withData(over).error == 'item_data_too_large',
+			withData(over).error)
+		check('and nested past four levels is refused too',
+			withData({ a = { b = { c = { d = { e = 1 } } } } }).error == 'item_data_too_large')
+		check('while four levels are taken', withData({ a = { b = { c = { d = 1 } } } }).ok)
+		state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- A close callback that opens another menu does not leave it orphaned
+		-- under the open that caused the close.
+		local nestedClosed = nil
+		local function spec(id, on)
+			return { owner = 'probe', id = id, title = id, items = { { id = 'x', label = 'X' } }, on = on }
+		end
+		menu.Open(spec('probe.first', function(payload)
+			if payload.action == 'close' and payload.reason == 'reopened' then
+				menu.Open(spec('probe.nested', function(inner)
+					if inner.action == 'close' then nestedClosed = inner.reason end
+				end))
+			end
+		end))
+		menu.Open(spec('probe.third', function() end))
+		state = menu.State()
+		check('the open that replaced a menu is the one standing',
+			state.ok and state.value.menu == 'probe.third', state.value and state.value.menu)
+		check('and the menu its close callback opened was closed, not orphaned',
+			nestedClosed == 'superseded', tostring(nestedClosed))
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+	end
+end
+
+
+-- ── interaction surfaces: what the audit found besides the budget ───────────
+-- One case per defect: a prompt addressed to "player -1" went up on every
+-- client; a progress bar counted a refused input block as held; the pause key
+-- closed a panel that asked to be consulted; a chat command and a form
+-- keystroke were measured a byte at a time in Lua inside a page callback.
+section('interaction surfaces: the smaller defects')
+do
+	local env, control, why = boot('server')
+	check('server boots for the prompt address', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local spec = { title = 'T', rows = { { id = 'a', label = 'A' } } }
+		local before = #control.clientEvents
+		local everyone = prompts.Show(-1, 'test', 'x', spec)
+		check('a prompt for player -1 is refused, not broadcast',
+			not everyone.ok and everyone.error == 'prompts.invalidPlayer'
+				and #control.clientEvents == before, tostring(everyone.error))
+		check('and so is one for a slot nobody holds', not prompts.Show(7, 'test', 'x', spec).ok)
+		check('and one for a fraction', not prompts.HideAll(3.5, 'test').ok)
+		control.Admit(3, 'user-3')
+		local one = prompts.Show(3, 'test', 'x', spec)
+		local sent = control.clientEvents[#control.clientEvents]
+		check('while one for a connected player reaches that player alone',
+			one.ok and sent ~= nil and sent.source == 3, tostring(one.error))
+
+		-- The animation offer is built lazily because the API can arrive late; a
+		-- build asked for before it did must not latch an empty offer.
+		local Service = env.OPX.Modules.Get('animations').Service
+		local early = #Service.Wire()
+		env.Open77.animations = { play = function() return true end, stop = function() return true end }
+		local late = #Service.Wire()
+		check('an offer asked for before the animation API exists is built once it does',
+			early == 0 and late > 0, ('%d then %d'):format(early, late))
+		env.Open77.animations = nil
+	end
+end
+do
+	local refusedBlocks = 0
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.input = env.Open77.input or {}
+		env.Open77.input.setActionBlocked = function()
+			refusedBlocks = refusedBlocks + 1
+			return false, 'action_not_blockable'
+		end
+	end)
+	check('client boots for the smaller defects', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+
+		-- A progress bar whose input block was refused says so, once.
+		local progress = OPX.Api.Get('progress')
+		local warned = #control.log.warn
+		local started = progress.Start('test', { label = 'Working', durationMs = 2000 })
+		check('a bar starts even though its input block is refused', started.ok, started.error)
+		local said = 0
+		for index = warned + 1, #control.log.warn do
+			if control.log.warn[index]:find('could not be blocked', 1, true) then said = said + 1 end
+		end
+		check('and the refusal is reported, not recorded as held',
+			refusedBlocks > 0 and said > 0, ('%d asked, %d said'):format(refusedBlocks, said))
+		if started.ok then progress.Stop('test') end
+
+		-- The pause key consults a panel that asked to be consulted.
+		local heard = {}
+		local panel = OPX.Api.Get('panel')
+		local opened = panel.Open({
+			owner = 'test', id = 'test.ask', title = 'ASK', dismiss = 'ask',
+			actions = { { id = 'a', label = 'A' } },
+			on = function(payload) heard[#heard + 1] = payload.action end,
+		})
+		check('a panel that asks before it is dismissed opens', opened.ok, opened.error)
+		control.Fire('open77:pauseKey')
+		local state = panel.State()
+		check('the pause key asks it rather than closing it',
+			state.ok and state.value.open == true and heard[#heard] == 'dismiss',
+			table.concat(heard, ','))
+		if state.ok and state.value.open then panel.Close(state.value.handle) end
+
+		-- A command line the page did not bound is cut before it is tokenised.
+		local chatPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:chat:submit'] then chatPage = candidate end
+		end
+		check('the chat input is wired', chatPage ~= nil)
+		if chatPage ~= nil then
+			env.TriggerServerEvent = function() return true end
+			local long = '/me ' .. ('a'):rep(20000)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(chatPage, 'opx:chat:submit', { text = long })
+			debug.sethook()
+			check('a 20,000-character command costs a bounded walk', spent < 20000,
+				('%d instructions'):format(spent))
+		end
+
+		-- A long accented buffer is measured natively, not a byte at a time.
+		local forms = OPX.Api.Get('form')
+		local submitted
+		local form = forms.Open({
+			owner = 'test', id = 'test.long', title = 'LONG',
+			fields = { { id = 'body', label = 'Body', maxLength = 512 } },
+			on = function(payload) if payload.action == 'submit' then submitted = payload.values end end,
+		})
+		check('a form with a long field opens', form.ok, form.error)
+		local formPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then formPage = candidate end
+		end
+		if form.ok and formPage ~= nil then
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 1, text = ('é'):rep(500) })
+			debug.sethook()
+			check('a 500-character accented keystroke is cheap to measure', spent < 4000,
+				('%d instructions'):format(spent))
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 2, text = ('é'):rep(513) })
+			control.PageEmit(formPage, 'opx:form:key', { handle = form.value.handle, key = 'enter' })
+			local body = submitted and submitted.body
+			check('and one past the limit is still refused: the buffer kept is the last good one',
+				type(body) == 'string' and utf8.len(body) == 500, body and utf8.len(body))
+			if not submitted then forms.Close(form.value.handle) end
+		end
+	end
+end
+
+
+-- ── staff commands: a kill by another name, a flood of announcements, a veil ─
+-- `player.health 0` killed on the health grant alone; announcements had no
+-- floor but the 400ms action floor; `NOCLIP.HIDE_BODY = false` was never read
+-- on the server, so the body was hidden anyway; and a staff bag opened through
+-- the menu left no audit line where the typed command leaves one.
+section('staff commands: health zero, the announcement floor, the noclip veil, read audits')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the staff command checks', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src, target = 12, 13
+		control.Admit(src, 'account-staff')
+		control.Admit(target, 'account-target')
+		OPX.EnsureSession(src)
+		OPX.EnsureSession(target)
+		control.Allow(src, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(src, 'command.' .. admin.Command.WORLD_ANNOUNCE)
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+
+		control.commands[admin.Command.PLAYER_HEALTH].run(src, { tostring(target), '0' })
+		control.Pump(4)
+		local refused = lastAudit('admin.player.health')
+		check('health 0 without the kill grant is refused, and audited',
+			refused ~= nil and refused.ok == false, refused and refused.detail)
+
+		-- A second operator, so the first one's action floor is not what answers.
+		local killer = 14
+		control.Admit(killer, 'account-killer')
+		OPX.EnsureSession(killer)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_KILL)
+		local function zeroRefusals()
+			local seen = 0
+			for _, entry in ipairs(admin.Server.Recent(20)) do
+				if entry.detail == 'zero without the kill grant' then seen = seen + 1 end
+			end
+			return seen
+		end
+		local before = zeroRefusals()
+		control.commands[admin.Command.PLAYER_HEALTH].run(killer, { tostring(target), '0' })
+		control.Pump(4)
+		check('while an operator granted the kill is not stopped by that check',
+			before == 1 and zeroRefusals() == 1, ('%d then %d'):format(before, zeroRefusals()))
+
+		local function announcements()
+			local seen = 0
+			for _, event in ipairs(control.clientEvents) do
+				if event.name == admin.Event.ANNOUNCE then seen = seen + 1 end
+			end
+			return seen
+		end
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'first' })
+		control.Pump(10)
+		local first = announcements()
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'second' })
+		control.Pump(10)
+		check('a second announcement inside the floor is refused',
+			first > 0 and announcements() == first, ('%d then %d'):format(first, announcements()))
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(0, { 'console' })
+		control.Pump(4)
+		check('while the console is not held to it', announcements() > first)
+
+		admin.Settings.NOCLIP = admin.Settings.NOCLIP or {}
+		local hide = admin.Settings.NOCLIP.HIDE_BODY
+		admin.Settings.NOCLIP.HIDE_BODY = false
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'on' })
+		control.Pump(4)
+		check('with HIDE_BODY off, noclip leaves the body visible',
+			admin.Players.IsNoclip(src) == true and control.bodies.visible[src] ~= false,
+			tostring(control.bodies.visible[src]))
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'off' })
+		control.Pump(4)
+		admin.Settings.NOCLIP.HIDE_BODY = hide
+
+		-- A bag opened through the menu is a read, and audited once.
+		control.Allow(src, 'command.' .. admin.OPENER)
+		control.Allow(src, 'command.' .. admin.Command.INVENTORY_VIEW)
+		control.Pump(10)
+		env.source = src
+		control.netEvents[admin.Event.REFRESH]('bag', tostring(target))
+		control.Pump(10)
+		local read = lastAudit('admin.inventory.view')
+		check('a bag opened through the menu leaves an audit line',
+			read ~= nil and tostring(read.detail):find('menu', 1, true) ~= nil, read and read.detail)
+	end
+end
+
+
+-- ── an unchanged prompt strip costs its pass almost nothing ─────────────────
+-- `prompts.pass` runs every 150ms inside the scheduler's shared resume, whose
+-- overrun retires the client's only loop. It rebuilt the whole frame on every
+-- pass -- sorted every group, concatenated a signature for every row -- to
+-- compare it with the one it already had. Thirty-two groups is the cap.
+section('an unchanged prompt strip costs its pass almost nothing')
+do
+	local steps = {}
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, interval, step)
+			steps[name] = step
+			return every(name, interval, step)
+		end
+	end)
+	check('client boots for the strip pass', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:prompts:ready'] then page = candidate end
+		end
+		check('the pass is registered and the strip page is there',
+			steps['prompts.pass'] ~= nil and page ~= nil)
+		if steps['prompts.pass'] ~= nil and page ~= nil then
+			control.PageEmit(page, 'opx:prompts:ready', {})
+			for index = 1, 32 do
+				prompts.Show('test', 'g' .. index, { title = 'G' .. index, priority = index % 3, rows = {
+					{ id = 'a', label = 'Row A ' .. index, keys = 'E' },
+					{ id = 'b', label = 'Row B ' .. index, keys = 'F', value = tostring(index) },
+				} })
+			end
+			control.Pump(4)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			steps['prompts.pass']()
+			debug.sethook()
+			check('a pass over 32 unchanged groups is cheap', spent < 800,
+				('%d instructions'):format(spent))
+			prompts.Show('test', 'g1', { title = 'CHANGED', priority = 9, rows = { { id = 'a', label = 'New', keys = 'E' } } })
+			control.Pump(2)
+			local drew
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then drew = page.sent[index] break end
+			end
+			local changed = false
+			for _, group in ipairs(drew and drew.payload.groups or {}) do
+				if group.title == 'CHANGED' then changed = true end
+			end
+			check('and a change still reaches the strip', changed)
+		end
+	end
+end
+
+
+-- ── the HUD's effect strip is bounded before it reaches the page ────────────
+-- The strip arrives on the client's local bus, which every resource on the host
+-- shares. A chip needed only a string id and was then forwarded as given, so one
+-- oversized or malformed strip was a HUD payload the host refuses whole.
+section('the HUD effect strip is bounded before it reaches the page')
+do
+	local env, control, why = boot('client')
+	check('client boots for the effect strip', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then page = candidate end
+		end
+		check('the HUD page is there', page ~= nil)
+		if page ~= nil then
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(2)
+			local offered = {}
+			for index = 1, 40 do
+				offered[index] = { id = 'test:' .. index, label = index == 1 and { 'not', 'text' } or ('Effect ' .. index),
+					icon = 'heal', tone = 'good', progress = 7, extra = { deep = { deeper = true } } }
+			end
+			env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'needs', 'effects'),
+				{ chips = offered, hidden = 2 })
+			control.Pump(2)
+			local status
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:hud:status' then status = page.sent[index].payload break end
+			end
+			local chips = status and status.chips or {}
+			check('at most twelve chips cross', status ~= nil and #chips == 12, #chips)
+			check('and the rest are counted as hidden', status ~= nil and status.hidden == 2 + 28,
+				status and status.hidden)
+			check('and a chip crosses with only the fields the page reads, bounded',
+				chips[1] ~= nil and chips[1].label == nil and chips[1].extra == nil
+					and chips[1].progress == 1 and chips[2].label == 'Effect 2')
+		end
+	end
+end
+
+
 -- ── doorlock ─────────────────────────────────────────────────────────────────
 -- The door locks. The server is booted against a bridge that keeps what it was
 -- given, with three config doors patched in after `config/doorlock.lua` loads,
@@ -32127,6 +32687,20 @@ do
 	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
 	check('the toast bar scales rather than resizes under its filter',
 		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
+end
+
+-- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
+-- client call site whose worst single resume cost more than the figure, the
+-- dearest first. Read it, do not gate on it -- a site here is a resume the
+-- platform may kill.
+if Host.Meter.limit ~= nil then
+	local over = {}
+	for site, spent in pairs(Host.Meter.worst) do
+		if spent > Host.Meter.limit then over[#over + 1] = { site = site, spent = spent } end
+	end
+	table.sort(over, function(a, b) return a.spent > b.spent end)
+	print(('\nbudget meter: %d client call sites past %d instructions in one resume'):format(#over, Host.Meter.limit))
+	for _, row in ipairs(over) do print(('  %8d  %s'):format(row.spent, row.site)) end
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

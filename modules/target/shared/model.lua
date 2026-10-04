@@ -438,8 +438,15 @@ function Model.New(alive)
 	-- @param row table
 	-- @param context table
 	-- @return boolean
+	--
+	-- CHEAPEST TEST FIRST. Every test here is a pure predicate of the row and the
+	-- context, so their order changes the cost and never the answer -- and this
+	-- runs for every registered row on every hover and every pick, inside the
+	-- scheduler's shared resume. The owner check (a lookup through the module
+	-- registry) and the entity and sphere walks used to come before the plain
+	-- field compares that turn most rows away; they now come after.
 	function registry.Matches(row, context)
-		if not row.enabled or not alive(row.owner, row.generation) then return false end
+		if not row.enabled then return false end
 		local target = type(context.target) == 'table' and context.target or { kind = 'world', networked = false }
 		if target.kind == 'sky' then
 			-- Empty space is opt-in, never a surface at distance zero.
@@ -448,6 +455,12 @@ function Model.New(alive)
 			or context.playerDistance > row.distance then
 			return false
 		end
+		if target.isLocalPlayer and not row.allowSelf then return false end
+		if row.selfOnly and target.isLocalPlayer ~= true then return false end
+		if row.types ~= nil and row.types[target.kind] ~= true then return false end
+		if row.records ~= nil and row.records[target.record] ~= true then return false end
+		if row.networked ~= nil and row.networked ~= target.networked then return false end
+		if not alive(row.owner, row.generation) then return false end
 		if row.entities ~= nil then
 			local named = false
 			for _, entry in ipairs(row.entities) do
@@ -471,11 +484,7 @@ function Model.New(alive)
 			end
 			if not inside then return false end
 		end
-		if target.isLocalPlayer and not row.allowSelf then return false end
-		if row.selfOnly and target.isLocalPlayer ~= true then return false end
-		if row.types ~= nil and row.types[target.kind] ~= true then return false end
-		if row.records ~= nil and row.records[target.record] ~= true then return false end
-		return row.networked == nil or row.networked == target.networked
+		return true
 	end
 
 	--- Every row matching a context, in display order.

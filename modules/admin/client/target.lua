@@ -313,7 +313,7 @@ end
 -- @author dop42
 -- @param context table
 -- @return string
-function M.Inspect(context)
+function Target.Inspect(context)
 	local lines = {}
 	fieldsOf(context, '', lines)
 	-- The thing that was hit, prefixed so a field name that appears on both --
@@ -326,7 +326,7 @@ end
 --- The last inspection this client made, or nil.
 -- @author dop42
 -- @return string|nil
-function M.LastInspection()
+function Target.LastInspection()
 	return lastInspection
 end
 
@@ -343,7 +343,7 @@ end
 
 -- What the inspector row does, wherever it is drawn.
 local function inspect(context)
-	local report = M.Inspect(context)
+	local report = Target.Inspect(context)
 	lastInspection = report
 	local copied = copyBlock(report)
 
@@ -597,13 +597,26 @@ local function refusals()
 	return names
 end
 
+-- The signature of what the access map grants: the granted row ids. Cheap, and
+-- what `register` compares first -- an access refresh arrives every time the
+-- operator leaves the menu's root, and almost never changes a grant.
+local function grantedSignature()
+	local ids = {}
+	for _, row in ipairs(ROWS) do
+		if granted(row.grant) then ids[#ids + 1] = row.id end
+	end
+	return table.concat(ids, ',')
+end
+
 -- The definitions the access map grants, by kind, and their signature.
 local function wanted()
 	local byKind, ids = {}, {}
+	-- Once, not once per row: the same word heads every folder.
+	local heading = locale('admin.target.group')
 	for index, row in ipairs(ROWS) do
 		if granted(row.grant) then
 			byKind[row.kind] = byKind[row.kind] or {}
-			local group = locale('admin.target.group')
+			local group = heading
 			if row.folder then
 				group = ('%s/%s'):format(group, locale('admin.target.folder.' .. row.folder))
 			end
@@ -745,21 +758,30 @@ local function sync()
 	CreateThread(function()
 	repeat
 		dirty = false
-		local built, byKind, signature = pcall(wanted)
-		if built then
-			-- Protected for the reason the loop above yields: `register` raising is how
-			-- this module lost two fifths of its rows in silence. A raise is now a line
-			-- in the server log instead of an absence in it.
-			local done, failure = pcall(register, contract, byKind, signature)
-			if not done then
+		-- UNCHANGED GRANTS COST A SIGNATURE, NOT A REBUILD. Building every
+		-- definition -- three dozen rows, three closures and a few catalogue
+		-- reads each -- ran before `register` could notice nothing had changed,
+		-- and it ran in the same resume as the clear and the first batch. Now
+		-- the ids are compared first, and a real change builds, yields, and then
+		-- registers on a fresh resume.
+		if registered == nil or grantedSignature() ~= registered then
+			local built, byKind, signature = pcall(wanted)
+			if built then
+				Wait(0)
+				-- Protected for the reason the loop above yields: `register` raising is how
+				-- this module lost two fifths of its rows in silence. A raise is now a line
+				-- in the server log instead of an absence in it.
+				local done, failure = pcall(register, contract, byKind, signature)
+				if not done then
+					registered = nil
+					Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
+					report('staff rows not registered: ' .. tostring(failure))
+				end
+			else
 				registered = nil
-				Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
-				report('staff rows not registered: ' .. tostring(failure))
+				Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
+				report('staff rows not built: ' .. tostring(byKind))
 			end
-		else
-			registered = nil
-			Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
-			report('staff rows not built: ' .. tostring(byKind))
 		end
 	until not dirty
 	syncing = false

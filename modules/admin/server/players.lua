@@ -95,8 +95,15 @@ end
 -- @param playerId Source
 -- @return boolean whether the native took it
 -- @return string|nil why it did not
+--
+-- The noclip hides the body only where `NOCLIP.HIDE_BODY` says it does. It used
+-- to hide it whenever noclip was on, so `HIDE_BODY = false` was a setting the
+-- server never read -- and since that same setting stops the client reporting
+-- the noclip ending, a body switched off by the key stayed hidden until the
+-- operator toggled again.
 local function applyVeil(playerId)
-	local wanted = hidden[playerId] == true or noclip[playerId] ~= nil
+	local veiled = noclip[playerId] ~= nil and M.Section('NOCLIP').HIDE_BODY ~= false
+	local wanted = hidden[playerId] == true or veiled
 	local ok, reason = Open77.players.setVisible(playerId, not wanted)
 	if not ok then return false, reason end
 	return true
@@ -132,6 +139,24 @@ function Players.IsNoclip(playerId)
 	return noclip[playerId] ~= nil
 end
 
+-- The held and worn lists, read once per player on the server. Split out so a
+-- push to every staff client reads them once rather than once per recipient:
+-- that was two host reads per player per staff member on every freeze, every
+-- model change and every disconnect.
+local function bodyLists(departed)
+	local held, worn = {}, {}
+	for _, id in ipairs(Server.PlayerIds()) do
+		if id ~= departed then
+			local still = readFlag('isFrozen', id)
+			if still == nil then still = frozen[id] == true end
+			if still then held[#held + 1] = id end
+			local ped = M.Models.Worn(id)
+			if ped ~= nil then worn[#worn + 1] = { id = id, ped = ped } end
+		end
+	end
+	return held, worn
+end
+
 --- Sends one staff client the body states behind its checkboxes: whether its own
 --- body is hidden, the ids of the players held still, and the ped each player
 --- wearing one is wearing.
@@ -145,19 +170,12 @@ end
 -- @author dop42
 -- @param playerId Source
 -- @param departed Source|nil a player leaving right now, left off the lists
-function Players.PushBodies(playerId, departed)
+-- @param held table|nil the held list, when the caller already read it
+-- @param worn table|nil the worn list, read with it
+function Players.PushBodies(playerId, departed, held, worn)
 	if playerId <= 0 then return end
 	local visible = readFlag('isVisible', playerId)
-	local held, worn = {}, {}
-	for _, id in ipairs(Server.PlayerIds()) do
-		if id ~= departed then
-			local still = readFlag('isFrozen', id)
-			if still == nil then still = frozen[id] == true end
-			if still then held[#held + 1] = id end
-			local ped = M.Models.Worn(id)
-			if ped ~= nil then worn[#worn + 1] = { id = id, ped = ped } end
-		end
-	end
+	if held == nil or worn == nil then held, worn = bodyLists(departed) end
 	local invisible
 	if visible == nil then invisible = hidden[playerId] == true else invisible = not visible end
 	-- The operator's own ped travels beside the list rather than inside it: the
@@ -169,10 +187,12 @@ end
 -- Sends the body states to every client the ACL grants one of the commands the
 -- states are drawn for.
 local function pushBodiesToStaff(departed)
+	local held, worn
 	for _, id in ipairs(Server.PlayerIds()) do
 		if id ~= departed and (Server.Permitted(id, Command.PLAYER_FREEZE) == true
 			or Server.Permitted(id, Command.PLAYER_MODEL) == true) then
-			Players.PushBodies(id, departed)
+			if held == nil then held, worn = bodyLists(departed) end
+			Players.PushBodies(id, departed, held, worn)
 		end
 	end
 end
@@ -621,6 +641,13 @@ function Players.Register()
 			end
 			local playerId = Server.Target(source, raw, args[1])
 			if playerId == nil then return end
+			-- ZERO IS A KILL, and a kill has its own grant. `player.health 0` used to
+			-- go through on the health grant alone, so an operator refused
+			-- `player.kill` could kill anyway by typing the other command.
+			if value < 1 and Server.Permitted(source, Command.PLAYER_KILL) ~= true then
+				audit(source, 'admin.player.health', false, playerId, 'zero without the kill grant')
+				return refuse(source, raw, 'kill_not_granted')
+			end
 			if not Server.Admitted(source, raw, playerId, 'admin.player.health') then return end
 			local maximum = healthOf(playerId)
 			value = math.min(value, maximum)

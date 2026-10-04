@@ -382,7 +382,13 @@ function Vehicles.Register()
 					seat, { moveBucket = true })
 				seated = read and ok == true
 				if seated then break end
-				if read then reason = failure else reason = ok end
+				if read then
+					reason = failure
+				else
+					-- Logged, and answered as a word: the raise text is a file and a line.
+					Open77.log.error(('[admin] warpPlayerIntoVehicle raised: %s'):format(tostring(ok)))
+					reason = 'raised'
+				end
 			end
 			audit(source, 'admin.vehicle.enter', seated, nil,
 				('%s %s'):format(tostring(vehicleId), seated and '' or tostring(reason)))
@@ -412,8 +418,11 @@ function Vehicles.Register()
 			CreateThread(function()
 				local cut = keys.GiveFor(source, vehicleId)
 				local ok = type(cut) == 'table' and cut.ok == true
+				-- The value is read defensively: on this bare thread a raise is no
+				-- answer and no audit line, after the key has been cut.
+				local value = ok and type(cut.value) == 'table' and cut.value or {}
 				audit(source, 'admin.vehicle.key', ok, nil, ('%s %s'):format(tostring(vehicleId),
-					ok and cut.value.plate or tostring(type(cut) == 'table' and cut.error or cut)))
+					ok and tostring(value.plate) or tostring(type(cut) == 'table' and cut.error or cut)))
 				if not ok then
 					-- `noRoom` carries the key's label as its detail; the bare id is
 					-- only the fallback for a refusal that names none.
@@ -424,7 +433,7 @@ function Vehicles.Register()
 					return
 				end
 				answer(source, raw, true, 'admin.done.key',
-					{ vehicle = tostring(vehicleId), label = cut.value.label })
+					{ vehicle = tostring(vehicleId), label = tostring(value.label or vehicleId) })
 			end)
 		end,
 	})

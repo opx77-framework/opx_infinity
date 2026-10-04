@@ -345,8 +345,11 @@ function Weapons.Register()
 						failure = { code = takeCode, reason = takeReason }
 					end
 				end
+				-- `failure` is nil when nothing was even tried -- every stack counted
+				-- zero -- and indexing it raised on this bare thread: no answer at all.
 				if removed == 0 then
-					return Inventory.Fail(source, raw, event, playerId, who, failure.code, failure.reason)
+					return Inventory.Fail(source, raw, event, playerId, who,
+						failure and failure.code or 'failed', failure and failure.reason or 'nothing taken')
 				end
 				audit(source, event, true, playerId, ('%d weapon(s) from %s%s'):format(removed, who,
 					failure and (', then ' .. tostring(failure.reason)) or ''))
@@ -378,7 +381,8 @@ function Weapons.Register()
 				return refuse(source, raw, code == 'not_armed' and 'not_armed'
 					or 'holster_unavailable', { id = playerId })
 			end
-			audit(source, 'admin.weapon.holster', true, playerId, tostring(put.value.name))
+			audit(source, 'admin.weapon.holster', true, playerId,
+				tostring(type(put.value) == 'table' and put.value.name or '?'))
 			answer(source, raw, true, 'admin.done.holstered', { id = playerId })
 		end,
 	})

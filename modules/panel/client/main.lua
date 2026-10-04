@@ -705,6 +705,12 @@ local function Open(spec)
 
 	if record ~= nil then
 		closeNow(record.handle, record.owner == owner and 'reopened' or 'superseded')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then closeNow(record.handle, 'superseded') end
 	end
 
 	nextHandle = nextHandle + 1
@@ -1146,8 +1152,19 @@ function M.Start()
 
 	-- Escape is swallowed by the plugin before any surface sees it; when it
 	-- arrives here rather than on `panel:dismiss`, the reason is the pause menu.
+	--
+	-- AND IT ASKS WHERE ESCAPE WOULD HAVE ASKED. This closed every panel outright,
+	-- including one whose owner declared `dismiss = 'ask'` -- the editor with
+	-- unsaved changes -- so the same key that is consulted on the page was not
+	-- consulted here, and the menu already honours its own `closable` on this
+	-- path. A dialog up owns Escape, as it does on `panel:dismiss`.
 	AddEventHandler(M.Host.PAUSE_KEY, function()
-		if record ~= nil then closeNow(record.handle, 'pause') end
+		if record == nil or record.dialog ~= nil then return end
+		if record.view.dismiss == 'ask' then
+			raise(record, 'dismiss')
+			return
+		end
+		closeNow(record.handle, 'pause')
 	end)
 
 	OPX.Scheduler.Every('panel:sweep', SWEEP_MS, function()

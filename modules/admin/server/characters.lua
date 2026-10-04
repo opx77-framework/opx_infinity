@@ -167,7 +167,8 @@ function Characters.Register()
 		help = 'admin.help.charRename', params = { CITIZEN, FIRST, LAST }, inGame = true,
 		handler = function(source, args, raw)
 			local citizenId = M.Trimmed(args[1], 32)
-			if citizenId == nil then return refuse(source, raw, 'unknown_citizen') end
+			-- `{who}` is in the sentence; without it the operator read the braces.
+			if citizenId == nil then return refuse(source, raw, 'unknown_citizen', { who = '?' }) end
 			-- Both halves before the thread: a missing argument is not worth a
 			-- database round trip, and the refusal reads the same either way.
 			if M.Trimmed(args[2], 32) == nil or M.Trimmed(args[3], 32) == nil then
@@ -187,10 +188,13 @@ function Characters.Register()
 				if not result.ok then
 					audit(source, 'admin.character.rename', false, nil,
 						('%s: %s'):format(citizenId, tostring(result.error)))
-					return refuse(source, raw, codeOf(result.error))
+					return refuse(source, raw, codeOf(result.error), { who = citizenId })
 				end
 
-				local full = ('%s %s'):format(result.value.firstName, result.value.lastName)
+				-- Read defensively: this runs on a bare thread, where a raise is no
+				-- answer and no audit line at all, after the rename has happened.
+				local value = type(result.value) == 'table' and result.value or {}
+				local full = ('%s %s'):format(tostring(value.firstName or '?'), tostring(value.lastName or '?'))
 				audit(source, 'admin.character.rename', true, nil,
 					('%s -> %s'):format(citizenId, full))
 				answer(source, raw, true, 'admin.done.charRenamed',
@@ -207,7 +211,7 @@ function Characters.Register()
 		help = 'admin.help.charDelete', params = { CITIZEN }, inGame = true,
 		handler = function(source, args, raw)
 			local citizenId = M.Trimmed(args[1], 32)
-			if citizenId == nil then return refuse(source, raw, 'unknown_citizen') end
+			if citizenId == nil then return refuse(source, raw, 'unknown_citizen', { who = '?' }) end
 
 			local contract = Server.Contract('character')
 			if contract == nil then return refuse(source, raw, 'characters_unavailable') end
@@ -229,7 +233,7 @@ function Characters.Register()
 				if not result.ok then
 					audit(source, 'admin.character.delete', false, holder,
 						('%s: %s'):format(citizenId, tostring(result.error)))
-					return refuse(source, raw, codeOf(result.error))
+					return refuse(source, raw, codeOf(result.error), { who = citizenId })
 				end
 
 				audit(source, 'admin.character.delete', true, holder, citizenId)

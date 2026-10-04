@@ -414,21 +414,47 @@ end
 --- Adopts the strip the needs module published, bounded before it reaches the
 --- page. The client's local bus is shared with every resource on the host, so
 --- anything at all may raise this name.
+-- The most chips the strip draws, and the most entries a payload is read for.
+local MAX_CHIPS = 12
+local MAX_OFFERED = 64
+
 local function onEffects(payload)
 	if type(payload) ~= 'table' then return end
 
-	local kept = {}
+	-- BOUNDED, AND REBUILT FIELD BY FIELD. The header above says why and the code
+	-- did half of it: a chip needed only a string id, and was then forwarded as
+	-- given -- any count, any field, tables where text belongs. One oversized or
+	-- malformed strip is a HUD payload the host refuses WHOLE, vitals and all,
+	-- and every redraw concatenated a signature over all of it. At most
+	-- MAX_CHIPS are kept, the rest are counted into the hidden tally the page
+	-- already draws, and only the fields the page reads cross.
+	local kept, overflow = {}, 0
 	local offered = type(payload.chips) == 'table' and payload.chips or {}
-	for index = 1, #offered do
+	for index = 1, math.min(#offered, MAX_OFFERED) do
 		local chip = offered[index]
-		if type(chip) == 'table' and type(chip.id) == 'string' and chip.id ~= '' then
-			kept[#kept + 1] = chip
+		if type(chip) == 'table' and type(chip.id) == 'string' and chip.id ~= '' and #chip.id <= 96 then
+			if #kept >= MAX_CHIPS then
+				overflow = overflow + 1
+			else
+				local progress, remaining, total = tonumber(chip.progress),
+					tonumber(chip.remainingMs), tonumber(chip.totalMs)
+				kept[#kept + 1] = {
+					id = chip.id,
+					label = OPX.Text.Clean(chip.label, 48),
+					icon = type(chip.icon) == 'string' and #chip.icon <= 32 and chip.icon or nil,
+					tone = type(chip.tone) == 'string' and #chip.tone <= 16 and chip.tone or nil,
+					progress = finite(progress) and OPX.Math.Clamp(progress, 0, 1) or nil,
+					remainingMs = finite(remaining) and remaining >= 0 and math.floor(remaining) or nil,
+					totalMs = finite(total) and total >= 0 and math.floor(total) or nil,
+				}
+			end
 		end
 	end
 	chips = kept
 
 	local hidden = tonumber(payload.hidden)
 	hiddenChips = finite(hidden) and math.floor(OPX.Math.Clamp(hidden, 0, 999)) or 0
+	hiddenChips = math.min(999, hiddenChips + overflow)
 
 	local anchor = type(payload.anchor) == 'string' and #payload.anchor <= 32
 		and payload.anchor or nil
