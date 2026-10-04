@@ -2838,6 +2838,79 @@ do
 			appearance.Face.playerResetDone == false)
 	end
 
+	-- A SAVE THE SHOP COULD NOT CHARGE PUTS THE STORED LOOK BACK, end to end. The
+	-- server refuses a priced room's save with `clothing.unpaid`; this client has
+	-- to take the unpaid jacket back off the puppet, not keep wearing (and
+	-- publishing) it, and not keep offering the same save.
+	do
+		local env, control, appearance = restartedClient('complete')
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = 'Items.Underwear_Basic_01_Bottom' } }
+
+		-- A puppet that wears whatever it is told and reads back what it wears.
+		local worn, applied = {}, {}
+		for slot, item in pairs(STORED.equipment) do worn[slot] = false end
+		env.Open77.equipment = {
+			registry = function()
+				local copy = {}
+				for slot, item in pairs(worn) do copy[slot] = item end
+				return copy
+			end,
+			apply = function(slots)
+				for slot, item in pairs(slots) do worn[slot] = item end
+				applied[#applied + 1] = slots.OuterChest
+				return true
+			end,
+			info = function() return nil end,
+			records = function() return {} end,
+		}
+		local outfit = { registry = function() return {} end, apply = function() return true end }
+		env.Open77.wardrobe = {
+			active = function() return false end,
+			activate = function() return true end,
+			outfit = function() return outfit end,
+		}
+
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-PAYS', charInfo = { gender = 'female' }, clothing = STORED,
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 2 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local dressed = settle(control, function() return appearance.Clothing.Report() == 'worn' end, 120)
+		check('the stored clothes are on before the room', dressed and worn.OuterChest == 'Items.Jacket_01',
+			('%s, %s'):format(appearance.Clothing.Report(), tostring(worn.OuterChest)))
+
+		-- The room kept a jacket: the clothing half sees it hold and saves it.
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local function saves()
+			local count, last = 0, nil
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == SAVE then count, last = count + 1, sent[1] end
+			end
+			return count, last
+		end
+		worn.OuterChest = 'Items.Jacket_Bought'
+		local sent = settle(control, function() return saves() >= 1 end, 120)
+		local count, payload = saves()
+		check('the kept jacket goes to the server as a save', sent and type(payload) == 'table' and
+			payload.clothing.equipment.OuterChest == 'Items.Jacket_Bought', tostring(count))
+
+		-- The shop could not take the money.
+		local refuse = control.netEvents[appearance.Event.REFUSED]
+		refuse('clothing.unpaid', appearance.Operation.SAVE_CLOTHING)
+		local back = settle(control, function() return worn.OuterChest == 'Items.Jacket_01' end, 120)
+		check('AN UNPAID SAVE PUTS THE STORED JACKET BACK ON THE PUPPET', back,
+			('wearing %s, last put-on %s'):format(tostring(worn.OuterChest), tostring(applied[#applied])))
+		control.Pump(60)
+		local after = saves()
+		check('and the unpaid look is not offered to the server again', after == count,
+			('%d save(s) before, %d after'):format(count, after))
+		check('the clothing half is back to worn and still saving',
+			appearance.Clothing.Report() == 'worn', appearance.Clothing.Report())
+	end
+
 	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
 	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
 	-- minute in the world on no face, with the clothing gate held behind it.
