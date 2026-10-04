@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
-import { acquireFocus } from '@/bridge/focus'
+import { acquireFocus, focusOwner } from '@/bridge/focus'
 import { num, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -222,6 +222,11 @@ function keyDown(event: KeyboardEvent): void {
   // Escape belongs to bridge/focus.ts, which handles it in the capture phase and calls
   // `onEscape` below. Reading it here as well would send the intent twice.
   if (event.key === 'Escape') return
+  // Only while the menu is the TOP of the focus stack. The listener lives on `window`
+  // for as long as a full menu is open, and a panel, confirm or form opened over it
+  // had its Backspace, Enter and arrows swallowed here -- and sent to the hidden menu
+  // as `opx:menu:key`, so the menu moved behind the surface being typed into.
+  if (focusOwner() !== 'menu') return
   const key = KEYS[event.key]
   if (key === undefined) return
   event.preventDefault()
@@ -239,6 +244,8 @@ useBridge('opx:menu:open', (payload: Payload) => {
     // A second open replaces the first rather than stacking: the resource allows one
     // menu at a time and the previous handle is dead the moment this one arrives.
     release?.()
+    release = undefined
+    listen(false)
     handle.value = payload.handle
     readConfig(payload)
     readFrame(payload, true)
@@ -258,11 +265,13 @@ useBridge('opx:menu:open', (payload: Payload) => {
         id: 'menu',
         // An INTENT. The page does not close itself: Lua owns the close reason
         // (`pause`, `back`, `item`, ...) and answers with `opx:menu:close`. A menu
-        // its owner declared unclosable gets no Escape handler at all, so the key
-        // falls through to the focus stack, which releases nothing it does not own.
+        // its owner declared unclosable gets a handler that does NOTHING -- never an
+        // absent one: bridge/focus.ts treats a missing `onEscape` as "Escape releases",
+        // which announced an empty stack and handed the player's movement back while
+        // the unclosable menu stayed drawn.
         onEscape: closable.value
           ? () => emit('opx:menu:dismiss', { handle: handle.value })
-          : undefined
+          : () => {}
       })
     }
   }, undefined)

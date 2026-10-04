@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
+import { acquireFocus } from '@/bridge/focus'
 import { num, table, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -151,6 +152,31 @@ useBridge('opx:calls:holo', (payload: Payload) => {
 function close(): void {
   emit('opx:calls:close', {})
 }
+
+/* THE PAGE HOLDS 'calls' WHILE THE SCREEN IS OPEN, mirroring Lua's own
+   `AcquireFocus('calls')` in modules/calls/client/view.lua. It did not, and Lua's
+   `focus:set` reconcile (core/client/ui.lua) treats the page's announced stack as
+   the truth: the next time any OTHER view released focus -- chat, a menu, the
+   downed screen -- the page announced "nothing focused" and Lua wiped the calls
+   entry with it. The hologram stayed drawn with no cursor and the keys back in the
+   game. Same id as Lua's owner, so the reconcile keeps it; Escape asks Lua to close,
+   and the release follows Lua's `open = false`, never the page's own guess. */
+let release: (() => void) | undefined
+
+watch(open, (isOpen) => {
+  if (isOpen && release === undefined) {
+    release = acquireFocus({ id: 'calls', onEscape: close })
+  } else if (!isOpen && release !== undefined) {
+    release()
+    release = undefined
+  }
+})
+
+onUnmounted(() => {
+  // A focus held across an unmount leaves the player unable to move.
+  release?.()
+  release = undefined
+})
 
 function callRow(row: Row): void {
   if (row.refusal !== null) return
