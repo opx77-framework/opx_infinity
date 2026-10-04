@@ -191,7 +191,11 @@ end
 --- Everything `Access.Evaluate` needs about one player.
 local function subjectOf(player, door)
 	return {
-		staff = settings().STAFF_BYPASS ~= false and permitted(player, Command.BYPASS),
+		-- A PLAIN RIGHT, NOT A `command.` GRANT, and off unless the config turns it
+		-- on. Under `command.` the admin role's `command.*` carried it, so every
+		-- admin walked through every door without being asked for its code, which
+		-- is the owner's report: an admin is asked like anybody else.
+		staff = settings().STAFF_BYPASS == true and allowed(player, Command.BYPASS),
 		acl = door.id ~= nil and allowed(player, 'doorlock.' .. tostring(door.id)),
 		snapshot = snapshotOf(player),
 		items = function(item) return countItem(player, item) end,
@@ -283,7 +287,7 @@ local function staffFlags(player)
 		remove = permitted(player, Command.REMOVE),
 		lock = permitted(player, Command.LOCK),
 		key = permitted(player, Command.KEY),
-		bypass = permitted(player, Command.BYPASS),
+		bypass = settings().STAFF_BYPASS == true and allowed(player, Command.BYPASS),
 		teleport = permitted(player, M.TELEPORT),
 	}
 end
@@ -704,7 +708,10 @@ local function staffList(player, id)
 		if door == nil then
 			return TriggerClientEvent(M.Event.STAFF_LIST, player, { detail = false, id = id })
 		end
-		local detail = Access.Encode(door, false)
+		-- The code travels to staff who may edit the door, so the panel can show
+		-- it (the owner asked to read the pin there). Anybody else gets only
+		-- `hasPasscode`.
+		local detail = Access.Encode(door, permitted(player, Command.SAVE))
 		detail.id, detail.live, detail.seeded = door.id, states[door.id].state, door.origin
 		return TriggerClientEvent(M.Event.STAFF_LIST, player, { detail = detail, id = door.id })
 	end

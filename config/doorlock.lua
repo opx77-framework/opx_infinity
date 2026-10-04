@@ -31,7 +31,7 @@
 -- gang and grade from the character module, the bag from the inventory module,
 -- and only then moves the lock -- ox's `isAuthorised`, in ox's order:
 --
---   1. staff with `command.opx.doorlock.bypass` (ox's PlayerAceAuthorised),
+--   1. staff with the right `opx.doorlock.bypass` when STAFF_BYPASS is on (ox's PlayerAceAuthorised),
 --      or the ACL entry `doorlock.<id>` (ox's ace `doorlock.<name>`)
 --   2. a listed character                 -- opens without the code
 --   3. the groups, any one at its grade   -- then the code, if the door has one
@@ -47,7 +47,7 @@
 --   command.opx.doorlock.remove   delete
 --   command.opx.doorlock.lock     lock / unlock from anywhere
 --   command.opx.doorlock.key      cut a key for a door
---   command.opx.doorlock.bypass   turn any door without a key or a code
+--   opx.doorlock.bypass           turn any door without a key or a code (STAFF_BYPASS)
 
 OPX.Config.MODULES.doorlock = {
 	enabled = true,
@@ -87,9 +87,11 @@ OPX.Config.MODULES.doorlock = {
 	-- every membership for the grade, which is ox's `HasGroup`.
 	MEMBERSHIP = 'any',
 
-	-- Staff holding `command.opx.doorlock.bypass` turn any door without a key
-	-- or a code (ox's Config.PlayerAceAuthorised).
-	STAFF_BYPASS = true,
+	-- Off by default: staff are asked for a key or a code like any player. When
+	-- true, a player holding the plain ACL right `opx.doorlock.bypass` (NOT a
+	-- `command.` grant, so the admin role's `command.*` does not carry it) turns
+	-- any door without one (ox's Config.PlayerAceAuthorised).
+	STAFF_BYPASS = false,
 
 	-- Toast the player who turned a door (ox's Config.Notify). A refusal is
 	-- always said; this is the "Unlocked door" after a success.

@@ -34018,10 +34018,27 @@ do
 		-- Staff, and the code.
 		control.Admit(58, 'acct-58')
 		control.Stand(58, 100.0, 0.0, 0.0)
+		-- THE OWNER: an admin set a pin and was never asked for it. The admin role's
+		-- `command.*` used to carry the bypass; now it carries nothing, and the
+		-- bypass is a plain right that only counts when STAFF_BYPASS is on.
+		control.Allow(58, 'command.*')
 		control.Allow(58, 'command.opx.doorlock.bypass')
 		answer = ask(58, { id = id('vault'), state = 0 })
-		check('staff with the bypass grant open the vault without its code',
+		check('an admin with command.* is asked for the code like anybody',
+			answer ~= nil and answer.code == 'passcode_required' and state('vault') == 1,
+			answer and tostring(answer.code))
+		control.Allow(58, 'opx.doorlock.bypass')
+		control.Pump(8)
+		answer = ask(58, { id = id('vault'), state = 0 })
+		check('and so is one holding the plain right while STAFF_BYPASS is off',
+			answer ~= nil and answer.code == 'passcode_required' and state('vault') == 1,
+			answer and tostring(answer.code))
+		dl.Settings.STAFF_BYPASS = true
+		control.Pump(8)
+		answer = ask(58, { id = id('vault'), state = 0 })
+		check('staff with the bypass right open the vault without its code once it is on',
 			answer ~= nil and answer.ok and state('vault') == 0, answer and tostring(answer.code))
+		dl.Settings.STAFF_BYPASS = false
 		contract.SetState(id('vault'), 1)
 
 		control.Admit(59, 'acct-59')
@@ -34341,9 +34358,21 @@ do
 		env.source = staff
 		control.netEvents[dl.Event.STAFF_ASK]({ id = created })
 		local detail = doorlockLast(control, dl.Event.STAFF_LIST, staff)
-		check('a door\'s detail goes to staff, and its code does not',
-			detail ~= nil and type(detail.detail) == 'table' and detail.detail.passcode == nil
-				and detail.detail.hasPasscode == true and detail.detail.id == created)
+		-- THE OWNER asked to read the pin in the panel: staff who may edit the door
+		-- are sent the code itself; an opener without the save grant only learns
+		-- that there is one.
+		check('a door\'s detail goes to staff who may edit it, code included',
+			detail ~= nil and type(detail.detail) == 'table' and detail.detail.passcode == '55'
+				and detail.detail.id == created, detail and detail.detail and tostring(detail.detail.passcode))
+		control.Admit(77, 'acct-77')
+		control.Allow(77, 'command.opx.doorlock')
+		env.source = 77
+		control.netEvents[dl.Event.STAFF_ASK]({ id = created })
+		local opener = doorlockLast(control, dl.Event.STAFF_LIST, 77)
+		check('while an opener without the save grant only learns there is a code',
+			opener ~= nil and type(opener.detail) == 'table' and opener.detail.passcode == nil
+				and opener.detail.hasPasscode == true, opener and opener.detail and tostring(opener.detail.passcode))
+		env.source = staff
 
 		-- State, key, remove: each its own grant.
 		control.Allow(staff, 'command.opx.doorlock.lock')
