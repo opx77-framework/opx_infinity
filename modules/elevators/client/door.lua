@@ -94,7 +94,7 @@ Door.REFUSAL = {
 	no_such_elevator = 'elevators.noSuchElevator',
 	no_floors_available = 'elevators.noFloors',
 	menu_not_running = 'elevators.noPanel',
-	player_down = 'elevators.refused',
+	player_down = 'elevators.downed',
 }
 
 --- Opens the floor list at the lift the player is standing at.

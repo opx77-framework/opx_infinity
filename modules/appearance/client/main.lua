@@ -132,7 +132,13 @@ end
 -- @param key string a catalogue key
 -- @param params table|nil
 function M.Runtime.Notify(kind, key, params)
-	Open77.log.info(('[appearance] notify %s: %s'):format(kind, key))
+	-- THE REASON IS LOGGED, NOT SHOWN. The player-facing sentences used to end in
+	-- `: {reason}`, which put `wardrobe_busy` or `not_sent` in front of somebody
+	-- who can do nothing with it; the code still travels in `params` and lands
+	-- here, where the person reading the log can.
+	local why = type(params) == 'table' and (params.reason or params.failure) or nil
+	Open77.log.info(('[appearance] notify %s: %s%s'):format(kind, key,
+		why ~= nil and (' (' .. tostring(why) .. ')') or ''))
 	OPX.Toast.Locale(key, params, kind)
 end
 

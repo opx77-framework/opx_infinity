@@ -9373,7 +9373,7 @@ do
 		check('picking a model opens the delivery screen',
 			Runtime.Report().screen == 'deliver', tostring(Runtime.Report().screen))
 		check('and titled with the model, not the dealer',
-			deliver ~= nil and deliver.payload.title == 'Deliver the Archer Hella',
+			deliver ~= nil and deliver.payload.title == 'Buy the Archer Hella: choose a garage',
 			deliver and tostring(deliver.payload.title))
 
 		local destination, otherKind = nil, 0
@@ -10064,8 +10064,11 @@ do
 			verdict.ok == false and verdict.error == 'clothing.wardrobeRefused'
 				and verdict.reason == 'player_down',
 			('%s/%s'):format(tostring(verdict.error), tostring(verdict.reason)))
-		check('and the player is told the room\'s own reason, not a generic one',
-			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }):find('player_down', 1, true) ~= nil,
+		-- THE REASON TRAVELS, THE CODE IS NOT SHOWN. The verdict above still
+		-- carries `player_down` for the bus and the log; the player reads a
+		-- sentence, where this line used to print `player_down` at them.
+		check('and the player reads a sentence rather than the room\'s code',
+			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }):find('player_down', 1, true) == nil,
 			OPX.Locale.Text('clothing.wardrobeRefused', { reason = 'player_down' }))
 		check('and the refusal is on the local bus too',
 			#decisions == 1 and decisions[1].ok == false)
@@ -25318,7 +25321,7 @@ do
 			control.Admit(SHOPPER, 'account-911-again')
 			env.Open77.players.position = function() return nil end
 			check('a player the host cannot place is refused, and told why',
-				(open('thrift_watson') or ''):find('cannot tell where', 1, true) ~= nil,
+				(open('thrift_watson') or ''):find('position could not be read', 1, true) ~= nil,
 				open('thrift_watson'))
 			check('and it is NOT treated as standing at the origin',
 				(open('thrift_watson') or ''):find('close enough', 1, true) == nil)

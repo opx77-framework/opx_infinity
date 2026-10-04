@@ -16,12 +16,12 @@ local EN = {
 
 	['teleports.key.use'] = 'Use teleport',
 	['teleports.prompt'] = 'Go to {place}',
-	['teleports.prompt.locked'] = '{place} (locked)',
+	['teleports.prompt.locked'] = 'Go to {place} (locked)',
 
 	['teleports.arrived'] = 'You arrived at {place}.',
 
-	['teleports.refused'] = 'That trip was refused: {reason}',
-	['teleports.locked'] = 'This teleport is not yours to use.',
+	['teleports.refused'] = 'That trip did not go through. Try again.',
+	['teleports.locked'] = 'You do not have access to this teleport.',
 	-- The operator's own sentence, shown instead of the line above whenever they
 	-- wrote one. It is what makes a locked teleport say why.
 	['teleports.lockedReason'] = '{reason}',
@@ -49,12 +49,12 @@ local FR = {
 
 	['teleports.key.use'] = 'Utiliser la téléportation',
 	['teleports.prompt'] = 'Aller à {place}',
-	['teleports.prompt.locked'] = '{place} (verrouillé)',
+	['teleports.prompt.locked'] = 'Aller à {place} (verrouillé)',
 
 	['teleports.arrived'] = 'Vous êtes arrivé à {place}.',
 
-	['teleports.refused'] = 'Ce trajet a été refusé : {reason}',
-	['teleports.locked'] = 'Cette téléportation ne vous est pas ouverte.',
+	['teleports.refused'] = "Ce trajet n'a pas abouti. Réessayez.",
+	['teleports.locked'] = "Vous n'avez pas accès à cette téléportation.",
 	['teleports.lockedReason'] = '{reason}',
 
 	['teleports.noSuchTeleport'] = "Il n'y a pas de téléportation ici.",
