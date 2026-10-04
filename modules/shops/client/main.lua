@@ -417,7 +417,7 @@ local function showLooks()
 			-- a ready-made look is a purchase and the server takes the money before
 			-- it sends the garments.
 			value = tonumber(look.cost) and tonumber(look.cost) > 0
-				and tostring(look.cost) or nil,
+				and OPX.Locale.Money(look.cost) or nil,
 			data = { verb = 'wear', look = look.id },
 			close = true,
 		}

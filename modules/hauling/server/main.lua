@@ -1204,7 +1204,8 @@ local function completeSale(player, sale)
 		currency = Access.CURRENCY,
 	})
 	OPX.NotifyLocale(player, 'hauling.paid',
-		{ amount = pay, count = sold, dropoff = dropoff.label }, 'success')
+		{ amount = OPX.Locale.Money(pay, Access.CURRENCY), count = sold, dropoff = dropoff.label },
+		'success')
 	return true
 end
 

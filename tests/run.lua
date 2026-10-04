@@ -13265,6 +13265,37 @@ do
 	end
 end
 
+-- ── one money format, in the player's language ──────────────────────────────
+-- Prices reached the screen as bare numbers (`Paid 4500 at Jinguji.`, `You
+-- received 500 BANK`). One formatter now: the language's thousands separator and
+-- the catalogue's word for the currency.
+section('money: one format, with the language\'s separator and the currency\'s word')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		OPX.Locale.Set('en')
+		check('English groups with a comma and names eddies',
+			OPX.Locale.Money(4500) == '4,500 €$', OPX.Locale.Money(4500))
+		check('and a bank balance says it is the bank',
+			OPX.Locale.Money(1234567, 'BANK') == '1,234,567 €$ (bank)', OPX.Locale.Money(1234567, 'BANK'))
+		check('and a type with no word is named, not dropped',
+			OPX.Locale.Money(12, 'TOKENS') == '12 TOKENS', OPX.Locale.Money(12, 'TOKENS'))
+		OPX.Locale.Set('fr')
+		check('French groups with a narrow no-break space, intact',
+			OPX.Locale.Money(4500) == '4\u{202F}500 €$', OPX.Locale.Money(4500))
+		check('across more than one group too',
+			OPX.Locale.Money(1234567, 'BANK') == '1\u{202F}234\u{202F}567 €$ (banque)',
+			OPX.Locale.Money(1234567, 'BANK'))
+		OPX.Locale.Set('en')
+		local character = OPX.Modules.Get('character')
+		check('and the character module formats with it',
+			character ~= nil and character.FormatMoney(29000, 'EDDIES') == '29,000 €$',
+			character and character.FormatMoney(29000, 'EDDIES'))
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

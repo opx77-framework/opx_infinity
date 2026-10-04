@@ -112,7 +112,8 @@ local function paycheck()
 			if OPX.Hooks.Trigger('paycheck:before', { player = player, amount = payment }) then
 				if M.AddMoney(player, M.PaycheckType, payment, 'paycheck:' .. job.name) then
 					OPX.NotifyLocale(player.PlayerData.source, 'money.paycheck',
-						{ amount = payment, type = M.PaycheckType, job = job.label }, 'success')
+						{ amount = OPX.Locale.Money(payment, M.PaycheckType), job = job.label },
+						'success')
 					TriggerEvent(M.Event.IN_PAYCHECK,
 						player.PlayerData.source, payment, job.name)
 				end

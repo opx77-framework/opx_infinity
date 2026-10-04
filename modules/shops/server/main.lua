@@ -262,10 +262,12 @@ local function chargeFor(shop)
 		local reason = ('clothing at %s'):format(shop.label)
 		local paid, refused = character.RemoveMoney(source, tuning.currency, total, reason)
 		if not paid then
-			refuse(source, refused or 'shops.cannotPay', { total = total })
+			refuse(source, refused or 'shops.cannotPay',
+				{ total = OPX.Locale.Money(total, tuning.currency) })
 			return false, 'clothing.unpaid'
 		end
-		OPX.NotifyLocale(source, 'shops.paid', { total = total, shop = shop.label }, 'success')
+		OPX.NotifyLocale(source, 'shops.paid',
+			{ total = OPX.Locale.Money(total, tuning.currency), shop = shop.label }, 'success')
 		return true, nil, function()
 			character.AddMoney(source, tuning.currency, total, 'refund: ' .. reason)
 		end
@@ -356,7 +358,7 @@ local function onWear(source, payload)
 		local paid, reason = character.RemoveMoney(source, tuning.currency, look.cost,
 			('%s at %s'):format(look.label, shop.label))
 		if not paid then return refuse(source, reason or 'shops.cannotPay',
-			{ total = look.cost }) end
+			{ total = OPX.Locale.Money(look.cost, tuning.currency) }) end
 	end
 
 	dressIn(source, look.key, look.wear)
