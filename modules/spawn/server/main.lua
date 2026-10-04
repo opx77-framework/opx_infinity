@@ -202,8 +202,14 @@ function M.Offer(source, citizenId)
 
 	local catalogue = M.Catalogue()
 	if #catalogue == 0 then return false end
-	-- One choice at a time. A second offer -- a reconnect inside the window --
-	-- leaves the first one standing rather than replacing its deadline.
+	-- One choice at a time. A second offer for the SAME character leaves the
+	-- first one standing rather than replacing its deadline. One left over by a
+	-- character that is no longer the one on this slot is nobody's, and is
+	-- dropped -- see `Abandon` -- rather than standing in front of this one.
+	local standing = pending[source]
+	if standing ~= nil and standing.citizenId ~= citizenId then
+		M.Abandon(source, standing.citizenId)
+	end
 	if pending[source] ~= nil then return false end
 
 	-- 'first' ASKS A ROW, NOT A CLOCK. A character whose row already holds a
@@ -322,6 +328,32 @@ function M.Choose(source, payload)
 	settle(source, held.token, point, 'chosen')
 end
 
+--- Drops a choice whose character has left the slot, and takes its menu down.
+-- @author dop42
+--
+-- A CHOICE BELONGS TO A CHARACTER, AND THE TABLE IS KEYED BY A SLOT. A switch in
+-- the world (`opx.select`) unloads one character and places the next on the
+-- spot, without asking this module anything -- so a choice still open for the
+-- first stayed open: its menu up on the player's screen holding the keyboard,
+-- the HUD standing aside for it, until the hold or the window ran out. Anything
+-- clicked on it placed nobody (`place` checks the citizen), which is the only
+-- reason it never moved the wrong body. Nothing is placed here: the character it
+-- was for has gone, and the one that replaced it is placed by its own path.
+-- @param source Source
+-- @param citizenId CitizenId|nil only a choice for this character is dropped
+-- @return boolean whether one was
+function M.Abandon(source, citizenId)
+	source = tonumber(source)
+	local held = source and pending and pending[source]
+	if held == nil then return false end
+	if citizenId ~= nil and held.citizenId ~= citizenId then return false end
+	pending[source] = nil
+	send(M.Event.CLOSE, source, { reason = 'abandoned' })
+	Open77.log.info(('[spawn] the choice of %s was dropped: the character left the slot')
+		:format(tostring(held.citizenId)))
+	return true
+end
+
 --- Whether a choice is outstanding for a player.
 -- Read by the diagnostics command and by the tests; nothing else consults it.
 -- @author dop42
@@ -397,6 +429,14 @@ function M.Start()
 		if not src then return end
 		M.Opened(src)
 	end)
+
+	-- A character put down on a slot that stays connected: its choice goes with it.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'),
+		function(rawPlayerId, playerData)
+			local src = tonumber(rawPlayerId)
+			if not src then return end
+			M.Abandon(src, type(playerData) == 'table' and playerData.citizenId or nil)
+		end)
 
 	-- Forget the choice with the player. Nothing is placed: their slot is gone,
 	-- and the watcher notices the same way -- by finding no slot to settle.

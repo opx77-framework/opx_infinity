@@ -1273,6 +1273,59 @@ do
 	end
 end
 
+-- ── a choice belongs to a character, not to a slot ──────────────────────────
+-- A switch in the world unloads one character and places the next on the spot,
+-- asking this module nothing. The choice still open for the first stayed open:
+-- its menu up and holding the keyboard until the hold ran out, and a second
+-- offer on the slot refused behind it.
+section('spawn: a choice left by a character that left the slot')
+do
+	local env, control, why = boot('server')
+	check('server boots for the abandoned choice', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local heldPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
+		local src = 9
+		control.Admit(src, 'account-switch')
+
+		local function closedWith(mark, reason)
+			for index = mark + 1, #control.clientEvents do
+				local one = control.clientEvents[index]
+				if one.name == spawn.Event.CLOSE and type(one[1]) == 'table' and
+					one[1].reason == reason then return true end
+			end
+			return false
+		end
+
+		check('the first character is offered a choice', spawn.Offer(src, 'citizen-a') == true)
+		local mark = #control.clientEvents
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-a' })
+		check('UNLOADING THE CHARACTER DROPS ITS CHOICE', spawn.IsPending(src) == false)
+		check('and takes its menu down', closedWith(mark, 'abandoned'))
+
+		check('the next character on the slot is offered its own',
+			spawn.Offer(src, 'citizen-b') == true)
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-other' })
+		check('an unload naming somebody else leaves it standing', spawn.IsPending(src) == true)
+
+		-- A choice nobody unloaded (an unload the module missed) is still nobody's
+		-- once another character is offered on the slot.
+		mark = #control.clientEvents
+		check('an offer for a different character replaces the stale one',
+			spawn.Offer(src, 'citizen-c') == true and closedWith(mark, 'abandoned'))
+		check('while a second offer for the same one is still refused',
+			spawn.Offer(src, 'citizen-c') == false)
+
+		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
+		spawn.Init()
+	end
+end
+
 -- ── the spawn menu's page contract ───────────────────────────────────────────
 -- The Lua half and the CEF half agreeing by string literal, and the one piece of
 -- ordering this module has: the menu stands aside while the entry module is asking
