@@ -12613,6 +12613,201 @@ do
 end
 
 
+-- ── every key a menu names is written, in both languages ────────────────────
+-- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
+-- never passes through that spelling: the staff menu hands a row helper its
+-- key -- `command('heal', 'admin.menu.heal', ...)` -- the target rows carry
+-- `label = 'doorlock.target.lock'`, and a confirmation names its question as
+-- an argument. A typo in any of those reached the screen as the key itself.
+-- So this reads EVERY quoted dotted literal whose first two parts are the
+-- prefix of a family of real keys (`admin.menu`, `doorlock.target`, ...), and
+-- requires each to be written in English AND in French. The few literals that
+-- share such a prefix and are not text -- a scheduler job, an event name --
+-- are named below rather than excused by a looser rule.
+section('every key a menu names is written in both languages')
+do
+	local files = { 'locales/en.lua', 'locales/fr.lua' }
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'shared')) do
+		if file:match('locales%.lua$') then files[#files + 1] = file end
+	end
+	local keys = { en = {}, fr = {} }
+	for _, file in ipairs(files) do
+		local language
+		for line in io.lines(file) do
+			language = line:match("OPX%.Locale%.Register%('(%a%a)'") or language
+			local declared = line:match('^local (%u%u) = {')
+			if declared then language = declared:lower() end
+			local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
+			if key and keys[language] then keys[language][key] = true end
+		end
+	end
+
+	local families = {}
+	for key in pairs(keys.en) do
+		local family = key:match('^([%w_]+%.[%w_]+)%.')
+		if family then families[family] = (families[family] or 0) + 1 end
+	end
+
+	-- Literals that look like keys and are the names of something else.
+	local NOT_TEXT = {
+		['admin.menu.upkeep'] = true,        -- a scheduler job
+		['admin.target.access'] = true,      -- an event name
+		['admin.inventory.view'] = true,     -- audit event names
+		['admin.inventory.give'] = true,
+		['admin.inventory.remove'] = true,
+		['admin.inventory.clear'] = true,
+	}
+
+	local missing, seen = {}, 0
+	for _, side in ipairs({ 'client', 'server' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local number = 0
+			for line in io.lines(file) do
+				number = number + 1
+				if not line:match('^%s*%-%-') then
+					for literal in line:gmatch("'([%w_]+%.[%w_]+%.[%w_%.]*[%w_])'") do
+						local family = literal:match('^([%w_]+%.[%w_]+)%.')
+						if (families[family] or 0) >= 3 and not NOT_TEXT[literal] then
+							seen = seen + 1
+							for _, language in ipairs({ 'en', 'fr' }) do
+								if not keys[language][literal] then
+									missing[#missing + 1] = ('%s missing %s (%s:%d)')
+										:format(language, literal, file, number)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(missing)
+	check('the sweep found the keys the menus name', seen > 300, ('%d literal(s)'):format(seen))
+	check('and every one is written in English and in French', #missing == 0,
+		table.concat(missing, '; '))
+end
+
+-- ── every staff screen draws words, in both languages ───────────────────────
+-- A ROW WITH NO LABEL IS A ROW THAT DOES SOMETHING NOBODY CAN READ, and a row
+-- whose label is its own key (`admin.menu.heal`) is the same thing with extra
+-- steps. Both are caught only by drawing the screen: a label is often built --
+-- a flag's words, a preset's, a page counter -- rather than looked up. So every
+-- screen of the staff menu is opened, in English and then in French, and every
+-- row it hands the menu contract is read.
+section('every staff screen draws a label on every row')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the screen walk', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		control.netEvents[admin.Event.ROSTER]({ rows = {
+			{ id = 3, name = 'Vee One', state = 'up', bucket = 0, user = 'vee', citizenId = 'CIT-0003' },
+			{ id = 4, name = 'Vee Two', state = 'down', bucket = 2 },
+		}, offset = 0, total = 2, done = true })
+		control.netEvents[admin.Event.ITEMS]({ rows = {
+			{ name = 'weapon_pistol', label = 'Pistol', category = 'weapons', weapon = true },
+			{ name = 'ammo_pistol', label = 'Pistol rounds', category = 'ammo', ammo = true },
+			{ name = 'water', label = 'Water', category = 'food' },
+		}, offset = 0, total = 3, done = true })
+		control.Pump(10)
+
+		local SCREENS = {
+			{ 'root' }, { 'players' }, { 'player', 3 }, { 'playerMove', 3 }, { 'playerHealth', 3 },
+			{ 'playerCharacter', 3 }, { 'playerCharacters', 3 }, { 'playerItems', 3 },
+			{ 'playerInventory', 3 }, { 'offlineChars' }, { 'character', 'CIT-0003' },
+			{ 'self' }, { 'vehicles' }, { 'vehicleClasses', 'me' }, { 'pedFamilies', 'me' },
+			{ 'weaponList', { t = 'me' } }, { 'ammoList', 'me' }, { 'itemCategories', { t = 'me' } },
+			{ 'itemList', { t = 'me', c = 'food' } }, { 'bag', 3 }, { 'locations', 'me' },
+			{ 'saved' }, { 'world' }, { 'dev' }, { 'weather' }, { 'time' }, { 'server' },
+		}
+
+		--- Whether a string reads as a catalogue key rather than as words.
+		local function rawKey(text)
+			return type(text) == 'string' and text:match('^[%a_]+%.[%w_]+%.[%w_%.]+$') ~= nil
+		end
+
+		for _, language in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(language)
+			local blank, raw, unopened = {}, {}, {}
+			for _, wanted in ipairs(SCREENS) do
+				local before = #specs
+				admin.Menu.OpenAt(wanted[1], wanted[2])
+				control.Pump(10)
+				local spec = specs[#specs]
+				if #specs == before or admin.Menu.Screen() ~= wanted[1] or spec == nil then
+					unopened[#unopened + 1] = wanted[1]
+				else
+					if rawKey(spec.title) then raw[#raw + 1] = wanted[1] .. ' title ' .. spec.title end
+					for _, item in ipairs(spec.items or {}) do
+						if not item.separator then
+							if type(item.label) ~= 'string' or item.label == '' then
+								blank[#blank + 1] = ('%s/%s'):format(wanted[1], tostring(item.id))
+							elseif rawKey(item.label) or rawKey(item.value) then
+								raw[#raw + 1] = ('%s/%s %s'):format(wanted[1], tostring(item.id),
+									rawKey(item.label) and item.label or item.value)
+							end
+						elseif rawKey(item.label) then
+							raw[#raw + 1] = ('%s heading %s'):format(wanted[1], item.label)
+						end
+					end
+				end
+			end
+			check(('[%s] every staff screen opens'):format(language), #unopened == 0,
+				table.concat(unopened, ' '))
+			check(('[%s] and no row on any of them is without a label'):format(language),
+				#blank == 0, table.concat(blank, ' '))
+			check(('[%s] and no label, value or heading is a raw key'):format(language),
+				#raw == 0, table.concat(raw, '; '))
+		end
+		OPX.Locale.Set('en')
+
+		-- THE CONFIRMATION SAYS THE ACTION. Its second row used to read `Confirm`
+		-- under the question; it carries the words of the row that asked now.
+		admin.Menu.OpenAt('playerHealth', 3)
+		control.Pump(10)
+		admin.Menu.Confirm({ 'opx.admin.player.kill', '3' }, 'admin.confirm.kill', nil, nil, 'Kill')
+		control.Pump(10)
+		local spec = specs[#specs]
+		local confirm, cancel
+		for _, item in ipairs(spec and spec.items or {}) do
+			if item.id == 'confirm' then confirm = item end
+			if item.id == 'cancel' then cancel = item end
+		end
+		check('a confirmation opens on its own screen', admin.Menu.Screen() == 'confirm')
+		check('with Cancel first, so Enter pressed without looking does nothing',
+			spec ~= nil and cancel ~= nil and spec.items[1] == cancel)
+		check('and the confirm row says the action it confirms',
+			confirm ~= nil and confirm.label == 'Kill', confirm and confirm.label)
+
+		-- AND FORGETTING A SAVED SPOT GOES THROUGH IT. One press used to forget
+		-- the spot outright, from a list of identical trash rows.
+		control.netEvents[admin.Event.LOCATIONS]({ rows = {
+			{ name = 'roof', label = 'The roof', runtime = true },
+		}, offset = 0, total = 1, done = true })
+		admin.Menu.OpenAt('saved')
+		control.Pump(10)
+		local forget
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.id == 'forget_roof' then forget = item end
+		end
+		check('a saved spot is listed to forget', forget ~= nil)
+		check('and forgetting it asks first',
+			forget ~= nil and type(forget.data) == 'table' and type(forget.data.confirm) == 'table'
+				and forget.data.key == 'admin.confirm.forget' and forget.data.run == nil)
+		admin.Menu.Close()
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
