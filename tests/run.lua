@@ -4097,6 +4097,38 @@ do
 	end
 end
 
+-- THE SERVER BUS IS QUEUED, so a `session:forgotten` handler runs a tick after
+-- the session is gone -- on the eviction path, after the NEXT account's session
+-- is already on the slot. The departed account travels with the event.
+section('a forgotten session names its account')
+do
+	local raised = {}
+	local env = {
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_DISCONNECTED = 'onPlayerDisconnected' },
+		},
+		TriggerEvent = function(...) raised[#raised + 1] = table.pack(...) end,
+		AddEventHandler = function() end,
+		type = type, tonumber = tonumber, tostring = tostring, table = table,
+	}
+	local chunk, why = loadfile('core/server/sessions.lua', 't', env)
+	check('the sessions load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[7] = { source = 7, userId = 'acct-7' }
+		env.OPX.ForgetSession(7)
+		local event = raised[#raised]
+		check('the announcement carries the account the session belonged to',
+			event ~= nil and event[2] == 7 and event[3] == 'acct-7')
+		check('and the slot is empty by the time anyone could read it',
+			env.OPX.Sessions[7] == nil)
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
