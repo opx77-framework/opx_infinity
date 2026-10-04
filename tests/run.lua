@@ -13303,6 +13303,57 @@ do
 	end
 end
 
+-- ── spawn: "where I left off" is a card ─────────────────────────────────────
+-- Keeping your position used to mean picking nothing and waiting out an
+-- invisible forty-five seconds. A character whose row holds a position is
+-- offered it as a card; one that has never stood anywhere is not.
+section('spawn: where I left off is a card, for a character that has somewhere to go back to')
+do
+	local env, control, why = boot('server')
+	check('server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local character = OPX.Modules.Get('character')
+		local function lastTo(source, name)
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == source then return sent[1] end
+			end
+			return nil
+		end
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
+
+		local returning = 41
+		character.Players[returning] = { PlayerData = { citizenId = 'citizen-back',
+			position = { x = 1.0, y = 2.0, z = 3.0, heading = 0.0 } } }
+		character.AwaitingPlacement[returning] = 'citizen-back'
+		check('a returning character is offered the menu', character.PlacePending(returning) == true)
+		local offer = lastTo(returning, spawn.Event.OFFER)
+		check('and the offer says it may go back where it was',
+			type(offer) == 'table' and offer.resume == true)
+		spawn.Choose(returning, { id = spawn.RESUME_ID })
+		local closed = lastTo(returning, spawn.Event.CLOSE)
+		check('choosing the card settles the choice as a resume',
+			type(closed) == 'table' and closed.reason == 'resumed', closed and tostring(closed.reason))
+		check('and nothing is left outstanding', spawn.IsPending(returning) == false)
+
+		local fresh = 42
+		character.Players[fresh] = { PlayerData = { citizenId = 'citizen-new' } }
+		character.AwaitingPlacement[fresh] = 'citizen-new'
+		check('a brand new character is offered the menu', character.PlacePending(fresh) == true)
+		offer = lastTo(fresh, spawn.Event.OFFER)
+		check('without a card for a place it has never been',
+			type(offer) == 'table' and offer.resume ~= true)
+		spawn.Choose(fresh, { id = spawn.RESUME_ID })
+		check('and asking for it anyway is refused, the choice still open',
+			spawn.IsPending(fresh) == true)
+		spawn.Abandon(fresh, 'citizen-new')
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'first'
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

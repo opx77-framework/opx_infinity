@@ -132,7 +132,7 @@ end
 -- @param source Source
 -- @param token integer the choice this settles, as the caller saw it
 -- @param point table|nil the spot chosen, or nil for the default
--- @param reason string what ended it: 'chosen' or 'timeout'
+-- @param reason string what ended it: 'chosen', 'resumed' or 'timeout'
 -- @return boolean whether it settled anything
 local function settle(source, token, point, reason)
 	local held = pending and pending[source]
@@ -229,9 +229,16 @@ function M.Offer(source, citizenId)
 	-- the menu up -- see `M.Opened` -- which is the whole reason the offer carries
 	-- an event of its own. Until then `holdUntilMs` is the only bound, and it is
 	-- a bound on the RUNTIME rather than on the player.
+	-- WHETHER "WHERE I LEFT OFF" IS A CHOICE AT ALL. Picking nothing used to be
+	-- the only way to keep the row's position -- an invisible forty-five second
+	-- wait the page never mentioned. A character whose row holds a position is
+	-- offered it as a card of its own; one that has never stood anywhere has no
+	-- such place to go back to, and is not offered one.
+	local resume = hasStood(source, citizenId)
 	pending[source] = {
 		token = token,
 		citizenId = citizenId,
+		resume = resume,
 		expiresAtMs = nil,
 		holdUntilMs = OPX.Now() + holdMs(),
 	}
@@ -240,7 +247,7 @@ function M.Offer(source, citizenId)
 	-- number, and that display is presentation of a server number -- the server
 	-- counts this same `life` itself, and only its count ends the choice. The two
 	-- now agree because both start from the same moment: the menu appearing.
-	send(M.Event.OFFER, source, { timeoutMs = life })
+	send(M.Event.OFFER, source, { timeoutMs = life, resume = resume })
 	Open77.log.info(('[spawn] %s is choosing a spawn point (%d configured)')
 		:format(citizenId, #catalogue))
 
@@ -313,6 +320,18 @@ function M.Choose(source, payload)
 
 	if OPX.Cooling(source, M.Operation.CHOOSE, M.Number(M.Settings.CHOOSE_COOLDOWN_MS, 1000)) then
 		OPX.Refuse(source, 'error.tooFast', M.Operation.CHOOSE)
+		return
+	end
+
+	-- WHERE I LEFT OFF: no point, so the row decides, which is the resume. Only
+	-- for a choice that was offered it -- a character with nowhere to go back to
+	-- asking for it is refused like any id this module does not carry.
+	if payload.id == M.RESUME_ID then
+		if held.resume ~= true then
+			OPX.Refuse(source, 'spawn.noChoice', M.Operation.CHOOSE)
+			return
+		end
+		settle(source, held.token, nil, 'resumed')
 		return
 	end
 
