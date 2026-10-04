@@ -29650,5 +29650,51 @@ do
 	end
 end
 
+-- ── the WebUI audit: what the page must keep ─────────────────────────────────
+-- Source and bundle together, because each of these was a fault in the shipped page
+-- that no Lua test could see: a focus the page never held, a payload that threw in
+-- render, a filter re-rasterised on a timer, and 600 CSS rules nothing could match.
+section('webui: focus, payload coercion, repaint cost and bundle weight')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local built = slurp('web/index.html')
+	check('augmented-ui keeps the three mixins the templates use',
+		built:find('[data-augmented-ui~=tr-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=bl-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=border]', 1, true) ~= nil)
+	check('and none of the ~700 it does not (pruned at build time)',
+		built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+
+	local types = slurp('ui/src/bridge/types.ts')
+	check('lists of records are coerced per element, lookups read own keys only',
+		types:find('export function records', 1, true) ~= nil
+			and types:find('export function own', 1, true) ~= nil)
+
+	local holo = slurp('ui/src/modules/calls/HoloRoot.vue')
+	check("the hologram holds the page focus under Lua's own owner id",
+		holo:find("acquireFocus({ id: 'calls'", 1, true) ~= nil)
+
+	local menu = slurp('ui/src/modules/menu/MenuView.vue')
+	check('an unclosable menu answers Escape with a no-op, never an absent handler',
+		menu:find(': () => {}', 1, true) ~= nil)
+	check('and the menu reads keys only while it owns the focus',
+		menu:find("focusOwner() !== 'menu'", 1, true) ~= nil)
+
+	local downed = slurp('ui/src/modules/downed/DownedView.vue')
+	check('a give-up hold ends on a cancelled pointer or a lost window',
+		downed:find("addEventListener('pointercancel'", 1, true) ~= nil
+			and downed:find("addEventListener('blur'", 1, true) ~= nil)
+
+	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
+	check('the toast bar scales rather than resizes under its filter',
+		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
