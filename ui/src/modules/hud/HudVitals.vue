@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { shallowRef } from 'vue'
-import { list, num, text } from '@/bridge/types'
+import { num, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -99,12 +99,15 @@ function readout(vital: Vital): number {
 useBridge('opx:hud:vitals', (payload: Payload) => {
   // `list()` and not `payload.gauges || []`: an empty Lua table is `{}`, which is truthy,
   // and `{}.map` is the throw the bridge would swallow -- at 30 Hz, silently, forever.
-  vitals.value = list<Payload>(payload.gauges)
+  vitals.value = records(payload.gauges)
     .filter((row) => text(row.id) !== '')
     .map((row) => ({
       id: text(row.id),
       icon: iconPaths(text(row.icon)),
-      label: t(text(row.label)),
+// The KEY, translated where it is drawn: Lua sends each payload once (deduped by
+      // signature), so one that beat the locale catalogue would otherwise keep the raw
+      // key on screen until the value next changed. `t()` in the template is reactive.
+      label: text(row.label),
       value: num(row.pct),
       // `num` answers 0 for an absent field, and 0 points is a real reading -- a
       // dying player. The absence has to survive as an absence, so it is tested
@@ -130,7 +133,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
       :aria-valuenow="shown(vital.value)"
       :aria-valuemin="0"
       :aria-valuemax="100"
-      :aria-label="vital.label"
+      :aria-label="t(vital.label)"
     >
       <span class="glyph" aria-hidden="true">
         <svg v-if="vital.icon.length" viewBox="0 0 16 16" aria-hidden="true">

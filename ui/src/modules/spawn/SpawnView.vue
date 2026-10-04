@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, text } from '@/bridge/types'
+import { text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 
@@ -170,7 +170,7 @@ useBridge('opx:spawn:open', (payload: Payload) => {
     'spawn:open',
     () => {
       const rows: Place[] = []
-      for (const entry of list<Payload>(payload.locations)) {
+      for (const entry of records(payload.locations)) {
         const id = text(entry.id)
         if (!id) continue
         rows.push({ id, label: text(entry.label, id), district: text(entry.district) })

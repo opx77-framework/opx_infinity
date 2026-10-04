@@ -157,6 +157,11 @@ const split = reactive({ container: 0, slot: 0, count: 1, max: 1, open: false })
 let release: (() => void) | undefined
 let pointerBound = false
 
+/** One empty list for the secondary grid's props. An inline `[]` is a NEW array on
+    every render of this view -- every cell the pointer crosses mid-drag -- and a new
+    prop identity re-renders the whole secondary grid each time. */
+const NONE: string[] = []
+
 function label(key: string, fallback = ''): string {
   return config.value.labels[key] || fallback || key
 }
@@ -425,6 +430,7 @@ function onPointerUp(event: PointerEvent): void {
   const from = { container: drag.container, slot: drag.slot }
   const fromBag = primary.value !== null && from.container === primary.value.id
   endDrag()
+  unbindPointer()
 
   // The ground takes a stack out of the bag and nothing else -- a trunk cannot
   // be emptied onto the floor from across the street. It is the SAME `drop`
@@ -448,11 +454,22 @@ function onPointerUp(event: PointerEvent): void {
   })
 }
 
+/** A drag whose release never reached this page -- the game took focus, the window
+    lost it, the engine cancelled the pointer -- is DROPPED, not left armed. Armed, the
+    next `pointerup` anywhere on the screen sent a `move` (or a `drop`, over the
+    ground) from the stale source slot. */
+function cancelDrag(): void {
+  endDrag()
+  unbindPointer()
+}
+
 function bindPointer(): void {
   if (pointerBound) return
   pointerBound = true
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('pointercancel', cancelDrag)
+  window.addEventListener('blur', cancelDrag)
 }
 
 function unbindPointer(): void {
@@ -460,10 +477,14 @@ function unbindPointer(): void {
   pointerBound = false
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', cancelDrag)
+  window.removeEventListener('blur', cancelDrag)
 }
 
 function onGrab(containerId: number, slot: number, native: PointerEvent): void {
-  if (busy.value) return
+  // The primary button only: a right- or middle-button drag from one cell to another
+  // used to send a `move` like a left one.
+  if (busy.value || native.button !== 0) return
   closeMenu()
   drag.active = true
   drag.container = containerId
@@ -473,7 +494,6 @@ function onGrab(containerId: number, slot: number, native: PointerEvent): void {
   bindPointer()
   // A capture on the cell would be lost the moment the grid re-renders the
   // window under the pointer, so the listeners live on the window instead.
-  void native
 }
 
 function onHover(containerId: number, slot: number | null, native?: MouseEvent): void {
@@ -862,8 +882,8 @@ try {
               :container="secondary"
               :catalog="catalog"
               :config="config"
-              :categories="[]"
-              :hotbar="[]"
+              :categories="NONE"
+              :hotbar="NONE"
               :selected="0"
               :over="drag.overContainer === secondary.id ? drag.overSlot : 0"
               :dragging="drag.container === secondary.id ? drag.slot : 0"
