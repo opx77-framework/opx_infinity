@@ -4038,6 +4038,43 @@ do
 	end
 end
 
+-- THE CREATOR WRITE LEDGER IS NOT COLLAPSED. An export write carries no player
+-- source, so every one shared the `-` window: ten writes in ten seconds were one
+-- line and `[+9 suppressed]`, and one resource's denials hid every other's.
+section('the creator ledger')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local function count(pattern)
+			local n = 0
+			for _, level in ipairs({ 'info', 'warn' }) do
+				for _, line in ipairs(control.log[level]) do
+					if line:find(pattern, 1, true) then n = n + 1 end
+				end
+			end
+			return n
+		end
+		local before = count('event=export.AddItem')
+		for player = 1, 3 do
+			env.OPX.Audit.Log({ event = 'export.AddItem', message = 'shop', owner = 'ext:shop',
+				data = { player = player } })
+		end
+		check('three writes by another resource are three audit lines',
+			count('event=export.AddItem') == before + 3, count('event=export.AddItem') - before)
+
+		local denied = count('event=export.denied')
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'b', owner = 'ext:b' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		check('a denial is collapsed per caller, never across callers',
+			count('event=export.denied') == denied + 2, count('event=export.denied') - denied)
+
+		check('a safe line still cuts on a character boundary',
+			env.OPX.Audit.Safe(('\xC3\xA9'):rep(10), 3) == ('\xC3\xA9'):rep(3) .. '...')
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
