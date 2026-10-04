@@ -6785,7 +6785,6 @@ do
 		heldGarages['a_shadow'] = nil
 		for _, point in ipairs(Access.PointsOf(shadow)) do held[point.key] = nil end
 
-
 		control.netEvents[garages.Event.REQUEST]('no_such_marker')
 		control.Pump(8)
 		check('a marker that does not exist is refused',
@@ -14698,7 +14697,6 @@ do
 end
 
 section('elevators: a player can reach the floor list')
-
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
 	-- vanilla in-cabin button by design, and the floor list that replaces that

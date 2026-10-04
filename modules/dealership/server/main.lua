@@ -314,7 +314,6 @@ local function payCitizen(source, citizenId, amount, reason)
 	return paid.ok == true, paid.error or paid.detail
 end
 
-
 --- Charges the buyer, registers the vehicle and hands it over.
 -- @author XEROX710
 --
@@ -646,7 +645,6 @@ function M.SettlePending()
 				if pended ~= nil and pended.ok then unsaved[token] = nil end
 			end
 		end
-
 
 		local rows = Store.FetchPending(PENDING_PAGE)
 		if rows == nil or not rows.ok or type(rows.value) ~= 'table' then return end

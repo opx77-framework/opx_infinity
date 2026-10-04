@@ -1097,7 +1097,6 @@ function Runtime.Start()
 		publish(verdict)
 	end)
 
-
 	-- THE OFFER A SALESPERSON MADE, and the one screen in this module that the
 	-- player did not open themselves. It is a menu and not a toast: a toast
 	-- cannot be answered, and the whole point of this round trip is that the
