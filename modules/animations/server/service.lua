@@ -222,8 +222,9 @@ local function weight(row)
 	return 3 + #row.variants
 end
 
---- Sends one player the whole offer, in parts. The last part also names the
---- emotes with a nearby player, which the picker draws apart.
+--- Sends one player the whole offer, in parts. The last part also carries what
+--- may be played with a nearby player (`Duo.Offered`), which the picker draws
+--- apart.
 -- @author dop42
 -- @param player Source
 function Service.SendOffer(player)
@@ -240,10 +241,10 @@ function Service.SendOffer(player)
 		cost = cost + spent
 	end
 	parts[#parts + 1] = part
-	local duo = M.Duo and M.Duo.Offered() or {}
+	local duo = M.Duo and M.Duo.Offered() or nil
 	for index = 1, #parts do
 		TriggerClientEvent(M.Event.OFFER, player, serial, index, #parts, parts[index],
-			index == #parts and duo or {})
+			index == #parts and duo or false)
 	end
 end
 

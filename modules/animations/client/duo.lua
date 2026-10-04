@@ -11,6 +11,7 @@
 -- how to answer. An invitation nobody answers is withdrawn by the server.
 
 local M = OPX.Modules.Get('animations')
+local Catalogue = M.Catalogue
 local Common = M.Common
 local Opt = M.Opt
 local Runtime = M.Runtime
@@ -21,7 +22,7 @@ local Invite = M.Invite
 local OWNER = 'animations'
 local SPEC_ID = 'animations.invite'
 
--- The invitation on screen: id, pair, inviter's name and the menu handle.
+-- The invitation on screen: id, what it reads, inviter's name and the menu handle.
 local current = nil
 
 -- Calls one function of the menu contract, answering its value or nil.
@@ -72,24 +73,44 @@ local function onMenu(payload)
 	answer(payload.data.accept == true)
 end
 
--- The name a pair reads, or its id when no locale names it.
-local function pairLabel(id)
-	local key = 'animations.duo.name.' .. id
-	return OPX.Locale.Exists(key) and locale(key) or id
+-- A profile's label, or its name when this client lacks the profile.
+local function profileLabel(name)
+	local entry = Catalogue.Entry(name)
+	return entry and Catalogue.Label(entry) or name
+end
+
+-- A short lower-case word off the wire, or nil.
+local function word(value)
+	return Common.Text(value, 64) and value:match('^[%l%d_]+$') and value or nil
+end
+
+-- What the invitation reads, FROM THE INVITED BODY'S SIDE: a paired kind reads
+-- its mirror ("be carried" for an asker who carries), two profiles read which
+-- one is yours. Nil for a shape this client cannot read.
+local function described(what)
+	if type(what) ~= 'table' then return nil end
+	local kind = Catalogue.DuoKind(what.kind)
+	if kind ~= nil then return locale('animations.duo.kind.' .. kind.mirror) end
+	local actor, target = word(what.actor), word(what.target)
+	if actor == nil or target == nil then return nil end
+	local pair = word(what.pair)
+	if pair ~= nil and OPX.Locale.Exists('animations.duo.name.' .. pair) then
+		return locale('animations.duo.name.' .. pair)
+	end
+	if actor == target then return locale('animations.duo.together', { name = profileLabel(actor) }) end
+	return locale('animations.duo.yours', { mine = profileLabel(target), theirs = profileLabel(actor) })
 end
 
 -- Takes an invitation from the server and puts it in front of the player.
-local function onInvite(inviteId, pairId, fromName)
+local function onInvite(inviteId, what, fromName)
 	inviteId = Common.Integer(inviteId, 1, M.MAX_REQUEST_ID)
-	if inviteId == nil or not Common.Text(pairId, 32) or not pairId:match('^[%l%d_]+$') then
-		return
-	end
+	local emote = described(what)
+	if inviteId == nil or emote == nil then return end
 	local name = Common.Text(fromName, 32) and fromName or '?'
 	-- A newer invitation replaces an unanswered one; the server withdrew it.
 	closeMenu()
-	current = { id = inviteId, pair = pairId, name = name }
+	current = { id = inviteId, emote = emote, name = name }
 
-	local emote = pairLabel(pairId)
 	local command = Opt.PlayCommand()
 	if command then
 		Runtime.Notify('info', 'animations.duo.invited',

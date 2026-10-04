@@ -499,3 +499,43 @@ function Catalogue.Label(entry)
 	if entry.written or OPX.Locale.Exists(key) then return locale(key) end
 	return entry.label or entry.name
 end
+
+-- ── the platform's two-player presentations ─────────────────────────────────
+--
+-- `Open77.playerInteractions` drives five kinds. Four have a presentation of
+-- their own -- `give` and `heal` with their default profiles, `carry` and
+-- `escort` with a FIXED paired one that walks (the carried body follows the
+-- carrier; the coordinator rejects a profile override on either) -- and the
+-- fifth, `custom`, plays any catalogue profile on each body.
+--
+-- Each row here is one way to ask for one of the four, from the asker's side.
+-- `swap` means the asker is the coordinator's TARGET: "be carried" is a carry
+-- whose actor is the invited player. `mirror` is the row the invited player
+-- reads, which is the same interaction seen from the other body. `profiles`
+-- are the catalogue ids the presentation is made of: one in DISABLED withholds
+-- the row, and so does DISABLED naming the row's own id.
+Catalogue.DUO_KINDS = {
+	{ id = 'carry', kind = 'carry', swap = false, mirror = 'carried', profiles = { 'carry' } },
+	{ id = 'carried', kind = 'carry', swap = true, mirror = 'carry', profiles = { 'carry' } },
+	{ id = 'escort', kind = 'escort', swap = false, mirror = 'escorted', profiles = {} },
+	{ id = 'escorted', kind = 'escort', swap = true, mirror = 'escort', profiles = {} },
+	{ id = 'give', kind = 'give', swap = false, mirror = 'give', profiles = { 'give' } },
+	{ id = 'heal', kind = 'heal', swap = false, mirror = 'healed',
+		profiles = { 'examine', 'wounded' } },
+	{ id = 'healed', kind = 'heal', swap = true, mirror = 'heal',
+		profiles = { 'examine', 'wounded' } },
+}
+
+local duoKindById = {}
+for index = 1, #Catalogue.DUO_KINDS do
+	local row = Catalogue.DUO_KINDS[index]
+	duoKindById[row.id] = row
+end
+
+--- Answers the paired-kind row of an id, or nil.
+-- @author dop42
+-- @param id any
+-- @return table|nil
+function Catalogue.DuoKind(id)
+	return type(id) == 'string' and duoKindById[id] or nil
+end

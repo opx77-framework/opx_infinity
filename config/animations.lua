@@ -23,39 +23,59 @@ OPX.Config.MODULES.animations = {
 	-- Show the stop key in the prompt strip while your animation plays.
 	PROMPTS = true,
 
-	-- Catalogue names never offered to anybody. A platform profile id works
-	-- here too (`'carry'`, `'camera_point'`...): those are matched once the
-	-- platform's catalogue has been read, and one matching nothing is a line in
-	-- the boot log.
+	-- Catalogue names never offered to anybody, alone or with somebody. A
+	-- platform profile id works here too (`'camera_point'`, `'carry_pickup'`...):
+	-- those are matched once the platform's catalogue has been read, and one
+	-- matching nothing is a line in the boot log. A paired move's id
+	-- (`'escort'`, `'carried'`, see SHARED below) withholds that move.
 	DISABLED = {},
 
-	-- Offer every profile of the platform's own catalogue (open77_animations,
-	-- read at runtime with `Open77.animations.list`) beside the entries written
-	-- in modules/animations/shared/catalogue.lua, so a profile a new build adds
-	-- appears without a release. false offers only the written ones.
+	-- THE WHOLE PLATFORM CATALOGUE. true offers every profile of
+	-- open77_animations (read at runtime with `Open77.animations.list`, 104 on
+	-- op77.123 in twelve families) beside the fifteen rows written in
+	-- modules/animations/shared/catalogue.lua, so a profile a new build adds is
+	-- offered without a release. false offers only the written ones.
 	PLATFORM = true,
 
 	-- EMOTES WITH A NEARBY PLAYER, through the platform's two-player
-	-- coordinator (`Open77.playerInteractions`, kind `custom`). The requester
-	-- picks one, the nearest player within RANGE is invited, and nothing plays
-	-- until they accept. The server measures the distance, never a client.
-	--
-	-- `ACTOR` and `TARGET` are platform profile ids and must be stationary
-	-- (workspot) ones: the coordinator plays nothing that walks. A pair naming a
-	-- profile the build lacks, or one in DISABLED, is not offered.
+	-- coordinator (`Open77.playerInteractions`; needs open77_player_interactions
+	-- running). The asker picks one, the nearest player within RANGE is
+	-- invited, and nothing plays until they accept -- from a two-row menu or
+	-- `/e accept`. The server measures the distance, at the ask and again at the
+	-- yes; no client names who is invited.
 	SHARED = {
 		ENABLED = true,
 		-- Metres between the two bodies, 0.25 to 10.
 		RANGE = 3.0,
-		-- How long an invitation waits for its answer.
+		-- How long an invitation waits for its answer, 1000 to 60000.
 		INVITE_MS = 15000,
+
+		-- The platform's own paired presentations, each offered from both
+		-- sides (`carry` and "be carried"...). `carry` and `escort` WALK: the
+		-- asker leads and the other body follows. ENABLED = false withholds a
+		-- kind; DURATION_MS is how long it lasts once it starts (500..600000).
+		KINDS = {
+			carry = { ENABLED = true, DURATION_MS = 60000 },
+			escort = { ENABLED = true, DURATION_MS = 60000 },
+			give = { ENABLED = true, DURATION_MS = 5000 },
+			heal = { ENABLED = true, DURATION_MS = 12000 },
+		},
+
+		-- ANY TWO PROFILES, one per body: the asker's, then the other player's,
+		-- "the same" included -- every ordered pair of the offered catalogue.
+		-- The pair is stationary: either body walking off ends it.
+		ANY = true,
+		-- How long such a pair lasts. Two one-shot gestures (`wave`, `shrug`...)
+		-- last as long as the longer clip instead.
+		DURATION_MS = 30000,
+
+		-- Named shortcuts to a pair of profiles, listed above "any two". The ID
+		-- names the locale key `animations.duo.name.<ID>` (without one the row
+		-- reads its two profiles) and may not be a paired move's id. A shortcut
+		-- naming a profile the build lacks, or one in DISABLED, is not offered.
 		PAIRS = {
-			{ ID = 'dance', ACTOR = 'dance', TARGET = 'dance', DURATION_MS = 30000 },
-			{ ID = 'give', ACTOR = 'give', TARGET = 'give', DURATION_MS = 5000 },
-			{ ID = 'checkup', ACTOR = 'examine', TARGET = 'wounded', DURATION_MS = 12000 },
-			{ ID = 'cheer', ACTOR = 'cheer', TARGET = 'cheer', DURATION_MS = 10000 },
-			{ ID = 'taichi', ACTOR = 'taichi', TARGET = 'taichi', DURATION_MS = 30000 },
 			{ ID = 'talk', ACTOR = 'preach', TARGET = 'armscrossed', DURATION_MS = 20000 },
+			{ ID = 'film', ACTOR = 'record', TARGET = 'dance', DURATION_MS = 30000 },
 		},
 	},
 

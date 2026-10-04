@@ -100,7 +100,7 @@ local function list(player)
 	OPX.CommandResult(player, true, table.concat(lines, '\n'))
 end
 
--- Handles a name and variant, a category, stop, list, accept, decline or
+-- Handles a name and variant, a category, stop, list, accept, decline, with or
 -- nothing. `stop` and `list` are words before they are names, so the
 -- platform's `stop` gesture is reached from the picker only.
 local function anim(source, args, raw)
@@ -126,6 +126,19 @@ local function anim(source, args, raw)
 		if not M.Duo.Answer(player, first == 'accept') then
 			return notice(player, raw, locale('animations.duo.none'))
 		end
+		return
+	end
+	-- An emote with the nearest player: `with <kind|shortcut|profile> [profile]`.
+	if first == 'with' then
+		if given < 2 or given > 3 then return notice(player, raw, locale('animations.usage')) end
+		local spec = M.Duo.Spec(tostring(args[2]):lower(),
+			given == 3 and tostring(args[3]):lower() or nil)
+		local result = M.Duo.Request(player, spec)
+		if result.error == 'unknown_animation' then
+			local hint = listHint()
+			return notice(player, raw, locale('animations.duo.unknown') .. (hint and (' ' .. hint) or ''))
+		end
+		M.Duo.Tell(player, result)
 		return
 	end
 	-- An offered animation wins over a category of the same word. None shares

@@ -10,9 +10,10 @@
 --
 -- The catalogue it offers is the rows written in shared/catalogue.lua AND the
 -- platform's own catalogue, read at runtime from `Open77.animations.list`; and
--- an emote with a nearby player goes through the platform's two-player
--- coordinator, `Open77.playerInteractions`, after this module has asked the
--- other player and they have accepted.
+-- an emote with a nearby player -- the coordinator's own carry, escort, give
+-- and heal from either side, or any two offered profiles, one per body -- goes
+-- through the platform's two-player coordinator, `Open77.playerInteractions`,
+-- after this module has asked the other player and they have accepted.
 --
 -- `downed`, `menu`, `form` and `prompts` are optional. Without `menu` there is no
 -- picker and the commands and the contract still work; without `form` the picker

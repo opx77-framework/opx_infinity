@@ -25,9 +25,12 @@ local function banner()
 		local row = offered[index]
 		variants = variants + #(row.variants or row.clips)
 	end
+	local duo = M.Duo.Offered()
 	Open77.log.info(('[animations] ready: %d animations (%d from the platform catalogue), %d ' ..
-		'variants offered, %d with a nearby player; presenter %s'):format(#offered,
-		M.Catalogue.AdoptedCount(), variants, #M.Duo.Offered(), Opt.PRESENTER))
+		'variants offered; with a nearby player: %d paired kinds, %d shortcuts, any two ' ..
+		'profiles %s (%d ways in all); presenter %s'):format(#offered,
+		M.Catalogue.AdoptedCount(), variants, #duo.kinds, #duo.pairs, duo.any and 'yes' or 'no',
+		M.Duo.Count(), Opt.PRESENTER))
 end
 
 -- Reads the platform's catalogue, then sends the grown offer to every client

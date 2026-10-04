@@ -102,6 +102,9 @@ elseif type(Config.DISABLED) == 'table' then
 		local entry = Catalogue.Entry(name)
 		if entry ~= nil then
 			Opt.DISABLED[entry.name] = true
+		elseif Catalogue.DuoKind(name) ~= nil then
+			-- A paired kind's own id (`escort`, `carried`...): withholds that row.
+			Opt.DISABLED[name] = true
 		elseif type(name) == 'string' and name:lower():match('^[%l%d_]+$') and #name <= 64 then
 			Opt.DISABLED[name:lower()] = true
 			Opt.DISABLED_UNWRITTEN[#Opt.DISABLED_UNWRITTEN + 1] = name:lower()
@@ -131,8 +134,44 @@ if range == nil or range ~= range or range < 0.25 or range > 10 then
 end
 Opt.SHARED_RANGE = range
 
---- The configured pairs, checked for shape. Whether their profiles exist is a
---- question for the running build, answered by the server.
+--- Whether any two catalogue profiles may be asked for, one per body.
+Opt.SHARED_ANY = Opt.SHARED and shared.ANY ~= false
+
+--- How long a pair of two profiles plays. Two one-shot gestures play for the
+--- longer of their measured clips instead.
+Opt.SHARED_DURATION_MS = shared.DURATION_MS == nil and 30000 or
+	bounded('SHARED.DURATION_MS', shared.DURATION_MS, M.MIN_DURATION_MS, M.SERVICE_MAX_MS, 30000)
+
+-- What each of the platform's own kinds plays for when nothing says otherwise.
+local KIND_MS = { carry = 60000, escort = 60000, give = 5000, heal = 12000 }
+
+--- The platform's paired kinds by their coordinator name: enabled, and for how
+--- long. A kind config does not name stays on at its default length.
+Opt.SHARED_KINDS = {}
+local kinds = type(shared.KINDS) == 'table' and shared.KINDS or {}
+if shared.KINDS ~= nil and type(shared.KINDS) ~= 'table' then
+	problem('SHARED.KINDS must be a table; every kind keeps its default')
+end
+for kind, fallback in pairs(KIND_MS) do
+	local row = type(kinds[kind]) == 'table' and kinds[kind] or {}
+	Opt.SHARED_KINDS[kind] = {
+		enabled = Opt.SHARED and row.ENABLED ~= false,
+		durationMs = row.DURATION_MS == nil and fallback or
+			bounded(('SHARED.KINDS.%s.DURATION_MS'):format(kind), row.DURATION_MS,
+				M.MIN_DURATION_MS, M.SERVICE_MAX_MS, fallback),
+	}
+end
+for kind in pairs(kinds) do
+	if KIND_MS[kind] == nil then
+		problem(('SHARED.KINDS.%s is not a kind the platform pairs (carry, escort, give, ' ..
+			'heal); ignored'):format(tostring(kind)))
+	end
+end
+
+--- The configured shortcuts, checked for shape. Whether their profiles exist is
+--- a question for the running build, answered by the server. An ID may not be
+--- one of the paired kinds' own (`carry`, `healed`...): `/e with <word>` reads
+--- those first.
 Opt.SHARED_PAIRS = {}
 local pairIds = {}
 for index, row in ipairs(type(shared.PAIRS) == 'table' and shared.PAIRS or {}) do
@@ -140,9 +179,9 @@ for index, row in ipairs(type(shared.PAIRS) == 'table' and shared.PAIRS or {}) d
 	local actor = type(row) == 'table' and row.ACTOR or nil
 	local target = type(row) == 'table' and row.TARGET or nil
 	if type(id) ~= 'string' or not id:match('^[%l%d_]+$') or #id > 32 or pairIds[id]
-		or type(actor) ~= 'string' or type(target) ~= 'string' then
-		problem(('SHARED.PAIRS[%d] needs a unique lower-case ID, an ACTOR and a TARGET; ' ..
-			'skipped'):format(index))
+		or Catalogue.DuoKind(id) ~= nil or type(actor) ~= 'string' or type(target) ~= 'string' then
+		problem(('SHARED.PAIRS[%d] needs a unique lower-case ID that is not a paired kind, ' ..
+			'an ACTOR and a TARGET; skipped'):format(index))
 	else
 		pairIds[id] = true
 		Opt.SHARED_PAIRS[#Opt.SHARED_PAIRS + 1] = {

@@ -56,6 +56,9 @@ local EN = {
 	['animations.picker.walkable'] = 'You can keep walking.',
 	['animations.picker.duo'] = 'With a nearby player',
 	['animations.picker.section.together'] = 'TOGETHER',
+	['animations.picker.section.paired'] = 'PAIRED MOVES',
+	['animations.picker.section.shortcuts'] = 'SHORTCUTS',
+	['animations.picker.section.any'] = 'ANY PAIR',
 
 	-- What a row says about a pose authored against furniture. The platform
 	-- brings its own invisible device, so none of them needs the furniture.
@@ -66,13 +69,35 @@ local EN = {
 	['animations.placement.counter'] = 'Best facing a counter.',
 	['animations.placement.bed'] = 'Lying down where you stand.',
 
-	-- An emote with a nearby player. One `name` per `SHARED.PAIRS` ID.
-	['animations.duo.name.dance'] = 'Dance together',
-	['animations.duo.name.give'] = 'Hand something over',
-	['animations.duo.name.checkup'] = 'Check on them',
-	['animations.duo.name.cheer'] = 'Cheer together',
-	['animations.duo.name.taichi'] = 'Tai chi together',
-	['animations.duo.name.talk'] = 'Give a talk',
+	-- An emote with a nearby player. A `SHARED.PAIRS` ID may have a `name`;
+	-- one without reads its two profiles (`animations.duo.both`).
+	['animations.duo.name.talk'] = 'Give them a talk',
+	['animations.duo.name.film'] = 'Film them dancing',
+	-- One per `Catalogue.DUO_KINDS` row, from the asker's side; the invited
+	-- player reads the row's mirror.
+	['animations.duo.kind.carry'] = 'Carry them',
+	['animations.duo.kind.carried'] = 'Be carried',
+	['animations.duo.kind.escort'] = 'Escort them',
+	['animations.duo.kind.escorted'] = 'Be escorted',
+	['animations.duo.kind.give'] = 'Hand something over',
+	['animations.duo.kind.heal'] = 'Look after them',
+	['animations.duo.kind.healed'] = 'Be looked after',
+	['animations.duo.kindHint.carry'] = 'You carry them and can walk; they follow.',
+	['animations.duo.kindHint.carried'] = 'They carry you and walk; you follow.',
+	['animations.duo.kindHint.escort'] = 'Side by side; you lead the way.',
+	['animations.duo.kindHint.escorted'] = 'Side by side; they lead the way.',
+	['animations.duo.kindHint.give'] = 'Both of you hold out a hand.',
+	['animations.duo.kindHint.heal'] = 'You kneel and examine them; they sit wounded.',
+	['animations.duo.kindHint.healed'] = 'They kneel and examine you; you sit wounded.',
+	['animations.duo.any'] = 'Any two animations',
+	['animations.duo.anyHint'] = 'Pick yours, then theirs: every pair of animations.',
+	['animations.duo.mine'] = 'YOUR ANIMATION',
+	['animations.duo.theirs'] = 'THEIRS, WITH {name}',
+	['animations.duo.same'] = 'The same: {name}',
+	['animations.duo.both'] = '{mine} / {theirs}',
+	['animations.duo.together'] = 'Together: {name}',
+	['animations.duo.yours'] = 'You: {mine}; them: {theirs}',
+	['animations.duo.unknown'] = 'Nothing by that name can be played with somebody.',
 	['animations.duo.hint'] = 'Invites the nearest player; it starts when they accept.',
 	['animations.duo.sent'] = 'Invitation sent to {name}.',
 	['animations.duo.accepted'] = '{name} accepted.',
@@ -110,14 +135,14 @@ local EN = {
 	['animations.error.refused'] = 'That animation could not be played.',
 
 	['animations.hint.list'] = 'Run /{command} to see the list.',
-	['animations.usage'] = 'usage: [name [variant] | category | stop | list | accept | decline]',
+	['animations.usage'] = 'usage: [name [variant] | category | stop | list | with <move|name> [name] | accept | decline]',
 	['animations.usage.none'] = 'usage: no arguments',
 	['animations.list.header'] = 'animations, by category (name, then its variant count):',
 	['animations.list.row'] = '  {category}: {names}',
 	['animations.list.empty'] = 'No animation is offered on this server.',
 
 	['animations.help.anim'] = 'Play an animation, or open the picker with no argument.',
-	['animations.help.name'] = 'dance, smoke, sit... or stop, list, a category',
+	['animations.help.name'] = 'dance, smoke, sit... or stop, list, a category, with carry / with dance',
 	['animations.help.variant'] = 'variant number; omit for the first offered',
 	['animations.help.stop'] = 'Stop your animation.',
 	['animations.help.list'] = 'List the animations you can play.',
@@ -135,6 +160,101 @@ local EN = {
 	['animations.walk.brisk'] = 'Brisk pace',
 
 	['animations.prompt.stop'] = 'Stop animation',
+
+	-- THE PLATFORM'S PROFILES. They are read at runtime from
+	-- `Open77.animations.list`, and these keys are what a player reads for each
+	-- (`Catalogue.Label`). The English rows are the platform's own labels as
+	-- op77.123 ships them; a profile a later build adds reads the platform's
+	-- label until it is given a row here, in both languages.
+	['animations.name.camera_point'] = 'Point in camera direction',
+	['animations.name.chair'] = 'Sit as if on a chair',
+	['animations.name.lean'] = 'Lean back against a wall',
+	['animations.name.lie'] = 'Lie down',
+	['animations.name.armscrossed'] = 'Arms crossed',
+	['animations.name.armscrossed2'] = 'Arms crossed, relaxed',
+	['animations.name.handsback'] = 'Hands behind back',
+	['animations.name.handships'] = 'Hands on hips',
+	['animations.name.handsfront'] = 'Hands in front',
+	['animations.name.onehip'] = 'Hand on hip',
+	['animations.name.idle'] = 'Casual standing',
+	['animations.name.wait'] = 'Wait around',
+	['animations.name.bored'] = 'Bored',
+	['animations.name.fidget'] = 'Fidget with hands',
+	['animations.name.rubhands'] = 'Rub hands',
+	['animations.name.sad'] = 'Feeling down',
+	['animations.name.nervous'] = 'Nervous',
+	['animations.name.angry'] = 'Angry gestures',
+	['animations.name.cheer'] = 'Cheer',
+	['animations.name.cheer2'] = 'Cheer, folded arms',
+	['animations.name.crowdwave'] = 'Crowd wave',
+	['animations.name.preach'] = 'Speak to a crowd',
+	['animations.name.calmdown'] = 'Calm down',
+	['animations.name.order'] = 'Order food',
+	['animations.name.drunk'] = 'Drunk',
+	['animations.name.paranoid'] = 'Paranoid',
+	['animations.name.taichi'] = 'Tai chi',
+	['animations.name.headphones'] = 'Dance to headphones',
+	['animations.name.call'] = 'Phone call',
+	['animations.name.call2'] = 'Phone call, hand on hip',
+	['animations.name.phonecheck'] = 'Check phone',
+	['animations.name.record'] = 'Record on phone',
+	['animations.name.bottle'] = 'Drink from a bottle',
+	['animations.name.takeout'] = 'Eat takeout',
+	['animations.name.smokefolded'] = 'Smoke, arm folded',
+	['animations.name.tablet'] = 'Use a tablet',
+	['animations.name.tablet2'] = 'Work on tablet',
+	['animations.name.tablet3'] = 'Tablet in one hand',
+	['animations.name.repair'] = 'Kneel and repair',
+	['animations.name.mechanic'] = 'Kneel with a tool',
+	['animations.name.scavenge'] = 'Scavenge',
+	['animations.name.kneelcry'] = 'Cry on knees',
+	['animations.name.cower'] = 'Cower',
+	['animations.name.arrested'] = 'Lie face down',
+	['animations.name.sitafraid'] = 'Sit with knees held',
+	['animations.name.sitsmoke'] = 'Smoke on the ground',
+	['animations.name.laptop'] = 'Use laptop on ground',
+	['animations.name.handpan'] = 'Play a handpan',
+	['animations.name.leanrelaxed'] = 'Lean against wall, relaxed',
+	['animations.name.leanleft'] = 'Lean on left side',
+	['animations.name.wallcall'] = 'Phone call against wall',
+	['animations.name.wallsmoke'] = 'Smoke against wall',
+	['animations.name.seated'] = 'Sit upright',
+	['animations.name.seated2'] = 'Sit, relaxed hands',
+	['animations.name.seatedcheer'] = 'Cheer while seated',
+	['animations.name.seatedsleep'] = 'Doze in a chair',
+	['animations.name.seatedstretch'] = 'Stretch while seated',
+	['animations.name.seatedthink'] = 'Think while seated',
+	['animations.name.guitar'] = 'Play guitar',
+	['animations.name.barlean'] = 'Lean on a counter',
+	['animations.name.barsit'] = 'Sit at a bar',
+	['animations.name.bedsidelie'] = 'Lie on side',
+	['animations.name.carry'] = 'Carry a box in both hands',
+	['animations.name.carry_pickup'] = 'Pick up a box',
+	['animations.name.carry_putdown'] = 'Put a box down',
+	['animations.name.point'] = 'Point ahead',
+	['animations.name.wave'] = 'Wave hello',
+	['animations.name.raisehand'] = 'Raise a hand',
+	['animations.name.beckon'] = 'Come here',
+	['animations.name.stop'] = 'Stop, halt',
+	['animations.name.thumbsup'] = 'Thumbs up',
+	['animations.name.shrug'] = 'Shrug',
+	['animations.name.facepalm'] = 'Facepalm',
+	['animations.name.scratchhead'] = 'Scratch head',
+	['animations.name.what'] = 'What?',
+	['animations.name.me'] = 'Me?',
+	['animations.name.smoke_walk'] = 'Smoke a cigarette, walking',
+	['animations.name.cigar_walk'] = 'Smoke a cigar, walking',
+	['animations.name.drink_walk'] = 'Drink from a can, walking',
+	['animations.name.bottle_walk'] = 'Drink from a bottle, walking',
+	['animations.name.call_walk'] = 'Phone call, walking',
+	['animations.name.phone_walk'] = 'Use a phone, walking',
+	['animations.name.hold_item_walk'] = 'Hold an item, walking',
+	['animations.name.talk_walk'] = 'Talk with the hands',
+	['animations.name.handsup_walk'] = 'Hands up, walking',
+	['animations.name.handsback_walk'] = 'Hands behind back, walking',
+	['animations.name.armscrossed_walk'] = 'Arms crossed, walking',
+	['animations.name.handships_walk'] = 'Hands on hips, walking',
+	['animations.name.pocket_walk'] = 'Hand in pocket, walking',
 }
 
 local FR = {
@@ -189,6 +309,9 @@ local FR = {
 	['animations.picker.walkable'] = 'Vous pouvez continuer à marcher.',
 	['animations.picker.duo'] = 'Avec un joueur proche',
 	['animations.picker.section.together'] = 'ENSEMBLE',
+	['animations.picker.section.paired'] = 'MOUVEMENTS À DEUX',
+	['animations.picker.section.shortcuts'] = 'RACCOURCIS',
+	['animations.picker.section.any'] = "N'IMPORTE QUELLE PAIRE",
 
 	['animations.placement.ground'] = 'Au sol, là où vous êtes.',
 	['animations.placement.chair'] = 'Assis là où vous êtes ; pas besoin de chaise.',
@@ -197,12 +320,31 @@ local FR = {
 	['animations.placement.counter'] = 'Mieux face à un comptoir.',
 	['animations.placement.bed'] = 'Allongé là où vous êtes.',
 
-	['animations.duo.name.dance'] = 'Danser ensemble',
-	['animations.duo.name.give'] = 'Remettre quelque chose',
-	['animations.duo.name.checkup'] = "S'occuper d'un blessé",
-	['animations.duo.name.cheer'] = 'Acclamer ensemble',
-	['animations.duo.name.taichi'] = 'Tai-chi à deux',
-	['animations.duo.name.talk'] = 'Faire un discours',
+	['animations.duo.name.talk'] = 'Leur faire un discours',
+	['animations.duo.name.film'] = 'Les filmer en train de danser',
+	['animations.duo.kind.carry'] = 'Le porter',
+	['animations.duo.kind.carried'] = 'Se faire porter',
+	['animations.duo.kind.escort'] = "L'escorter",
+	['animations.duo.kind.escorted'] = 'Se faire escorter',
+	['animations.duo.kind.give'] = 'Remettre quelque chose',
+	['animations.duo.kind.heal'] = "S'occuper de lui",
+	['animations.duo.kind.healed'] = 'Se faire soigner',
+	['animations.duo.kindHint.carry'] = 'Vous le portez et pouvez marcher ; il suit.',
+	['animations.duo.kindHint.carried'] = 'Il vous porte et marche ; vous suivez.',
+	['animations.duo.kindHint.escort'] = 'Côte à côte ; vous ouvrez la marche.',
+	['animations.duo.kindHint.escorted'] = 'Côte à côte ; il ouvre la marche.',
+	['animations.duo.kindHint.give'] = 'Vous tendez la main tous les deux.',
+	['animations.duo.kindHint.heal'] = "Vous vous agenouillez pour l'examiner ; il est assis, blessé.",
+	['animations.duo.kindHint.healed'] = "Il s'agenouille pour vous examiner ; vous êtes assis, blessé.",
+	['animations.duo.any'] = "N'importe quelles deux animations",
+	['animations.duo.anyHint'] = "Choisissez la vôtre, puis la sienne : toutes les paires d'animations.",
+	['animations.duo.mine'] = 'VOTRE ANIMATION',
+	['animations.duo.theirs'] = 'LA SIENNE, AVEC {name}',
+	['animations.duo.same'] = 'La même : {name}',
+	['animations.duo.both'] = '{mine} / {theirs}',
+	['animations.duo.together'] = 'Ensemble : {name}',
+	['animations.duo.yours'] = 'Vous : {mine} ; lui : {theirs}',
+	['animations.duo.unknown'] = 'Rien de ce nom ne se joue à deux.',
 	['animations.duo.hint'] = 'Invite le joueur le plus proche ; ça commence quand il accepte.',
 	['animations.duo.sent'] = 'Invitation envoyée à {name}.',
 	['animations.duo.accepted'] = '{name} a accepté.',
@@ -240,14 +382,14 @@ local FR = {
 	['animations.error.refused'] = "Cette animation n'a pas pu être jouée.",
 
 	['animations.hint.list'] = 'Lancez /{command} pour voir la liste.',
-	['animations.usage'] = 'utilisation : [nom [variante] | catégorie | stop | list | accept | decline]',
+	['animations.usage'] = 'utilisation : [nom [variante] | catégorie | stop | list | with <mouvement|nom> [nom] | accept | decline]',
 	['animations.usage.none'] = 'utilisation : aucun argument',
 	['animations.list.header'] = 'animations, par catégorie (nom, puis son nombre de variantes) :',
 	['animations.list.row'] = '  {category} : {names}',
 	['animations.list.empty'] = "Aucune animation n'est proposée sur ce serveur.",
 
 	['animations.help.anim'] = 'Joue une animation, ou ouvre le sélecteur sans argument.',
-	['animations.help.name'] = 'dance, smoke, sit... ou stop, list, une catégorie',
+	['animations.help.name'] = 'dance, smoke, sit... ou stop, list, une catégorie, with carry / with dance',
 	['animations.help.variant'] = 'numéro de variante ; omettre pour la première proposée',
 	['animations.help.stop'] = 'Arrête votre animation.',
 	['animations.help.list'] = 'Liste les animations que vous pouvez jouer.',
@@ -262,16 +404,8 @@ local FR = {
 	['animations.walk.brisk'] = 'Pas vif',
 
 	['animations.prompt.stop'] = "Arrêter l'animation",
-}
 
--- THE PLATFORM'S PROFILES, IN FRENCH ONLY. They are read at runtime from
--- `Open77.animations.list`, and the label the platform gives each is already
--- English -- so an English catalogue entry would be a copy that drifts from the
--- platform's own wording. `Catalogue.Label` reads a key when the active or the
--- fallback catalogue carries it, and the platform's label otherwise: these
--- keys are what a French server shows, and a profile a later build adds reads
--- in English until it is given one here. Listed from op77.123.
-local FR_PROFILES = {
+	-- Les profils de la plateforme ; voir la note du bloc anglais.
 	['animations.name.camera_point'] = 'Pointer vers la caméra',
 	['animations.name.chair'] = "S'asseoir comme sur une chaise",
 	['animations.name.lean'] = "S'adosser à un mur",
@@ -363,6 +497,6 @@ local FR_PROFILES = {
 	['animations.name.pocket_walk'] = 'Main dans la poche en marchant',
 }
 
+
 OPX.Locale.Register('en', EN)
 OPX.Locale.Register('fr', FR)
-OPX.Locale.Register('fr', FR_PROFILES)

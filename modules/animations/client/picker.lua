@@ -9,7 +9,7 @@
 -- Do not fold the screens back into one tree.
 --
 -- A LONG LIST IS PAGED, NOT CUT. With the platform's catalogue adopted the
--- picker offers a hundred-odd emotes, and `Every emote` alone is six screens of
+-- picker offers a hundred-odd emotes, and `Every emote` alone is seven screens of
 -- PAGE_ROWS. A page ends with a row to the next, as the staff menu's do, and
 -- Back steps a page back.
 --
@@ -40,11 +40,13 @@ local SPEC_ID = 'animations.picker'
 local KEY_PICKER = 'opx.animations.picker'
 local KEY_STOP = 'opx.animations.stop'
 
--- Rows one page of a list draws, as on the staff menu.
-local PAGE_ROWS = 20
+-- Rows one page of a list draws. Sixteen, not the staff menu's twenty: these
+-- rows carry a description and a family, and the menu's install of a full
+-- screen after its last paced step is what sets the ceiling.
+local PAGE_ROWS = 16
 
 -- Rows a builder walks between two yields, on the draw thread only.
-local BREATHE_EVERY = 25
+local BREATHE_EVERY = 8
 local breaths = 0
 local onDrawThread = false
 
@@ -269,10 +271,9 @@ SCREENS.root = function()
 	-- player's own body but an invitation, and they are only drawn when the
 	-- server could offer one.
 	local duos = Runtime.Duos()
-	if #duos > 0 then
+	if #duos.kinds > 0 or #duos.pairs > 0 or (duos.any and #everything > 0) then
 		items[#items + 1] = section('animations.picker.section.together')
-		items[#items + 1] = go('duo', locale('animations.picker.duo'), 'duo', nil,
-			tostring(#duos), 'person')
+		items[#items + 1] = go('duo', locale('animations.picker.duo'), 'duo', nil, nil, 'person')
 	end
 
 	local categories = {}
@@ -358,15 +359,114 @@ SCREENS.variants = function(name, page)
 	return Catalogue.Label(entry) .. suffix, items
 end
 
+-- ── with a nearby player ────────────────────────────────────────────────────
+--
+-- EVERY PAIR THE PLATFORM CAN PLAY, without listing ten thousand rows. The
+-- coordinator's own kinds and the configured shortcuts are rows of their own;
+-- "any two" is two picks through the same families as the solo picker -- the
+-- asker's animation, then the other player's, with "the same" on top -- so
+-- every ordered pair of offered profiles is two screens and one page away.
+-- A pick carries no variant: the coordinator plays a profile, not a clip.
+
+-- The label of a profile name, or the name itself when this client lacks it.
+local function profileLabel(name)
+	local entry = Catalogue.Entry(name)
+	return entry and Catalogue.Label(entry) or name
+end
+
+-- The label of a paired kind, or of a shortcut: its own, or its two profiles.
+local function kindLabel(id)
+	return locale('animations.duo.kind.' .. id)
+end
+local function pairLabel(pair)
+	local key = 'animations.duo.name.' .. pair.id
+	if OPX.Locale.Exists(key) then return locale(key) end
+	return locale('animations.duo.both', { mine = profileLabel(pair.actor),
+		theirs = profileLabel(pair.target) })
+end
+
 SCREENS.duo = function()
 	local items = {}
 	local duos = Runtime.Duos()
-	for position = 1, #duos do
-		local id = duos[position]
-		items[#items + 1] = choice('duo_' .. id, locale('animations.duo.name.' .. id),
-			{ duo = id }, { icon = 'person', description = locale('animations.duo.hint') })
+	if #duos.kinds > 0 then items[#items + 1] = section('animations.picker.section.paired') end
+	for position = 1, #duos.kinds do
+		local id = duos.kinds[position]
+		items[#items + 1] = choice('kind_' .. id, kindLabel(id), { duo = { kind = id } },
+			{ icon = 'person', description = locale('animations.duo.kindHint.' .. id) })
+	end
+	if #duos.pairs > 0 then items[#items + 1] = section('animations.picker.section.shortcuts') end
+	for position = 1, #duos.pairs do
+		local pair = duos.pairs[position]
+		items[#items + 1] = choice('pair_' .. pair.id, pairLabel(pair), { duo = { pair = pair.id } },
+			{ icon = 'person', description = locale('animations.duo.hint') })
+	end
+	if duos.any and #Runtime.Entries(nil) > 0 then
+		items[#items + 1] = section('animations.picker.section.any')
+		items[#items + 1] = go('any', locale('animations.duo.any'), 'duopick', '',
+			tostring(#Runtime.Entries(nil)), 'emote')
+		items[#items].description = locale('animations.duo.anyHint')
 	end
 	return locale('animations.picker.duo'), items
+end
+
+-- A pick's screen argument is a STRING, `<mine>:<category>`, either part
+-- empty: a table per row would be a dozen more nodes on every screen for the
+-- menu to copy and send, and profile names never carry a colon.
+local function pickArg(mine, category)
+	return ('%s:%s'):format(mine or '', category or '')
+end
+local function readPick(arg)
+	local mine, category = tostring(arg or ''):match('^([%l%d_]*):?([%l%d_]*)$')
+	mine = mine ~= nil and mine ~= '' and Runtime.Offered(mine) and mine or nil
+	category = category ~= nil and Catalogue.IsCategory(category) and category or nil
+	return mine, category
+end
+
+-- The families to pick from, for the asker (no `mine` yet) or for the other
+-- player (`mine` the asker's pick), with "the same" first in the second.
+SCREENS.duopick = function(arg)
+	local mine = readPick(arg)
+	local items = {}
+	if mine ~= nil then
+		items[#items + 1] = choice('same', locale('animations.duo.same',
+			{ name = profileLabel(mine) }), { duo = { actor = mine, target = mine } },
+			{ icon = 'person', description = locale('animations.duo.hint') })
+		items[#items + 1] = section()
+	end
+	local everything = Runtime.Entries(nil)
+	items[#items + 1] = go('all', locale('animations.picker.all'), 'duolist', pickArg(mine, nil),
+		tostring(#everything), 'list')
+	for index = 1, #Catalogue.CATEGORIES do
+		local category = Catalogue.CATEGORIES[index]
+		local offered = Runtime.Entries(category)
+		if #offered > 0 then
+			items[#items + 1] = go(category, locale('animations.category.' .. category), 'duolist',
+				pickArg(mine, category), tostring(#offered),
+				Catalogue.CATEGORY_ICONS[category] or 'emote')
+		end
+	end
+	local title = mine and locale('animations.duo.theirs', { name = profileLabel(mine) })
+		or locale('animations.duo.mine')
+	return title, items
+end
+
+-- One family, or every emote, as picks: the asker's leads to the second
+-- screen, the other player's sends the invitation.
+SCREENS.duolist = function(arg, page)
+	local mine, category = readPick(arg)
+	local entries = Runtime.Entries(category)
+	local items, suffix = paged({}, entries, page, function(entry)
+		local label = Catalogue.Label(entry)
+		local aside = category == nil and locale('animations.category.' .. entry.category) or nil
+		if mine == nil then
+			return go(entry.name, label, 'duopick', pickArg(entry.name, nil), aside, entry.icon)
+		end
+		return choice(entry.name, label, { duo = { actor = mine, target = entry.name } },
+			{ icon = entry.icon, value = aside })
+	end)
+	local title = category and locale('animations.category.' .. category)
+		or locale('animations.picker.all')
+	return title .. suffix, items
 end
 
 -- Takes the search box down, if one is up.
@@ -420,6 +520,10 @@ local function drawNow(inPlace)
 	local current = stack[#stack]
 	if current == nil then return end
 	local title, items = SCREENS[current.screen](current.arg, current.page)
+	-- BUILT, THEN HANDED OVER IN A FRESH RESUME: the menu checks and installs
+	-- the rows on this thread too, and the two together are past the budget on
+	-- a full screen.
+	if onDrawThread and type(Wait) == 'function' then Wait(0) end
 	-- The builder yields, and the player can close the picker or step away
 	-- while it does: a screen that is no longer on top is not drawn. Whatever
 	-- moved the stack queued its own draw.
@@ -428,7 +532,8 @@ local function drawNow(inPlace)
 
 	if inPlace then
 		if handle == nil then return end
-		local _, failure = call('Update', handle, { title = title, items = items })
+		local _, failure = call('Update', handle, { title = title, items = items,
+			yield = onDrawThread })
 		if failure ~= nil then
 			Open77.log.debug('[animations] picker not redrawn: ' .. failure)
 		end
@@ -442,6 +547,9 @@ local function drawNow(inPlace)
 		on = onRow,
 		cursor = current.cursor or firstBelowHead(items),
 		items = items,
+		-- On the draw thread the menu checks the rows a few at a time with a
+		-- frame between, rather than all of them inside this resume.
+		yield = onDrawThread,
 	})
 	if result == nil then
 		Open77.log.warn(('[animations] picker %s did not open: %s')
@@ -639,7 +747,10 @@ onRow = function(payload)
 	if type(data.page) == 'number' then return push(current.screen, current.arg, data.page) end
 	if data.go == 'all' then return push('all', nil) end
 	if data.go == 'duo' then return push('duo', nil) end
-	if (data.go == 'category' or data.go == 'variants') and type(data.arg) == 'string' then
+	-- The two picks of "any two" and the solo screens alike take a string, read
+	-- again by the screen against the offer, so a forged one draws nothing.
+	if (data.go == 'category' or data.go == 'variants' or data.go == 'duopick'
+		or data.go == 'duolist') and type(data.arg) == 'string' then
 		return push(data.go, data.arg)
 	end
 
@@ -651,7 +762,7 @@ onRow = function(payload)
 		if stopped.error == 'animation_locked' then Runtime.Refuse(stopped.error) end
 		return
 	end
-	if type(data.duo) == 'string' then
+	if type(data.duo) == 'table' then
 		local asked = Runtime.Duo(data.duo)
 		if not asked.ok then Runtime.Refuse(asked.error) end
 		return
