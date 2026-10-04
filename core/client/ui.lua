@@ -313,22 +313,10 @@ function OPX.UI.Answer(target, ref, payload)
 	return sent, refused
 end
 
---- Registers a request handler: the answer is sent back on the reply channel
---- under the ref the page supplied.
--- @author dop42
--- @param target string
--- @param channel string
--- @param handler fun(payload: table): table
-function OPX.UI.Serve(target, channel, handler)
-	OPX.UI.On(target, channel, function(payload)
-		local ok, answer = pcall(handler, payload)
-		if not ok then
-			Open77.log.error(('[ui] %s raised: %s'):format(channel, tostring(answer)))
-			answer = { ok = false, error = 'error.unavailable' }
-		end
-		OPX.UI.Answer(target, payload.ref, answer)
-	end)
-end
+-- `OPX.UI.Serve(target, channel, handler)` was here -- `On` plus a pcall plus
+-- `Answer` -- and nothing in the resource called it: the two modules that answer
+-- the page call `Answer` themselves, with refusals of their own. Removed rather
+-- than kept as a second way to do what they already do.
 
 --- Applies whatever is on top of the focus stack, or drops focus entirely.
 ---

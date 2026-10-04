@@ -233,8 +233,16 @@ local function publish(name, scope, body, yields)
 		local config = settings()
 		local list = scope == 'write' and config.WRITERS or config.READ
 		if not admits(list, caller) then
-			OPX.Audit.Security('export.denied', ('%s called %s'):format(caller, name),
-				{ caller = caller, export = name, scope = scope })
+			-- Its own dedupe window per CALLER. Through `Audit.Security` with no
+			-- source, every denial on the host shared one window, so a resource
+			-- retrying in a loop hid every other resource's denial from the log.
+			OPX.Audit.Log({
+				event = 'export.denied',
+				severity = 'warn',
+				message = ('%s called %s'):format(caller, name),
+				data = { caller = caller, export = name, scope = scope },
+				owner = 'ext:' .. caller,
+			})
 			local key = caller .. '\1' .. name
 			if not hinted[key] then
 				hinted[key] = true
@@ -269,6 +277,9 @@ local function publish(name, scope, body, yields)
 				severity = answer.ok and 'info' or 'warn',
 				message = caller,
 				data = { caller = caller, args = args, error = answer.error },
+				-- A refused write is collapsed per caller; one that landed is a
+				-- ledger line (`export.` in `lib/server/audit.lua`) and never is.
+				owner = 'ext:' .. caller,
 			})
 		end
 		return answer
