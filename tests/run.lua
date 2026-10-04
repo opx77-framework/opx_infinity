@@ -7723,6 +7723,20 @@ do
 		control.netEvents[dealership.Event.ASK]()
 		control.Pump(4)
 		local synced = lastEvent(dealership.Event.SYNC)
+		-- AND A SECOND ASK INSIDE A SECOND IS NOT ANSWERED. Each one is a bucket
+		-- filter, a sort and a payload; a client polls every fifteen seconds.
+		local function syncs()
+			local count = 0
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == dealership.Event.SYNC then count = count + 1 end
+			end
+			return count
+		end
+		local syncsBefore = syncs()
+		control.netEvents[dealership.Event.ASK]()
+		control.Pump(4)
+		check('a list asked for again within a second is not sent again',
+			syncs() == syncsBefore, syncs() - syncsBefore)
 		local found, inBucket = {}, true
 		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			found[synced[1].spots[index].key] = true

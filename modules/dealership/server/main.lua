@@ -1445,7 +1445,11 @@ function M.Start()
 
 	RegisterNetEvent(M.Event.ASK, function()
 		local player = tonumber(source)
-		if player == nil then return end
+		if player == nil or player <= 0 then return end
+		-- A FLOOR, as every other door here has one: each ask is a character
+		-- read, a bucket filter, a sort and a payload, and a client polls every
+		-- POLL_MS (15 s). Faster than once a second is not a client polling.
+		if OPX.Cooling(player, 'dealership.ask', 1000) then return end
 		sync(player)
 	end)
 
