@@ -262,7 +262,10 @@ end
 local function dealerAt(at, dealerKey)
 	local dealer
 	if dealerKey == nil or dealerKey == '' then
-		dealer = Access.Nearest(spots, at.x, at.y)
+		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
+		-- a dealer on the same spot that sorted first won the search and was then
+		-- refused as `wrongBucket` to somebody standing on a dealer in theirs.
+		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
 	else
 		dealer = Access.Spot(spots, dealerKey)
 	end
@@ -710,7 +713,10 @@ function M.Offer(seller, buyer, entryKey)
 	-- of them have to be standing in it: a salesperson who can sell to somebody
 	-- across the city is a salesperson who can sell to somebody who has never
 	-- seen a dealership.
-	local dealer = Access.Nearest(spots, sellerAt.x, sellerAt.y, Access.ZONE_RADIUS_SQ)
+	-- In the seller's own bucket, for the reason `dealerAt` gives.
+	local dealer = Access.Nearest(Access.InBucket(spots, sellerAt.bucket), sellerAt.x, sellerAt.y,
+		Access.ZONE_RADIUS_SQ)
+
 	if dealer == nil or not inZone(sellerAt, dealer) then
 		return Result.Err('dealership.notInZone')
 	end

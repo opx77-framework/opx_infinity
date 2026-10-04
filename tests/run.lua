@@ -6761,6 +6761,31 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[3] == 'garages.wrongBucket')
 
+		-- THE NEAREST POINT IS THE NEAREST ONE IN THE PLAYER'S BUCKET. An
+		-- instanced copy of a garage standing on the same spot in another bucket
+		-- -- and sorting first by key -- used to win the nearest-point search and
+		-- then be refused as `wrongBucket`, to a player standing on a garage that
+		-- is in their own.
+		local shadow = place('a_shadow', {
+			KIND = 'garage', LABEL = 'SHADOW',
+			LOCATIONS = { { BUCKET = 7,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.Stand(src, 0.0, 0.0, 0.0)
+		local nearest = contract.List(src, nil)
+		check('the nearest point is looked for in the player\'s own bucket',
+			shadow ~= nil and nearest.ok == true and nearest.value.garage == 'garage_dock',
+			nearest.ok and tostring(nearest.value.garage) or tostring(nearest.error))
+		local named = contract.List(src, 'garage_dock')
+		check('and so is the nearest point of a garage named by its key',
+			named.ok == true and named.value.garage == 'garage_dock',
+			named.ok and tostring(named.value.garage) or tostring(named.error))
+		heldGarages['a_shadow'] = nil
+		for _, point in ipairs(Access.PointsOf(shadow)) do held[point.key] = nil end
+
+
 		control.netEvents[garages.Event.REQUEST]('no_such_marker')
 		control.Pump(8)
 		check('a marker that does not exist is refused',

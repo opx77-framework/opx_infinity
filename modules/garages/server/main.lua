@@ -303,14 +303,24 @@ local function resolve(source, key)
 
 	local point = nil
 	if key == nil or key == '' then
-		point = Access.Nearest(spots, at.x, at.y)
+		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
+		-- a garage standing on the same spot that sorted first by key won the
+		-- search and was then refused as `wrongBucket`, to a player standing on a
+		-- garage in their own.
+		point = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
 	else
 		point = Access.Spot(spots, key)
 		if point == nil and garages[key] ~= nil then
-			local mine = {}
+			-- The garage's points in this bucket when it has any there, and all
+			-- of them otherwise -- so a garage that is only elsewhere still
+			-- answers `wrongBucket` below rather than `noSuchSpot`.
+			local mine, here = {}, {}
 			for _, candidate in ipairs(Access.PointsOf(garages[key])) do
 				mine[candidate.key] = candidate
+				if candidate.bucket == at.bucket then here[candidate.key] = candidate end
 			end
+			if next(here) ~= nil then mine = here end
+
 			-- UNBOUNDED, and that is the difference between two refusals an
 			-- operator reads. Asking for the nearest point WITHIN REACH answers
 			-- nil for somebody standing across the street from the garage they
