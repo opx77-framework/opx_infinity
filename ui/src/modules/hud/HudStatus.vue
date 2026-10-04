@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onUnmounted, shallowRef } from 'vue'
 import { guard } from '@/bridge/diag'
-import { list, num, text } from '@/bridge/types'
+import { num, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -82,14 +82,14 @@ let timer: ReturnType<typeof setInterval> | undefined
 
 useBridge('opx:hud:status', (payload: Payload) => {
   const atMs = Date.now()
-  const seen: Record<string, boolean> = {}
+  const seen = new Set<string>()
   const next: Chip[] = []
 
-  for (const row of list<Payload>(payload.chips)) {
+  for (const row of records(payload.chips)) {
     if (next.length >= MAX_CHIPS) break
     const id = text(row.id)
-    if (!id || seen[id]) continue
-    seen[id] = true
+    if (!id || seen.has(id)) continue
+    seen.add(id)
 
     const remainingMs = num(row.remainingMs)
     const totalMs = num(row.totalMs)
@@ -101,7 +101,7 @@ useBridge('opx:hud:status', (payload: Payload) => {
       id,
       icon: text(row.icon).slice(0, 4),
       label: t(text(row.label)),
-      tone: TONES[text(row.tone, 'neutral')] ?? 'neutral',
+      tone: own(TONES, text(row.tone, 'neutral')) ?? 'neutral',
       endsAt: timed ? atMs + remainingMs : 0,
       totalMs: timed ? totalMs : 0,
       progress: timed ? Math.max(0, Math.min(1, remainingMs / totalMs)) : fixed

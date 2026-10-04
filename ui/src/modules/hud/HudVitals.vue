@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { shallowRef } from 'vue'
-import { list, num, text } from '@/bridge/types'
+import { num, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -99,7 +99,7 @@ function readout(vital: Vital): number {
 useBridge('opx:hud:vitals', (payload: Payload) => {
   // `list()` and not `payload.gauges || []`: an empty Lua table is `{}`, which is truthy,
   // and `{}.map` is the throw the bridge would swallow -- at 30 Hz, silently, forever.
-  vitals.value = list<Payload>(payload.gauges)
+  vitals.value = records(payload.gauges)
     .filter((row) => text(row.id) !== '')
     .map((row) => ({
       id: text(row.id),

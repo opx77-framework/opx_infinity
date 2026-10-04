@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
-import { list, text } from '@/bridge/types'
+import { text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -60,7 +60,7 @@ function toneOf(value: unknown): Tone {
 }
 
 useBridge('opx:hud:info', (payload: Payload) => {
-  lines.value = list<Payload>(payload.lines)
+  lines.value = records(payload.lines)
     .filter((row) => text(row.id) !== '')
     .map((row) => ({
       id: text(row.id),

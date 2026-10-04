@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
-import { list, num, table, text } from '@/bridge/types'
+import { num, table, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -93,7 +93,7 @@ const calleeName = computed(() =>
 
 /** Who is on the call, as names, for the header. */
 const participants = computed(() => {
-  const held = call.value === null ? [] : list<Payload>(call.value.participants)
+  const held = call.value === null ? [] : records(call.value.participants)
   return held.map((row) => text(row.name, '?')).filter((name) => name !== '')
 })
 
@@ -107,7 +107,7 @@ const inviteIsContact = computed(
 )
 
 function rowsOf(value: unknown): Row[] {
-  return list<Payload>(value)
+  return records(value)
     .map((row) => ({
       id: num(row.id),
       name: text(row.name, '?'),
@@ -128,7 +128,7 @@ useBridge('opx:calls:holo', (payload: Payload) => {
   guard('calls:holo', () => {
     open.value = payload.open === true
     contacts.value = rowsOf(payload.rows)
-    recent.value = list<Payload>(payload.recent).map((row) => ({
+    recent.value = records(payload.recent).map((row) => ({
       outcome: text(row.outcome, 'missed'),
       name: text(row.name, '?')
     }))
@@ -420,7 +420,7 @@ const shown = computed<Row[]>(() => contacts.value)
             <span class="dot" aria-hidden="true"></span>
             <span class="who op-copy op-truncate">{{ row.name }}</span>
             <span class="why op-eyebrow">
-              {{ t(OUTCOME_KEY[row.outcome] ?? 'calls.holo.outcome.missed') }}
+              {{ t(own(OUTCOME_KEY, row.outcome) ?? 'calls.holo.outcome.missed') }}
             </span>
           </li>
           <li v-if="recent.length === 0" class="empty op-copy">

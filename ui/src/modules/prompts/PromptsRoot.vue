@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { emit } from '@/bridge/channel'
 import { holdBottomRight } from '@/stores/corners'
-import { list, num, text } from '@/bridge/types'
+import { list, num, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -114,28 +114,28 @@ useBridge('opx:prompts:config', (payload: Payload) => {
 })
 
 useBridge('opx:prompts:frame', (payload: Payload) => {
-  const seenGroups: Record<string, boolean> = {}
+  const seenGroups = new Set<string>()
   const next: Group[] = []
   // One budget across the whole frame, not per group: the strip is bounded by the screen
   // it sits on, and eight groups of eight rows is a wall, not a hint.
   let rowBudget = MAX_ROWS
 
-  for (const raw of list<Payload>(payload.groups)) {
+  for (const raw of records(payload.groups)) {
     if (next.length >= MAX_GROUPS || rowBudget <= 0) break
     const key = text(raw.key)
-    if (!key || seenGroups[key]) continue
+    if (!key || seenGroups.has(key)) continue
 
-    const seenRows: Record<string, boolean> = {}
+    const seenRows = new Set<string>()
     const rows: Row[] = []
-    for (const rawRow of list<Payload>(raw.rows)) {
+    for (const rawRow of records(raw.rows)) {
       if (rowBudget <= 0) break
       const rowKey = text(rawRow.key)
-      if (!rowKey || seenRows[rowKey]) continue
+      if (!rowKey || seenRows.has(rowKey)) continue
       const caps = capsOf(rawRow)
       // A prompt with no key to name says nothing. Lua drops these too; the page repeats
       // the rule because the bus it listens on is shared with every other resource.
       if (caps.length === 0) continue
-      seenRows[rowKey] = true
+      seenRows.add(rowKey)
       rows.push({
         key: rowKey,
         caps,
@@ -149,7 +149,7 @@ useBridge('opx:prompts:frame', (payload: Payload) => {
     // An empty group is a title and no information.
     if (rows.length === 0) continue
 
-    seenGroups[key] = true
+    seenGroups.add(key)
     next.push({ key, title: t(text(raw.title)), rows })
   }
 

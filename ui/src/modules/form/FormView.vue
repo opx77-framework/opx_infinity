@@ -4,7 +4,7 @@ import type { ObjectDirective } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, text } from '@/bridge/types'
+import { num, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 
@@ -190,7 +190,7 @@ function mine(payload: Payload): boolean {
 }
 
 function readConfig(payload: Payload): void {
-  anchor.value = ANCHORS[text(payload.anchor)] ?? ANCHORS['center']
+  anchor.value = own(ANCHORS, text(payload.anchor)) ?? ANCHORS['center']
   const wide = num(payload.width)
   if (wide > 0) width.value = Math.round(wide)
   dim.value = payload.dim !== false
@@ -203,14 +203,14 @@ function readFrame(payload: Payload): void {
   status.value = text(payload.status)
   statusBad.value = payload.statusBad === true
 
-  keys.value = list<Payload>(payload.keys).map((cap) => ({
+  keys.value = records(payload.keys).map((cap) => ({
     key: text(cap.key),
     label: text(cap.label)
   }))
 
   const drawn = new Set<string>()
 
-  fields.value = list<Payload>(payload.rows).map((row) => {
+  fields.value = records(payload.rows).map((row) => {
     const named = text(row.kind, 'text')
     const kind: Field['kind'] = named === 'choice' || named === 'slider' ? named : 'text'
     const id = text(row.id)

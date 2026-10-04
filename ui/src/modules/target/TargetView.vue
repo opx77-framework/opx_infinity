@@ -3,7 +3,7 @@ import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { bool, list, num, table, text } from '@/bridge/types'
+import { bool, num, table, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { glyphPaths } from './glyphs'
@@ -870,7 +870,7 @@ function onMouseUp(): void {
 }
 
 function readRows(value: unknown): Row[] {
-  return list<Payload>(value).map((entry) => ({
+  return records(value).map((entry) => ({
     token: text(entry.token),
     label: text(entry.label),
     description: text(entry.description),

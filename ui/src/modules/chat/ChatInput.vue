@@ -3,7 +3,7 @@ import { computed, nextTick, onUnmounted, onMounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { report } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, table, text } from '@/bridge/types'
+import { list, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { setInputHeight, setInputOpen } from './state'
@@ -467,7 +467,7 @@ useBridge('opx:chat:view', (payload: Payload) => {
     case 'config':
       maxLength.value = num(payload.maxLength, 240)
       placeholder.value = text(payload.placeholder)
-      anchor.value = ANCHORS[text(payload.anchor)] ?? 'anchor-bottom-left'
+      anchor.value = own(ANCHORS, text(payload.anchor)) ?? 'anchor-bottom-left'
       offset.value = num(payload.offset, 155)
       width.value = num(payload.width, 620)
       break

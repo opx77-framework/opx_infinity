@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
-import { bool, num, table, text } from '@/bridge/types'
+import { bool, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { inputHeight, inputOpen } from './state'
@@ -143,7 +143,7 @@ useBridge('opx:chat:view', (payload: Payload) => {
 
   switch (text(payload.kind)) {
     case 'config': {
-      anchor.value = ANCHORS[text(payload.anchor)] ?? 'anchor-bottom-left'
+      anchor.value = own(ANCHORS, text(payload.anchor)) ?? 'anchor-bottom-left'
       offset.value = num(payload.offset, 155)
       width.value = num(payload.width, 620)
       history.value = num(payload.history, 60)

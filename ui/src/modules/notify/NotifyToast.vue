@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useLocale } from '@/composables/useLocale'
 import { GLYPHS } from '@/modules/target/glyphs'
+import { own } from '@/bridge/types'
 
 /**
  * ONE TOAST -- design pass 02.
@@ -79,7 +80,7 @@ const tag = computed(() => {
     Imported from the target module rather than re-declared: it is one closed set,
     now shared by three surfaces. It belongs in `design/` and moves there when this
     pass is promoted. */
-const glyph = computed<string[]>(() => (props.icon && GLYPHS[props.icon]) || [])
+const glyph = computed<string[]>(() => (props.icon && own(GLYPHS, props.icon)) || [])
 
 const barWidth = computed(() => `${Math.max(0, Math.min(1, props.progress)) * 100}%`)
 </script>

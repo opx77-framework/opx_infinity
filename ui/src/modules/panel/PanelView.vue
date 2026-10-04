@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, table, text } from '@/bridge/types'
+import { list, num, table, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { GLYPHS } from '@/modules/target/glyphs'
@@ -327,7 +327,7 @@ function label(key: string, vars?: Record<string, number | string>): string {
 }
 
 function readButtons(value: unknown): Button[] {
-  return list<Payload>(value).map((entry) => {
+  return records(value).map((entry) => {
     const icon = text(entry.icon)
     return {
       id: text(entry.id),
@@ -371,7 +371,7 @@ function apply(payload: Payload): void {
   if (given('subtitle')) view.subtitle = text(payload.subtitle)
   if (given('intro')) view.intro = text(payload.intro)
   if (given('tabs')) {
-    view.tabs = list<Payload>(payload.tabs).map((tab) => ({
+    view.tabs = records(payload.tabs).map((tab) => ({
       id: text(tab.id),
       label: text(tab.label),
       marked: tab.marked === true,
@@ -380,7 +380,7 @@ function apply(payload: Payload): void {
   }
   if (given('tab')) view.tab = text(payload.tab)
   if (given('sliders')) {
-    const incoming = list<Payload>(payload.sliders).map((entry) => ({
+    const incoming = records(payload.sliders).map((entry) => ({
       id: text(entry.id),
       label: text(entry.label),
       count: Math.max(0, num(entry.count)),
@@ -647,7 +647,7 @@ useBridge('opx:panel:items', (payload: Payload) => {
   guard('panel:items', () => {
     if (!mine(payload)) return
     const batch: Item[] = []
-    for (const entry of list<Payload>(payload.items)) {
+    for (const entry of records(payload.items)) {
       const id = text(entry.id)
       if (!id) continue
       const itemLabel = text(entry.label)

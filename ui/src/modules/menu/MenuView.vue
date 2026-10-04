@@ -3,7 +3,7 @@ import { computed, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, text } from '@/bridge/types'
+import { num, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { GLYPHS } from '@/modules/target/glyphs'
@@ -136,7 +136,7 @@ const railEnd = computed(() => anchor.value.endsWith('right'))
     Imported from the target module rather than re-declared: it is one closed set shared
     by two surfaces. It belongs in `design/` and moves there when this pass is promoted. */
 function paths(name: string): string[] {
-  return (name && GLYPHS[name]) || []
+  return (name && own(GLYPHS, name)) || []
 }
 
 const stripStyle = computed(() => {
@@ -168,7 +168,7 @@ function mine(payload: Payload): boolean {
 }
 
 function readConfig(payload: Payload): void {
-  anchor.value = ANCHORS[text(payload.anchor)] ?? ANCHORS['top-left']
+  anchor.value = own(ANCHORS, text(payload.anchor)) ?? ANCHORS['top-left']
   const wide = num(payload.width)
   if (wide > 0) width.value = Math.round(wide)
   const tall = num(payload.maxHeight)
@@ -184,7 +184,7 @@ function readFrame(payload: Payload, stagger = false): void {
   first.value = Math.max(1, num(payload.first, 1))
   total.value = num(payload.total)
 
-  const rows = list<Payload>(payload.rows)
+  const rows = records(payload.rows)
   slots.value = rows.map((row, at) => {
     const rule = row.rule === true
     const label = text(row.label)
