@@ -713,11 +713,9 @@ local function onSpawnRequested(payload)
 	CreateThread(function()
 		local spawned = M.Spawn(src, plateId)
 		if not spawned.ok then
-			-- The refusal AND a toast of the same code: nothing else in this
-			-- runtime listens for these two operations, and without the toast
-			-- the player would not know why nothing happened.
+			-- The refusal IS a toast (`core/client/notify.lua` draws every one);
+			-- the second through the platform's notifications doubled it.
 			OPX.Refuse(src, spawned.error, operation)
-			OPX.NotifyLocale(src, spawned.error, nil, 'error')
 			return
 		end
 		OPX.NotifyLocale(src, 'vehicle.spawned', { plate = plateId }, 'success')
@@ -745,13 +743,11 @@ local function onStoreRequested(payload)
 		local record = live[plateId]
 		if not data or record == nil or record.citizenId ~= data.citizenId then
 			OPX.Refuse(src, 'vehicle.notFound', operation)
-			OPX.NotifyLocale(src, 'vehicle.notFound', nil, 'error')
 			return
 		end
 		local put = M.Store(plateId)
 		if not put.ok then
 			OPX.Refuse(src, put.error, operation)
-			OPX.NotifyLocale(src, put.error, nil, 'error')
 			return
 		end
 		OPX.NotifyLocale(src, 'vehicle.stored', { plate = plateId }, 'success')

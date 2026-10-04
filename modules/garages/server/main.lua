@@ -595,11 +595,14 @@ local function onRequested(key, plate)
 	CreateThread(function()
 		local used = M.Use(src, key, plate)
 		if not used.ok then
-			-- The refusal AND a toast of the same code: without the toast the
-			-- player would not know why nothing happened.
-			OPX.Refuse(src, used.error, M.Operation.BRING)
-			OPX.NotifyLocale(src, used.error, { garage = safe(used.detail) }, 'error')
-			TriggerClientEvent(M.Event.ANSWER, src, key, false, used.error)
+			-- ONE DOOR, AND IT CARRIES THE GARAGE'S NAME. This sent the refusal, a
+			-- toast of the same code AND this answer, which the client toasts too:
+			-- three toasts for one refusal, and the refusal's copy read `Every exit
+			-- at {garage} is blocked` because a refusal carries no params. The
+			-- answer is the one the client was already reading; it now carries
+			-- the detail the sentence names.
+			TriggerClientEvent(M.Event.ANSWER, src, key, false, used.error, nil, nil,
+				safe(used.detail))
 			Open77.log.info(('[garages] player %d refused %s: %s'):format(src, safe(key),
 				tostring(used.error)))
 			return
@@ -637,7 +640,8 @@ local function onListed(key)
 	CreateThread(function()
 		local listed = M.List(src, key)
 		if not listed.ok then
-			OPX.Refuse(src, listed.error, M.Operation.LIST)
+			-- Only the list answer, which the client toasts: the refusal beside it
+			-- put the same sentence up twice.
 			TriggerClientEvent(M.Event.VEHICLES, src, { spot = key, error = listed.error })
 			return
 		end

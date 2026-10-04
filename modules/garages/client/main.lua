@@ -184,6 +184,14 @@ end
 -- Shows one message as a replaced toast, or as a log line when no toast can be
 -- raised. Refusals and successes share the one id, so the last thing said
 -- replaces the one before it rather than stacking.
+-- A refusal code as a sentence. The server answers catalogue keys, but one it
+-- passed through from the vehicle store (`query-failed`) is not one, and
+-- `locale` answers a missing key with the key itself -- on the player's screen.
+local function sentence(code, params)
+	local key = type(code) == 'string' and OPX.Locale.Exists(code) and code or 'garages.refused'
+	return locale(key, params)
+end
+
 local function say(kind, message)
 	local raised = OPX.Toast.Show({
 		id = 'opx.garages.answer',
@@ -489,12 +497,12 @@ function Runtime.Start()
 		if type(payload) ~= 'table' then return end
 		if type(payload.error) == 'string' then
 			takeDown()
-			return say('error', locale(payload.error))
+			return say('error', sentence(payload.error))
 		end
 		openList(payload)
 	end)
 
-	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate, action)
+	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate, action, garage)
 		local verdict = {
 			spot = type(key) == 'string' and key or nil,
 			ok = ok == true,
@@ -509,7 +517,7 @@ function Runtime.Start()
 		}
 		publish(verdict)
 		if not verdict.ok then
-			say('error', locale(verdict.error))
+			say('error', sentence(verdict.error, { garage = type(garage) == 'string' and garage or '' }))
 		end
 	end)
 

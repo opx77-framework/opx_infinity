@@ -7154,11 +7154,15 @@ do
 		check('and the refusal says it was the exits, not the distance or the roster',
 			answer ~= nil and answer[2] == false and answer[3] == 'garages.noFreeExit',
 			answer and tostring(answer[3]))
-		local blocked = control.notices[#control.notices]
-		check('and the player is told in game, which is what the owner asked for',
-			#control.notices > noticesBeforeBays and blocked ~= nil
-				and blocked.playerId == bays and blocked.type == 'error',
-			blocked and ('%s: %s'):format(tostring(blocked.type), tostring(blocked.message)))
+		-- THE PLAYER IS TOLD IN GAME THROUGH THE ANSWER, which the client toasts,
+		-- and through nothing else: this used to raise the refusal, a platform
+		-- notice AND the answer -- three toasts for one refusal. The answer now
+		-- carries the garage's name, which is what the sentence names.
+		check('and the answer names the garage, so the client can say which one',
+			answer ~= nil and type(answer[6]) == 'string' and answer[6] ~= '',
+			answer and tostring(answer[6]))
+		check('and it is said once, not as a second notice beside it',
+			#control.notices == noticesBeforeBays, #control.notices - noticesBeforeBays)
 
 		-- ── a car standing on its own only exit ───────────────────────────
 		-- The one occupancy that must NOT count. A single-exit garage whose own
