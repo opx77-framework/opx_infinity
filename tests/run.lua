@@ -13226,6 +13226,120 @@ do
 			contract.IsDown(PLAYER).value.down == false)
 	end
 end
+-- ── a stored down row and the join's own placement ──────────────────────────
+-- A JOIN IS A KILL AND A RESPAWN, and the scan used to read both as real. A
+-- character that disconnected down was put back down by a kill the character
+-- module's placement then respawned: the record closed as `alive` and the
+-- stored row was cleared, so quitting while down was a free revive. A death read
+-- on the join body before placement wrote the stored row back as zero seconds
+-- down. Nothing about being down is decided until the body has been placed.
+section('a stored down row waits for the join placement')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the down restore', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local PLAYER = 1
+		local downed = OPX.Modules.Get('downed')
+		control.Admit(PLAYER, 'user-restore')
+		-- The stored rows are stubbed below, so the table is as good as there:
+		-- with no database the module reads and writes nothing at all.
+		OPX.BootError = nil
+
+		local phase = 'alive'
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function()
+			return { phase = phase, position = { x = 0, y = 0, z = 0, bucket = 0 } }
+		end
+		env.Open77.players.isDead = function() return phase == 'dead' end
+		local kills = 0
+		env.Open77.players.kill = function()
+			kills = kills + 1
+			phase = 'dead'
+			return true
+		end
+
+		local body = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-1' } }
+		local character = OPX.Api.Get('character')
+		local getPlayer = character and character.GetPlayer
+		if character ~= nil then character.GetPlayer = function() return body end end
+
+		local reads, writes, clears = 0, {}, 0
+		local storage = downed.Storage
+		local read, write, clear = storage.Read, storage.Write, storage.Clear
+		storage.Read = function()
+			reads = reads + 1
+			return { downForMs = 50000, waiting = true }
+		end
+		storage.Write = function(citizenId, downForMs, waiting)
+			writes[#writes + 1] = { citizenId = citizenId, downForMs = downForMs, waiting = waiting }
+		end
+		storage.Clear = function() clears = clears + 1 end
+
+		local contract = OPX.Api.Get('downed')
+
+		-- The join body, alive and not placed yet: nothing is put back on it.
+		control.Pump(60)
+		check('A STORED DOWN ROW IS NOT PUT BACK ON A BODY THE JOIN HAS NOT PLACED',
+			kills == 0 and reads == 0, ('%d kill(s), %d read(s)'):format(kills, reads))
+
+		-- The placement's own kill, read between the kill and the respawn: not a
+		-- death, and nothing is written over the stored row.
+		phase = 'dead'
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		control.Pump(20)
+		check('a death read on the unplaced body opens no record',
+			contract.IsDown(PLAYER).value.down == false)
+		check('and writes nothing over the stored row', #writes == 0 and clears == 0,
+			('%d write(s), %d clear(s)'):format(#writes, clears))
+
+		-- The placement lands: the body is alive, where the row says.
+		phase = 'alive'
+		body.MaySample = true
+		check('once the body is placed the stored row is put back on it',
+			settle(control, function() return kills == 1 end, 80), ('%d kill(s)'):format(kills))
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('and the record resumes it, still asking for help',
+			settle(control, function()
+				local answer = contract.IsDown(PLAYER)
+				return answer.ok and answer.value.down == true and answer.value.waiting == true
+					and answer.value.downForMs >= 50000
+			end, 40))
+		check('with the row never cleared on the way', clears == 0, tostring(clears))
+
+		-- A placement that never lands is bounded: a death on a body that stayed
+		-- unplaced is counted after the grace, or nothing would ever revive it.
+		local env2, control2, why2 = boot('server')
+		if why2 == nil then
+			local OPX2 = env2.OPX
+			control2.Admit(PLAYER, 'user-unplaced')
+			OPX2.BootError = nil
+			env2.Open77.ready.isReady = function() return true end
+			env2.Open77.players.getLifeState = function()
+				return { phase = 'dead', position = { x = 0, y = 0, z = 0, bucket = 0 } }
+			end
+			env2.Open77.players.isDead = function() return true end
+			local stuck = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-2' } }
+			local character2 = OPX2.Api.Get('character')
+			if character2 ~= nil then character2.GetPlayer = function() return stuck end end
+			local storage2 = OPX2.Modules.Get('downed').Storage
+			storage2.Read = function() return nil end
+			storage2.Write = function() end
+			storage2.Clear = function() end
+			local contract2 = OPX2.Api.Get('downed')
+			control2.Pump(100)
+			check('a dead body whose placement never landed is not counted at once',
+				contract2.IsDown(PLAYER).value.down == false)
+			control2.Pump(250)
+			check('but it is counted once the grace has run out',
+				contract2.IsDown(PLAYER).value.down == true)
+		end
+
+		storage.Read, storage.Write, storage.Clear = read, write, clear
+		if character ~= nil then character.GetPlayer = getPlayer end
+	end
+end
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
