@@ -31127,6 +31127,145 @@ do
 	end
 end
 
+-- ── calls: a ring that ends for any reason ends on both screens ─────────────
+-- Three ways a ring ended on one side only: the caller went down (or the invite
+-- rang out) just as the callee answered, and the caller's sphere said
+-- "Calling..." forever; one side disconnected mid-ring, and the other screen
+-- went quiet with nothing said and nothing filed; and a contact offer told the
+-- person offering nothing at all, sent, refused or ignored.
+section('calls: a ring that ends for any reason ends on both screens')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the ring endings', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C, D = 621, 622, 623, 624
+		local recent = {}
+		for id, tag in pairs({ [A] = 'ra', [B] = 'rb', [C] = 'rc', [D] = 'rd' }) do
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			recent[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Ringer', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == 'callContacts' then
+							return { { citizenId = 'citizen-ra' }, { citizenId = 'citizen-rb' },
+								{ citizenId = 'citizen-rc' } }
+						end
+						return nil
+					end,
+					SetMetaData = function(key, value)
+						if key ~= 'callContacts' then recent[id] = value end
+					end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function lastState(playerId, mark)
+			local found
+			for index = (mark or 0) + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = sent[1]
+				end
+			end
+			return found
+		end
+		local function told(playerId, from, needle)
+			for index = from + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId and tostring(notice.message):find(needle, 1, true) then
+					return true
+				end
+			end
+			return false
+		end
+		local function filed(playerId, outcome)
+			for _, row in ipairs(type(recent[playerId]) == 'table' and recent[playerId] or {}) do
+				if type(row) == 'table' and row.outcome == outcome then return true end
+			end
+			return false
+		end
+
+		-- The caller goes down while ringing, and the callee answers.
+		ask(A, module.Event.INVITE, B)
+		local ringing = lastState(B)
+		check('A is ringing B', ringing ~= nil and ringing.invite ~= nil)
+		control.Life(A, 'dead')
+		local mark = ask(B, module.Event.ACCEPT, ringing and ringing.invite and ringing.invite.id)
+		local caller = lastState(A, mark)
+		check('an answer refused because the caller went down reaches the caller\'s screen too',
+			caller ~= nil and caller.outgoing == nil)
+		control.Life(A, 'alive')
+
+		-- The caller disconnects mid-ring: the callee has a missed call.
+		ask(A, module.Event.INVITE, B)
+		check('A rings B again', lastState(B) ~= nil and lastState(B).invite ~= nil)
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, A)
+		control.Pump(5)
+		check('a caller who leaves mid-ring stops the ring', lastState(B) ~= nil and lastState(B).invite == nil)
+		check('and leaves a missed call behind', filed(B, 'missed'))
+
+		-- The callee disconnects mid-ring: the caller is told.
+		ask(B, module.Event.INVITE, C)
+		check('B rings C', lastState(C) ~= nil and lastState(C).invite ~= nil)
+		local noticeMark = #control.notices
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, C)
+		control.Pump(5)
+		check('a callee who leaves mid-ring stops the dial tone',
+			lastState(B) ~= nil and lastState(B).outgoing == nil)
+		check('and the caller is told the call could not go through',
+			told(B, noticeMark, 'could not go through'))
+		check('and it is filed as unanswered', filed(B, 'unanswered'))
+
+		-- A contact offer: sent, refused, ignored -- the offerer hears each.
+		noticeMark = #control.notices
+		ask(B, module.Event.INVITE, D, 'contact')
+		check('offering a contact tells the person offering', told(B, noticeMark, 'contact was offered'))
+		local offered = lastState(D)
+		noticeMark = #control.notices
+		ask(D, module.Event.DECLINE, offered and offered.invite and offered.invite.id)
+		check('a refused contact offer is said to the person who offered',
+			told(B, noticeMark, 'declined'))
+	end
+end
+
+-- ── calls: going down closes the holocall panel ─────────────────────────────
+-- The down screen takes the keyboard, so neither the key nor Escape could reach
+-- the panel, and after a revive it was still open and still holding the cursor.
+section('calls: going down closes the holocall panel')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the panel', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		calls.OpenHolo()
+		check('the panel is open', calls.HoloOpen() == true)
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), { down = false })
+		check('a revive leaves an open panel open', calls.HoloOpen() == true)
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), { down = true })
+		check('and going down closes it', calls.HoloOpen() == false)
+	end
+end
+
 -- ── the eye is not where a phone lives ───────────────────────────────────────
 -- THE OWNER, having used it: "fait en sorte que cela passe pas par alt ce
 -- serais en gros fait une touche qui ouvre un menu style halogram tous se passe
