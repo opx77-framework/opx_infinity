@@ -10375,6 +10375,8 @@ do
 
 		local readPosition = env.Open77.players.position
 		env.Open77.players.position = function() return { x = 0, y = 0, z = 0, bucket = 3 } end
+		-- Past the ask's one-second floor: this is a second ask, a poll later.
+		control.Advance(1000)
 		mark = #control.clientEvents
 		control.netEvents[clothing.Event.ASK]()
 		synced = lastEvent(clothing.Event.SYNC)
