@@ -487,9 +487,12 @@ function Access.Normalize(id, raw, origin)
 	local passcode = raw.passcode
 	if passcode == false or passcode == '' then passcode = nil end
 	if passcode ~= nil then
-		-- ox's form sends a numeric code as a number.
+		-- ox's form sends a numeric code as a number. One past 2^63 has no
+		-- integer form, and `tostring(nil)` stored the code as the word "nil".
 		if type(passcode) == 'number' and passcode % 1 == 0 then
-			passcode = tostring(math.tointeger(passcode))
+			local whole = math.tointeger(passcode)
+			if whole == nil then return nil, 'bad_passcode' end
+			passcode = tostring(whole)
 		end
 		if type(passcode) ~= 'string' or #passcode > Access.MAX_PASSCODE or passcode:find('%c') then
 			return nil, 'bad_passcode'

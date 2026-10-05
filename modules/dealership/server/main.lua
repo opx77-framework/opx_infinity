@@ -127,6 +127,28 @@ local unsaved = {}
 -- is a counter: two sales settling in the same millisecond carry the same clock.
 local nextPending = 0
 
+-- ONE PER BOOT, IN EVERY LEDGER TOKEN. The clock is milliseconds since the
+-- PROCESS started and the counter starts at zero with it, so the first deposit
+-- that fails after a restart can carry exactly the token of a row still owed
+-- from before it -- and the ledger's `INSERT IGNORE` (which is what makes a retry
+-- of the same deposit harmless) then dropped the new debt in silence. A few hex
+-- digits drawn at load, beside the low digits of a fresh table's address (in case
+-- a host seeds its generator the same way every boot), make two boots' tokens two
+-- different strings.
+local bootTag = ('%04x%s'):format(math.random(0, 0xFFFF),
+	(tostring({}):match('(%x%x%x%x%x%x)$') or ''))
+
+--- The token a new ledger row is filed under.
+-- @author dop42
+-- @param kind string
+-- @param group string
+-- @return string
+function M.PendingToken(kind, group)
+	nextPending = nextPending + 1
+	return ('%s:%s:%s:%d:%d'):format(kind, tostring(group), bootTag,
+		math.floor(OPX.Now()), nextPending)
+end
+
 -- How often the ledger of owed deposits is retried, and how many rows a pass
 -- settles. A pass is a handful of statements; a minute is soon enough for money
 -- nobody is waiting at a counter for.
@@ -683,8 +705,7 @@ local function bank(kind, group, amount, plate)
 	if amount <= 0 then return true end
 	local put = Store.Deposit(kind, group, amount)
 	if put == nil or not put.ok then
-		nextPending = nextPending + 1
-		local token = ('%s:%s:%d:%d'):format(kind, tostring(group), OPX.Now(), nextPending)
+		local token = M.PendingToken(kind, group)
 		local owed = { token = token, kind = kind, group = group, amount = amount,
 			plate = plate ~= nil and tostring(plate) or nil }
 		local pended = Store.Pend(token, kind, group, amount, owed.plate)

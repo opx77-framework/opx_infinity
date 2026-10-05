@@ -803,6 +803,7 @@ function Players.Register()
 		noclip[player], mapPick[player], speedChosen[player] = nil, nil, nil
 		observeUntil[player] = nil
 		Server.ForgetHeavy(player)
+		M.Vehicles.Forget(player)
 		local wasFrozen = frozen[player] ~= nil
 		local wasWorn = M.Models.Worn(player) ~= nil
 		hidden[player], frozen[player] = nil, nil

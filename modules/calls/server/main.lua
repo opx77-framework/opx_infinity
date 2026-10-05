@@ -152,7 +152,7 @@ local function nameOf(playerId)
 	local last = type(info.lastName) == 'string' and info.lastName or ''
 	local full = (first .. ' ' .. last):gsub('^%s+', ''):gsub('%s+$', '')
 	if full == '' then return nil end
-	return (full:gsub('%c', ' ')):sub(1, 32)
+	return OPX.Text.Clean(full, 32)
 end
 
 -- What one player's screen calls another: see `labelFor` below. Declared here
@@ -1023,7 +1023,7 @@ local function departed(rawPlayerId)
 	rosterRefs[playerId] = nil
 	-- The platform clears a lease on disconnect by itself; the local record is
 	-- cleared so a recycled slot does not inherit a lease nobody holds.
-	eyesHeld[playerId] = nil
+	eyesHeld[playerId], eyesRenewedAt[playerId] = nil, nil
 	-- The cooldown windows are NOT cleared here. `core/server/answer.lua` owns
 	-- them and purges them from its own handler on the same event, and the
 	-- comment there says why it must be the one place: a window left behind
@@ -1099,7 +1099,7 @@ local function scan()
 				if on == false then
 					Open77.log.warn(('[calls] the eye-glow lease for %d was dropped; re-taking it')
 						:format(id))
-					eyesHeld[id] = nil
+					eyesHeld[id], eyesRenewedAt[id] = nil, nil
 				end
 			end
 			-- RENEWED EVERY RENEW_MS, NOT EVERY PASS. `EYES.RENEW_MS` was in the

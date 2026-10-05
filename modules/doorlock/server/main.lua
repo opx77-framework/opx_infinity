@@ -579,6 +579,40 @@ local function shallow(source)
 	return out
 end
 
+-- ── one definition write at a time ──────────────────────────────────────────
+-- THE WRITES BELOW READ `doors`, YIELD ON THE DATABASE, AND THEN WRITE `doors`
+-- from what they read. Two of them overlapping is two staff members on the same
+-- panel, or the panel and a contract caller, and it went wrong three ways: a door
+-- saved while another member deleted it was installed again after the delete
+-- (live in the world, gone from the table, back to nothing at the next boot);
+-- two doors edited onto the same native leaf both passed `holderOf` before either
+-- write landed, and the table then held two doors claiming one leaf; and two
+-- edits of one door released the leaves of a version that was no longer the one
+-- held, so a native door stayed adopted by nobody's definition. Door edits are
+-- rare and short, so they are simply taken in turn: a write waits for the one in
+-- flight, then reads `doors` afresh.
+local WRITE_WAIT_MS = 5000
+local WRITE_POLL_MS = 50
+-- A write holding the turn longer than this can only be a coroutine the host
+-- dropped mid-yield; honouring it for ever would refuse every edit until a restart.
+local WRITE_STALE_MS = 30000
+local writingSince = nil
+
+--- Runs `fn` with no other definition write in flight. Yields.
+-- @return boolean, string, any what `fn` answered, or false, 'busy'
+local function exclusively(fn, ...)
+	local deadline = OPX.Now() + WRITE_WAIT_MS
+	while writingSince ~= nil and OPX.Now() - writingSince < WRITE_STALE_MS do
+		if OPX.Now() >= deadline then return false, 'busy' end
+		Wait(WRITE_POLL_MS)
+	end
+	writingSince = OPX.Now()
+	local outcome = table.pack(pcall(fn, ...))
+	writingSince = nil
+	if not outcome[1] then error(outcome[2], 0) end
+	return table.unpack(outcome, 2, outcome.n)
+end
+
 --- Creates or rewrites a door: the one write path behind the panel's save,
 --- ox's `editDoorlock`, and the `createDoor` / `editDoor` exports. Yields.
 -- @param id integer|nil nil creates
@@ -672,7 +706,7 @@ end
 --- Deletes a door: ox's `removeDoor`. Yields.
 -- @return boolean ok
 -- @return string code
-local function removeDoor(id, by, player)
+local function removeDoorNow(id, by, player)
 	local door = doors[id or 0]
 	if door == nil then return false, 'unknown_door' end
 	local gone = Store.Delete(door.id, door.origin ~= nil, whoIs(by))
@@ -688,9 +722,11 @@ local function removeDoor(id, by, player)
 	return true, 'removed'
 end
 
+local function removeDoor(id, by, player) return exclusively(removeDoorNow, id, by, player) end
+
 --- ox's `editDoor(id, data)`: the fields given replace the door's, a type that
 --- does not match the one held is refused, and `''` clears a field.
-local function editDoor(id, data, by)
+local function editDoorNow(id, data, by)
 	local door = doors[Access.Id(id) or 0]
 	if door == nil then return false, 'unknown_door' end
 	if type(data) ~= 'table' then return false, 'bad_door' end
@@ -711,6 +747,8 @@ local function editDoor(id, data, by)
 	if data.doors ~= nil and data.doors ~= '' then merged.native = nil end
 	return writeDoor(door.id, merged, by, nil)
 end
+
+local function editDoor(id, data, by) return exclusively(editDoorNow, id, data, by) end
 
 -- ── staff ───────────────────────────────────────────────────────────────────
 
@@ -760,10 +798,14 @@ local function staffSave(player, payload)
 	end
 	local raw = shallow(payload.door)
 	raw.id = nil
-	-- The code is never sent to a panel, so a save that names none keeps the
-	-- one the door has; `''` (or false) is how the panel clears it.
-	if raw.passcode == nil and id ~= nil then raw.passcode = doors[id].passcode end
-	local ok, code, detail = writeDoor(id, raw, player, player)
+	local ok, code, detail = exclusively(function()
+		-- Asked again in turn: the door may have been removed while this waited.
+		if id ~= nil and doors[id] == nil then return false, 'unknown_door' end
+		-- The code is never sent to a panel, so a save that names none keeps the
+		-- one the door has; `''` (or false) is how the panel clears it.
+		if raw.passcode == nil and id ~= nil then raw.passcode = doors[id].passcode end
+		return writeDoor(id, raw, player, player)
+	end)
 	if not ok then return staffDone(player, 'save', false, code, { detail = detail }) end
 	staffDone(player, 'save', true, code, { id = detail, created = id == nil })
 end
@@ -960,6 +1002,7 @@ end
 -- @author dop42
 function M.Init()
 	doors, states, byNative, byOrigin = {}, {}, {}, {}
+	writingSince = nil
 	sentBucket, picking, refusedRows = {}, {}, {}
 	loaded = false
 	OPX.Schema.Add(M.Storage.SCHEMA)
@@ -1024,7 +1067,7 @@ function M.Api()
 		--- ox's `createDoor(data)`, answering the new id. Yields.
 		Create = function(data, by)
 			if type(data) ~= 'table' then return Result.Err('doorlock.error.bad_door') end
-			return written(writeDoor(nil, shallow(data), by or 'contract', nil))
+			return written(exclusively(writeDoor, nil, shallow(data), by or 'contract', nil))
 		end,
 		--- ox's `editDoor(id, data)`. Yields.
 		Edit = function(ref, data, by)

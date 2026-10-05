@@ -98,13 +98,13 @@ local function isDead(playerId)
 	return read and dead == true
 end
 
--- A player's name, stripped of control characters and cut to 32 bytes. Not
+-- A player's name, stripped of control characters, mended and cut to 32 characters. Not
 -- `OPX.Audit.Safe`: this name is also listed to a caller, and it is cut without
 -- an ellipsis.
 local function nameOf(playerId)
 	local read, name = pcall(Open77.players.name, playerId)
 	if not read or type(name) ~= 'string' then return nil end
-	return (name:gsub('%c', ' ')):sub(1, 32)
+	return OPX.Text.Clean(name, 32)
 end
 
 -- A player's finite position and bucket, or nil.
@@ -268,6 +268,13 @@ end
 local function restore(playerId, citizenId)
 	local row = M.Storage.Read(citizenId)
 	if row == nil then return end
+	-- ASKED AGAIN AFTER THE READ, WHICH YIELDS. The character that owned this
+	-- slot may have logged out, or the player left and the id went to somebody
+	-- else, while the row was on its way: killing the slot then put one
+	-- character's stored death on another's body, and the `restoring` mark left
+	-- behind silenced the down-row check for whoever held the slot next.
+	local still, current = inWorld(playerId)
+	if still ~= true or current ~= citizenId then return end
 	restoring[playerId] = { citizenId = citizenId, downForMs = row.downForMs, waiting = row.waiting }
 
 	local ok, reason = Open77.players.kill(playerId, { cause = 'script', weapon = 'opx:downed:restore' })

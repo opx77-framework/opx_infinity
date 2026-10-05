@@ -287,15 +287,43 @@ end
 -- A stack that has just left this bag fits back into it, so a failure here is
 -- not a case to handle but a case to SHOUT about: the player is owed items the
 -- server could not give back, and that line is the only trace of it.
-local function restore(player, taken)
+--
+-- TO THE CHARACTER, NOT THE CONNECTION. The refusal that sends things back can
+-- come after `Storage.Place` yielded, and by then the player may have left (the
+-- bag already unloaded, without the inputs) or switched character in the world
+-- (and the inputs went to the other one). The inventory contract takes a
+-- citizen id, online or not, and gives back to the bag they came out of.
+local function restore(citizenId, taken)
 	local inventory = M.Contracts.inventory
 	for index = #taken, 1, -1 do
-		local back = inventory.AddItem(player, taken[index].item, taken[index].count)
+		local back = inventory.AddItem(citizenId, taken[index].item, taken[index].count)
 		if type(back) ~= 'table' or not back.ok then
-			Open77.log.error(('[crafting] %dx %s could not be returned to player %d: %s')
-				:format(taken[index].count, taken[index].item, player,
+			Open77.log.error(('[crafting] %dx %s could not be returned to %s: %s')
+				:format(taken[index].count, taken[index].item, citizenId,
 					type(back) == 'table' and tostring(back.error) or 'no answer'))
 		end
+	end
+end
+
+--- Gives a price back to the character that paid it, here or not. Yields.
+-- `AddMoney` by connection answered `error.notLoggedIn` for a player who had
+-- left during the order, and the answer was never read: the money was simply
+-- gone. `AddMoneyOffline` pays a loaded character in memory and an absent one
+-- in its row, under the character module's ledger.
+local function refund(player, citizenId, recipe, bench)
+	local character = M.Contracts.character
+	local reason = ('crafting:refund:%s'):format(bench.key)
+	local paid, code
+	if type(character.AddMoneyOffline) == 'function' then
+		local answer = character.AddMoneyOffline(citizenId, recipe.money, recipe.price, reason)
+		paid = type(answer) == 'table' and answer.ok == true
+		code = type(answer) == 'table' and answer.error or nil
+	else
+		paid, code = character.AddMoney(player, recipe.money, recipe.price, reason)
+	end
+	if not paid then
+		Open77.log.error(('[crafting] %d %s could not be refunded to %s at %s: %s')
+			:format(recipe.price, tostring(recipe.money), citizenId, bench.key, tostring(code)))
 	end
 end
 
@@ -337,6 +365,10 @@ local function order(player, benchKey, recipeKey)
 	-- the player is looking at was built when they opened the screen and they may
 	-- have spent the materials since; the view is a picture and this is the
 	-- decision.
+	-- The shelf count yielded: the connection may hold another character now,
+	-- and what is taken below is taken from whoever it holds.
+	if citizenOf(player) ~= citizenId then return Result.Err(Refusal.NO_CHARACTER) end
+
 	local money = purse(player)
 	local may, why = Recipes.Allowed(recipe, carried(player, bench),
 		money[recipe.money or ''], shelf.value.cooking, bench.queue)
@@ -348,7 +380,7 @@ local function order(player, benchKey, recipeKey)
 		local input = recipe.inputs[index]
 		local removed = inventory.RemoveItem(player, input.item, input.count)
 		if type(removed) ~= 'table' or not removed.ok then
-			restore(player, taken)
+			restore(citizenId, taken)
 			return Result.Err(Refusal.SHORT)
 		end
 		taken[#taken + 1] = input
@@ -358,7 +390,7 @@ local function order(player, benchKey, recipeKey)
 		local paid, refusalKey = M.Contracts.character.RemoveMoney(player, recipe.money,
 			recipe.price, ('crafting:%s'):format(bench.key))
 		if not paid then
-			restore(player, taken)
+			restore(citizenId, taken)
 			Open77.log.info(('[crafting] player %d could not pay %d %s at %s: %s')
 				:format(player, recipe.price, recipe.money, bench.key, tostring(refusalKey)))
 			return Result.Err(Refusal.CANNOT_PAY)
@@ -371,22 +403,16 @@ local function order(player, benchKey, recipeKey)
 		-- THE SHELF FILLED BETWEEN THE CHECK ABOVE AND THE ROW: another order of
 		-- this character's landed first. Nothing was promised, so everything
 		-- taken goes back, exactly as for a row that could not be written.
-		restore(player, taken)
-		if recipe.price > 0 then
-			M.Contracts.character.AddMoney(player, recipe.money, recipe.price,
-				('crafting:refund:%s'):format(bench.key))
-		end
+		restore(citizenId, taken)
+		if recipe.price > 0 then refund(player, citizenId, recipe, bench) end
 		return Result.Err(Refusal.QUEUE_FULL)
 	end
 	if not placed.ok then
 		-- THE ROW IS LAST FOR EXACTLY THIS CASE. Everything before it has an
 		-- inverse and every inverse is run here; nothing has been promised to the
 		-- player yet, so the order simply did not happen.
-		restore(player, taken)
-		if recipe.price > 0 then
-			M.Contracts.character.AddMoney(player, recipe.money, recipe.price,
-				('crafting:refund:%s'):format(bench.key))
-		end
+		restore(citizenId, taken)
+		if recipe.price > 0 then refund(player, citizenId, recipe, bench) end
 		Open77.log.error(('[crafting] the order at %s could not be filed: %s')
 			:format(bench.key, tostring(placed.detail)))
 		return Result.Err(Refusal.UNAVAILABLE)
@@ -460,7 +486,9 @@ local function collect(player, orderId)
 	-- the one handing it over.
 	if claimed.value ~= true then return Result.Err(Refusal.NO_SUCH_ORDER) end
 
-	local given = inventory.AddItem(player, recipe.output, recipe.count)
+	-- To the character the order is filed under: the claim yielded, and a
+	-- connection that switched character meanwhile is somebody else's bag now.
+	local given = inventory.AddItem(citizenId, recipe.output, recipe.count)
 	if type(given) ~= 'table' or not given.ok then
 		local back = M.Storage.Reshelve(citizenId, bench.key, recipe.key)
 		if not back.ok then
