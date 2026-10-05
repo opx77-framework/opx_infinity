@@ -19347,12 +19347,14 @@ do
 	-- the one rule that stagger belongs to, and its name was wrong for months.
 	check('the stagger token is read by the design system',
 		system:find('var%(%-%-op%-slot') ~= nil)
-	local writers = 0
+	-- HOW MANY views stagger is the owner's call and has gone down (rows land
+	-- together on the HUD, the key strip and the form); what is asserted is that
+	-- none writes it under the old name, which is what silently broke it before.
+	local stale = {}
 	for _, path in ipairs(views) do
-		if read('ui/src/' .. path):find('%-%-op%-slot:', 1) then writers = writers + 1 end
+		if read('ui/src/' .. path):find('[^%w%-]%-%-slot:') then stale[#stale + 1] = path end
 	end
-	check('and written by the views that stagger, under the same name',
-		writers >= 5, writers)
+	check('and no view writes it under another name', #stale == 0, table.concat(stale, ', '))
 end
 
 -- copy.
@@ -38481,6 +38483,19 @@ do
 	check('no view reads the stagger under its old name', #stale == 0, table.concat(stale, ', '))
 	check('and neither does the built page', built:find('var(--slot', 1, true) == nil)
 
+	-- NO CASCADE, on the owner's word: rows land together, as the eye's do. The old
+	-- name above was what had kept these five from cascading; with it gone, the
+	-- stagger itself has to be gone too, or the rows trickle in one after another.
+	local cascading = {}
+	for _, name in ipairs({ 'hud/HudInfo', 'hud/HudStatus', 'hud/HudVitals', 'prompts/PromptsRoot',
+		'form/FormView' }) do
+		if views[name]:find('--op-slot', 1, true) or views[name]:find('%* *28ms') then
+			cascading[#cascading + 1] = name
+		end
+	end
+	check('the HUD lines, gauges and chips, the key strip and the form land together',
+		#cascading == 0, table.concat(cascading, ', '))
+
 	-- NO OS SCROLLBAR. Every rule that can scroll hides its bar, as the grids did.
 	local bare = {}
 	for _, name in ipairs(VIEWS) do
@@ -38539,6 +38554,55 @@ do
 		views['chat/ChatInput']:find('class="chat-field op-frame', 1, true) == nil)
 	check('and the chat log never runs off the screen with its newest lines',
 		(views['chat/ChatLog']:match('\n%.chat%-log%s*({[^}]*})') or ''):find('overflow:%s*hidden') ~= nil)
+
+	-- THE OWNER'S ANSWERS to the questions this pass raised.
+	check('the down screen keeps its notice line in the layout, so nothing jumps',
+		views['downed/DownedView']:find('<p v-if="notice"', 1, true) == nil
+			and (views['downed/DownedView']:match('\n%.notice%s*({[^}]*})') or ''):find('min%-height') ~= nil)
+
+	local callsWords = slurp('modules/calls/locales.lua')
+	local _, offers = callsWords:gsub("%['calls%.holo%.contactOffer'%]", '')
+	check('a contact offer under the caller\'s name does not say the name again, in both languages',
+		offers == 2 and views['calls/HoloRoot']:find("inviteIsContact ? t('calls.holo.contactOffer')", 1, true) ~= nil)
+
+	local doorWords = slurp('modules/doorlock/locales.lua')
+	local plural = true
+	for _, key in ipairs({ 'countZero', 'countOne', 'decimal' }) do
+		local _, found = doorWords:gsub("%['doorlock%.ui%." .. key .. "'%]", '')
+		if found ~= 2 then plural = false end
+	end
+	check('the door count has a zero and a one, and distances a decimal mark, in both languages',
+		plural and doorWords:find("['doorlock.ui.countOne'] = '{n} door'", 1, true) ~= nil
+			and doorWords:find("['doorlock.ui.countZero'] = '{n} porte'", 1, true) ~= nil
+			and doorWords:find("['doorlock.ui.decimal'] = ','", 1, true) ~= nil
+			and views['doorlock/DoorList']:find("t('doorlock.ui.decimal')", 1, true) ~= nil)
+
+	local chatWords = slurp('modules/chat/locales.lua')
+	check('the chat keycaps are words from the catalogue: Entrée and Échap in French',
+		chatWords:find("['chat.key.enter'] = 'Entrée'", 1, true) ~= nil
+			and chatWords:find("['chat.key.escape'] = 'Échap'", 1, true) ~= nil
+			and views['chat/ChatInput']:find('>Enter</kbd>', 1, true) == nil
+			and views['chat/ChatInput']:find('>Esc</kbd>', 1, true) == nil)
+
+	check('the hotbar peek stands on the vehicle dial rather than over it',
+		views['hud/HudVehicle']:find('holdBottomCenter(', 1, true) ~= nil
+			and views['inventory/SlotbarRoot']:find('corners.bottomCenter', 1, true) ~= nil)
+
+	-- ONE HOVER WEIGHT, the menu's. The eye's rows are the exception the owner named:
+	-- under the pointer is their cursor, the lit state, and it is drawn as one.
+	local heavy = {}
+	for _, name in ipairs(VIEWS) do
+		if name ~= 'target/TargetView' then
+			local style = (views[name]:match('<style.*') or ''):gsub('/%*.-%*/', '')
+			for selector, body in style:gmatch('([^{}]*){([^{}]*)}') do
+				local weight = body:match('%-%-aug%-border%-all:%s*([%d%.]+)px')
+				if selector:find(':hover', 1, true) and weight and weight ~= '1.5' then
+					heavy[#heavy + 1] = name .. ' ' .. selector:gsub('^%s+', ''):gsub('%s+$', '') .. ' ' .. weight
+				end
+			end
+		end
+	end
+	check('every hover frame is 1.5px, as the menu\'s is', #heavy == 0, table.concat(heavy, ' | '))
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────
