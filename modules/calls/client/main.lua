@@ -90,6 +90,9 @@ local jobs = {}
 -- built from `OPX.Event`, and the same constant `modules/menu` reads.
 local PAUSE_KEY = 'open77:pauseKey'
 
+-- When the hologram opened, for Escape's layer order.
+local holoOpenedAtMs = 0
+
 -- The view seam, and the one channel every payload travels on.
 local EVENT_VIEW = M.Event.VIEW
 
@@ -618,6 +621,7 @@ end
 function M.OpenHolo()
 	if holoOpen then return true end
 	holoOpen = true
+	holoOpenedAtMs = OPX.Now()
 	-- Drawn before the roster arrives, with whatever the last one held. The
 	-- screen must appear on the key press rather than on a round trip: a
 	-- hologram that opens a beat after the key is a hologram that feels broken.
@@ -740,7 +744,12 @@ function M.Start()
 	-- already answer false with no invite, so the guard is theirs and not a
 	-- second copy of the same question.
 	bind(M.Settings.ANSWER_KEY, 'opx.calls.answer', 'calls.key.answer',
-		function() M.Accept() end)
+		function() M.Accept() end,
+		-- Y is also the hotbar peek, which stays silent while a call rings.
+		function()
+			if state.invite ~= nil then return OPX.Spots.Key.Rank('RINGING') end
+			return nil
+		end)
 	-- THE SAME KEY HANGS UP. Refusing wins while something rings at you, then
 	-- withdrawing what you are ringing out, then leaving the call -- see
 	-- `M.DeclineOrHangUp` for why the middle one comes before the last.
@@ -765,7 +774,10 @@ function M.Start()
 	-- so binding  here would be asking for a key the platform has already
 	-- taken. Closing only when the projection is OPEN matters: the sphere pops
 	-- unbidden while a call rings, and Escape must not answer a call.
+	-- And only when it is the TOP layer: a menu opened over it takes Escape.
+	local layer = OPX.Spots.Key.Layer('calls', function() return holoOpen and holoOpenedAtMs or nil end)
 	AddEventHandler(PAUSE_KEY, function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
 		if holoOpen then M.CloseHolo() end
 	end)
 

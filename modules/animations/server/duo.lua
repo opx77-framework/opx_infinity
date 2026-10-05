@@ -219,7 +219,9 @@ end
 
 -- Tells one player how their emote with somebody went.
 local function notify(player, kind, code, params)
-	TriggerClientEvent(M.Event.NOTICE, player, kind, code, params or {})
+	-- Too far and not allowed are errors, too fast and busy warnings, whatever
+	-- the call site passed: see `OPX.Result.Kind`.
+	TriggerClientEvent(M.Event.NOTICE, player, OPX.Result.Kind(code, kind), code, params or {})
 end
 
 -- The nearest player who may be invited, or nil.

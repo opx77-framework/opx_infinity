@@ -160,7 +160,7 @@ function Runtime.Refuse(code)
 		end
 		return Runtime.Notify('warning', 'animations.error.menuNotRunning')
 	end
-	Runtime.Notify('warning', REFUSAL[code or ''] or 'animations.error.refused')
+	Runtime.Notify(OPX.Result.Kind(code, 'warning'), REFUSAL[code or ''] or 'animations.error.refused')
 end
 
 --- Answers an offered entry and its variant set, or nil.

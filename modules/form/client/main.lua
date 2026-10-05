@@ -775,6 +775,7 @@ local function Open(spec)
 
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle
+	built.openedAtMs = OPX.Now()
 	record = built
 	if spec.status ~= nil then writeStatus(record, spec.status, spec.statusBad) end
 
@@ -1091,7 +1092,10 @@ function M.Start()
 
 	-- Escape is swallowed by the plugin before any surface sees it; when it
 	-- arrives here rather than on `form:dismiss`, the reason is the pause menu.
+	-- Only as the top layer: see `OPX.Spots.Key.Layer`.
+	local layer = OPX.Spots.Key.Layer('form', function() return record and record.openedAtMs end)
 	AddEventHandler(M.Host.PAUSE_KEY, function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
 		if record ~= nil then finish('cancel', 'pause') end
 	end)
 

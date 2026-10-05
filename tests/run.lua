@@ -12891,6 +12891,139 @@ do
 end
 
 
+-- ── every code a contract answers with is a sentence ───────────────────────
+-- A `Result.Err('x.y')` reaches another resource, which shows `error` to its
+-- player as often as not. `doorlock.unknownDoor`, `prompts.limit`,
+-- `clothing.tooLarge` and a dozen like them had no catalogue entry, so the
+-- screen got the raw code. Every literal code is a written key now, and parity
+-- (above) makes it a key in both languages.
+section('every literal Result.Err code is written in the catalogue')
+do
+	local keys, files = {}, {}
+	for _, side in ipairs({ 'client', 'server', 'shared' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do files[file] = true end
+	end
+	for file in pairs(files) do
+		if file:match('locales') then
+			for line in io.lines(file) do
+				local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
+				if key then keys[key] = true end
+			end
+		end
+	end
+	local missing, seen = {}, 0
+	for file in pairs(files) do
+		local handle = io.open(file, 'r')
+		local source = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		for code in source:gmatch("Result%.Err%('([%w_]+%.[%w_%.]*[%w_])'") do
+			seen = seen + 1
+			if not keys[code] then missing[#missing + 1] = ('%s (%s)'):format(code, file) end
+		end
+	end
+	table.sort(missing)
+	check('the sweep finds the contract codes', seen > 100, seen)
+	check('and every one has a sentence', #missing == 0, table.concat(missing, '; '))
+end
+
+-- ── the places keep one pace ─────────────────────────────────────────────────
+-- A lift scanned every 2000 ms where every other place scanned at 500, so its
+-- row (and its key) came up to two seconds after the player reached the doors;
+-- teleports allowed four requests a window where the others allow six. The
+-- owner aligned both; this keeps them aligned. `ORIGINS` was a config table
+-- nothing read, and is gone rather than documented as unread.
+section('the places scan at one pace and allow one request rate')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the config read', why == nil, why)
+	if why == nil then
+		local modules = env.OPX.Config.MODULES
+		local places = { 'garages', 'dealership', 'clothing', 'teleports', 'elevators', 'doorlock' }
+		local scans = {}
+		for _, name in ipairs(places) do
+			scans[#scans + 1] = ('%s=%s'):format(name, tostring(modules[name].SCAN_MS))
+		end
+		local same = true
+		for _, name in ipairs(places) do
+			if modules[name].SCAN_MS ~= 500 then same = false end
+		end
+		check('every place scans for the nearest spot every 500 ms', same, table.concat(scans, ' '))
+		local rates = {}
+		same = true
+		for _, name in ipairs({ 'garages', 'dealership', 'teleports', 'elevators' }) do
+			local block = modules[name]
+			rates[#rates + 1] = ('%s=%s/%s'):format(name, tostring(block.REQUESTS_PER_WINDOW),
+				tostring(block.REQUEST_WINDOW_MS))
+			if block.REQUESTS_PER_WINDOW ~= 6 or block.REQUEST_WINDOW_MS ~= 10000 then same = false end
+		end
+		check('and every place allows six requests in ten seconds', same, table.concat(rates, ' '))
+		check('ORIGINS is gone from the character config, since nothing reads it',
+			modules.character.ORIGINS == nil)
+	end
+end
+
+-- ── one toast kind per situation ────────────────────────────────────────────
+-- "Too fast" was a warning in three modules and an error in the rest; "too far"
+-- an error at a lift and a warning in a duo emote. The owner's rule: too fast
+-- and busy warn, too far and not allowed are errors -- everywhere.
+section('toasts: too fast and busy warn, too far and not allowed are errors, everywhere')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the toast kinds', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local Kind = OPX.Result.Kind
+		check('too fast, in every spelling, is a warning',
+			Kind('error.tooFast', 'error') == 'warning' and Kind('too_fast', 'error') == 'warning'
+				and Kind('rate_limited', 'error') == 'warning' and Kind('vehiclekeys.tooFast', 'error') == 'warning')
+		check('busy is a warning', Kind('teleports.busy', 'error') == 'warning'
+			and Kind('duo_busy', 'error') == 'warning' and Kind('vehicle.busy', 'error') == 'warning')
+		check('too far is an error', Kind('too_far', 'warning') == 'error'
+			and Kind('garages.tooFar', 'warning') == 'error')
+		check('not allowed is an error', Kind('not_allowed', 'warning') == 'error'
+			and Kind('error.noPermission', 'warning') == 'error')
+		check('anything else keeps the kind the caller chose', Kind('expired', 'warning') == 'warning'
+			and Kind('garages.noSuchSpot', 'error') == 'error' and Kind(nil, 'info') == 'info')
+
+		control.Admit(81, 'account-kinds')
+		local function lastNotice()
+			local sent = control.clientEvents[#control.clientEvents]
+			return sent and sent[1] or nil
+		end
+		OPX.Refuse(81, 'error.tooFast', 'test')
+		check('OPX.Refuse sends too fast as a warning', (lastNotice() or {}).kind == 'warning')
+		OPX.Refuse(81, 'garages.tooFar', 'test')
+		check('and too far as an error', (lastNotice() or {}).kind == 'error')
+	end
+
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the toast kinds', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local kinds = {}
+		local realShow = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			kinds[#kinds + 1] = tostring(definition.kind)
+			return realShow(definition)
+		end
+		OPX.Toast.Locale('hauling.refused.busy', nil, 'error', 'box')
+		check('a client toast for busy is a warning, whatever the caller passed', kinds[#kinds] == 'warning',
+			kinds[#kinds])
+		local anim = OPX.Modules.Get('animations')
+		anim.Runtime.Refuse('too_far')
+		check('an emote refused as too far is an error, not the module\'s usual warning',
+			kinds[#kinds] == 'error', kinds[#kinds])
+		anim.Runtime.Refuse('rate_limited')
+		check('and one refused as too fast stays a warning', kinds[#kinds] == 'warning', kinds[#kinds])
+		local dl = OPX.Modules.Get('doorlock')
+		dl.Runtime.Say(false, 'too_fast', 'Front')
+		check('a door turned too fast warns', kinds[#kinds] == 'warning', kinds[#kinds])
+		dl.Runtime.Say(false, 'too_far', 'Front')
+		check('and a door too far away is an error', kinds[#kinds] == 'error', kinds[#kinds])
+		OPX.Toast.Show = realShow
+	end
+end
+
 -- ── every key a menu names is written, in both languages ────────────────────
 -- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
 -- never passes through that spelling: the staff menu hands a row helper its
@@ -19331,6 +19464,57 @@ do
 	end
 end
 
+-- ── crafting: a bench allows the reach its row was offered at ────────────────
+-- The eye row is offered out to the bench's reach from where the client stood;
+-- the server measures a moment behind, and a press at the edge of the row was
+-- refused as too far. Benches -- the gunsmith's among them -- allow REACH_SLACK.
+section('crafting: half a metre past the reach of a bench is still at the bench')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local contract = OPX.Api.Get('crafting')
+		local registered = contract.RegisterBench('tests:edge', { owner = 'tests', queue = 4, reach = 2.0,
+			position = { x = 0.0, y = 0.0, z = 0.0 },
+			recipes = { { KEY = 'rounds', OUTPUT = 'ammo_handgun', SECONDS = 60,
+				INPUTS = { scrap_metal = 1 } } } })
+		check('the bench registers', registered.ok == true, tostring(registered.error))
+		control.Admit(71, 'account-71')
+		local realInventory, realCharacter = crafting.Contracts.inventory, crafting.Contracts.character
+		crafting.Contracts.inventory = setmetatable({
+			GetItemCount = function() return OPX.Result.Ok(0) end,
+		}, { __index = realInventory })
+		crafting.Contracts.character = setmetatable({
+			GetPlayer = function() return { PlayerData = { citizenId = 'EDGE0001' } } end,
+			GetMoney = function() return { EDDIES = 0 } end,
+		}, { __index = realCharacter })
+
+		local function order()
+			local answer
+			env.CreateThread(function() answer = contract.Order(71, 'tests:edge', 'rounds') end)
+			settle(control, function() return answer ~= nil end, 20)
+			return answer
+		end
+		control.Stand(71, 2.5, 0.0, 0.0)
+		local edge = order()
+		-- Past the reach check, the order fails on what this stub cannot answer;
+		-- the case two metres out below proves the same path reaches the check.
+		check('half a metre past the reach is not refused as too far',
+			edge ~= nil and edge.ok == false and edge.error ~= crafting.Refusal.TOO_FAR
+				and edge.error ~= crafting.Refusal.NO_CHARACTER, edge and tostring(edge.error))
+		control.Pump(20)
+		control.Stand(71, 4.0, 0.0, 0.0)
+		local far = order()
+		check('and two metres past it is',
+			far ~= nil and far.error == crafting.Refusal.TOO_FAR, far and tostring(far.error))
+		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
+		contract.UnregisterBenches('tests')
+	end
+end
+
 -- ── crafting: the statements, and the one that makes a collection exactly-once
 -- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
 -- whether it affected a row, so the bridge is stubbed rather than the storage:
@@ -23407,6 +23591,15 @@ do
 			env.Open77.vehicles.isLocked(CAR) == false)
 		check('and says it was the distance',
 			told ~= nil and told.message == OPX.Locale.Text('vehiclekeys.tooFar'), told and told.message)
+		-- Half a metre past the eye row's own REACH: the server measures a moment
+		-- behind the client that offered the row, and allows REACH_SLACK for it.
+		control.Pump(11)
+		control.Stand(HOLDER, 2.0 + OPX.Modules.Get('vehiclekeys').REACH + 0.5, 0.0, 0.0)
+		toggle(HOLDER, { vehicleId = tostring(CAR) })
+		check('half a metre past the reach of the row, the key still turns the lock',
+			env.Open77.vehicles.isLocked(CAR) == true)
+		control.Pump(11)
+		toggle(HOLDER, { vehicleId = tostring(CAR) })
 		control.Stand(HOLDER, 0.0, 0.0, 0.0)
 		control.Pump(11)
 		told = toggle(HOLDER, { vehicleId = '999999' })
@@ -24554,12 +24747,20 @@ do
 		local prompts = OPX.Api.Get('prompts')
 		local page = control.pages[1]
 		-- Owner, prompt group and key action of each row under test.
+		-- EACH ON A KEY OF ITS OWN. Four spots underfoot on one shared E are a
+		-- contest only one of them wins, and the losers' rows step aside; this
+		-- section is about the rebind, so the four start apart and move apart.
 		local rows = {
-			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use' },
-			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use' },
-			{ owner = 'garages', group = 'spot', action = 'opx.garages.use' },
-			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use' },
+			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use', key = 'F', rebound = 'H' },
+			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use', key = 'G',
+				rebound = 'K' },
+			{ owner = 'garages', group = 'spot', action = 'opx.garages.use', key = 'J', rebound = 'L' },
+			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use', key = 'U',
+				rebound = 'O' },
 		}
+		for index = 1, #rows do control.input.keys[rows[index].action] = rows[index].key end
+		-- As the host does after any rebind: one event, no payload.
+		env.TriggerEvent('open77:keybinds:changed')
 		local function counts()
 			local seen = {}
 			for index = 1, #rows do
@@ -24607,9 +24808,9 @@ do
 			check('each module posts its row while the player stands on its spot', all(1),
 				table.concat(counts(), ','))
 
-			-- THE KEY ON THE STRIP. The player moves every row's key to H in the
-			-- pause menu and the host raises its one event, with no payload.
-			for index = 1, #rows do control.input.keys[rows[index].action] = 'H' end
+			-- THE KEY ON THE STRIP. The player moves every row's key in the pause
+			-- menu and the host raises its one event, with no payload.
+			for index = 1, #rows do control.input.keys[rows[index].action] = rows[index].rebound end
 			env.TriggerEvent('open77:keybinds:changed')
 			local drew = nil
 			for index = #page.sent, 1, -1 do
@@ -24624,7 +24825,8 @@ do
 				for _, group in ipairs(drew and drew.payload.groups or {}) do
 					if group.key == row.owner .. '/' .. row.group then cap = group.rows[1].caps[1] end
 				end
-				check(('the %s row draws the rebound key'):format(row.owner), cap == 'H', tostring(cap))
+				check(('the %s row draws the rebound key'):format(row.owner), cap == row.rebound,
+					tostring(cap))
 			end
 
 			-- THE MODULES HEAR IT TOO, and not only the strip: each re-reads whether
@@ -27065,6 +27267,14 @@ do
 			control.Stand(SHOPPER, COUNTER.x + 100.0, COUNTER.y, COUNTER.z)
 			check('a hundred metres away is too far',
 				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- Half a metre past the configured reach: the eye row is offered from
+			-- where the client stood, and the server allows REACH_SLACK for the
+			-- moment it measures behind.
+			control.Stand(SHOPPER, COUNTER.x + OPX.Config.MODULES.shops.REACH + 0.5, COUNTER.y, COUNTER.z)
+			check('half a metre past the reach is still at the counter, for the server',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil,
 				open('thrift_watson'))
 
 			-- The other side of the city -- which is where the OTHER configured
@@ -31753,11 +31963,14 @@ do
 		local refused
 		for index = mark + 1, #control.clientEvents do
 			local sent = control.clientEvents[index]
-			if type(sent[1]) == 'table' and sent[1].kind == 'error' then refused = sent[1] end
+			if type(sent[1]) == 'table' and sent[1].code ~= nil then refused = sent[1] end
 		end
 		check('an answer inside the cooldown is refused as too fast',
 			refused ~= nil and refused.code == 'calls.error.tooFast',
 			refused and refused.code)
+		-- The owner's rule: too fast is a warning, everywhere.
+		check('and too fast is a warning, not an error', refused ~= nil and refused.kind == 'warning',
+			refused and refused.kind)
 		local pushed = lastState(C, mark)
 		check('and the state goes back with it, invite and all',
 			pushed ~= nil and pushed.invite ~= nil and pushed.invite.id == invite.id)
@@ -36229,6 +36442,13 @@ do
 			and contract.GetFromName('Great Hall').ok and contract.Get(made.value).value.name == 'Great Hall')
 		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
 		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
+		check('with a code that has a sentence, naming the field in the detail',
+			wrong and wrong.error == 'doorlock.error.bad_field' and wrong.detail == 'autolock'
+				and OPX.Locale.Text(wrong.error) ~= wrong.error, wrong and tostring(wrong.error))
+		local unknown = contract.Remove(999999, 'ext:test')
+		check('and an unknown door answers a written sentence too',
+			unknown and unknown.ok == false and OPX.Locale.Text(unknown.error) ~= unknown.error,
+			unknown and tostring(unknown.error))
 		check('getAllDoors lists them by id', contract.All().ok and #contract.All().value >= 4)
 	end
 end
@@ -36521,6 +36741,190 @@ do
 		got = press()
 		control.input.captured = false
 		check('while another surface holds the keyboard, X refuses nothing', got.decline == 0, says(got))
+	end
+end
+
+section('E: only the row whose press would act is on the strip, and a picked door holds the key')
+do
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return {} end,
+			setLocked = function() return true end,
+			setInteractionAllowed = function() return true end,
+			setAutomaticClose = function() return true end,
+			setOpen = function() return true end,
+			reset = function() return true end,
+			state = function() return nil end,
+			aimed = function() return nil end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots with garages and doorlock', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local garages, dl = OPX.Modules.Get('garages'), OPX.Modules.Get('doorlock')
+		local prompts = OPX.Api.Get('prompts')
+		local garageKey = control.keyMappings.byId['opx.garages.use']
+		local doorKey = control.keyMappings.byId['opx.doorlock.use']
+		local function rows()
+			local g, d = prompts.List('garages'), prompts.List('doorlock')
+			return (g.ok and g.value.count or -1), (d.ok and d.value.count or -1)
+		end
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'g#1', label = 'G', kind = 'garage', garage = 'g', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {
+			{ id = 1, name = 'Front', ids = { DOORLOCK_IDS.front }, x = 1.6, y = 0.0, z = 0.0,
+				state = 1, reach = 2.0 },
+		} })
+		-- Both modules have seen the player, and both have scanned since.
+		settle(control, function()
+			return garages.Runtime.Report().nearest == 'g#1' and dl.Runtime.Report().nearest == 1
+		end)
+		control.Pump(12)
+		local g, d = rows()
+		check('nearer the garage spot, only the garage row is drawn', g == 1 and d == 0,
+			('%d/%d'):format(g, d))
+
+		-- A row follows its own module's scan, so the two settle a pass apart.
+		control.placement.x = 1.4
+		settle(control, function()
+			local gg, dd = rows()
+			return gg == 0 and dd == 1
+		end)
+		g, d = rows()
+		check('nearer the door, only the door row is drawn', g == 0 and d == 1, ('%d/%d'):format(g, d))
+
+		-- Rebound apart, both rows are true and both are drawn.
+		control.input.keys['opx.doorlock.use'] = 'F'
+		env.TriggerEvent('open77:keybinds:changed')
+		check('with the door rebound to F, both rows are drawn', settle(control, function()
+			local g, d = rows()
+			return g == 1 and d == 1
+		end), ('%d/%d'):format(rows()))
+		control.input.keys['opx.doorlock.use'] = 'E'
+		env.TriggerEvent('open77:keybinds:changed')
+
+		-- A LOCKPICK UNDER WAY HOLDS E, even standing nearer the garage spot: the
+		-- press neither asks for the list nor turns any door.
+		control.placement.x = 0.0
+		settle(control, function()
+			local g, d = rows()
+			return g == 1 and d == 0
+		end)
+		control.netEvents[dl.Event.PICK_GO]({ id = 1, name = 'Front', steps = { 5000 } })
+		control.Pump(1)
+		local function sent()
+			local list, door, garage = control.serverEvents, 0, 0
+			for index = 1, #list do
+				if list[index].name == dl.Event.SET_STATE then door = door + 1 end
+				if list[index].name == garages.Event.LIST then garage = garage + 1 end
+			end
+			return garage, door
+		end
+		local g0, d0 = sent()
+		garageKey.pressed()
+		doorKey.pressed()
+		control.Pump(1)
+		local g1, d1 = sent()
+		check('mid-pick, E asks for no list and turns no door', g1 == g0 and d1 == d0,
+			('%d/%d'):format(g1 - g0, d1 - d0))
+		check('and the garage row steps aside while the pick runs', settle(control, function()
+			local g = rows()
+			return g == 0
+		end), ('%d/%d'):format(rows()))
+	end
+end
+
+section('Y: the hotbar peek stays silent while a call rings')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the shared Y', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls, inventory = OPX.Modules.Get('calls'), OPX.Modules.Get('inventory')
+		local answer = control.keyMappings.byId['opx.calls.answer']
+		local peek = control.keyMappings.byId['opx.inventory.peek']
+		check('both are on Y out of the box', answer and peek and answer.key == 'Y' and peek.key == 'Y')
+		local peeks = 0
+		local realPeek = inventory.Slotbar.Peek
+		inventory.Slotbar.Peek = function() peeks = peeks + 1 end
+		local function accepts()
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == calls.Event.ACCEPT then n = n + 1 end
+			end
+			return n
+		end
+		peek.pressed()
+		answer.pressed()
+		control.Pump(1)
+		check('with nothing ringing, Y peeks the hotbar', peeks == 1, peeks)
+		control.netEvents[calls.Event.STATE]({ invite = { id = 'y1', kind = 'call', from = 2,
+			fromName = 'Judy' } })
+		local before = accepts()
+		answer.pressed()
+		peek.pressed()
+		control.Pump(1)
+		check('a call ringing, Y answers it', accepts() == before + 1, accepts() - before)
+		check('and the hotbar does not peek', peeks == 1, peeks)
+		inventory.Slotbar.Peek = realPeek
+	end
+end
+
+-- ── Escape closes the top layer, and only the top layer ─────────────────────
+-- `open77:pauseKey` reaches every listener, and every open layer closed itself
+-- on it: a menu opened over the call hologram took the hologram down with it.
+section('Escape closes the newest layer and leaves the ones under it')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the layered Escape', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		local menu, form = OPX.Api.Get('menu'), OPX.Api.Get('form')
+		local function menuOpen()
+			local state = menu.State()
+			return state.ok and state.value.open == true
+		end
+		local function formOpen()
+			local state = form.State()
+			return state.ok and state.value.open == true
+		end
+
+		calls.OpenHolo()
+		control.Pump(2)
+		local opened = menu.Open({ owner = 'test', id = 'test.top', title = 'TOP',
+			items = { { id = 'a', label = 'A' } }, on = function() end })
+		control.Pump(2)
+		check('the hologram and a menu over it are both open', calls.HoloOpen() and menuOpen(),
+			tostring(opened and opened.error))
+
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('Escape closes the menu on top', not menuOpen())
+		check('and leaves the hologram under it', calls.HoloOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('the next Escape closes the hologram', not calls.HoloOpen())
+
+		-- A form over a menu: the form goes first.
+		menu.Open({ owner = 'test', id = 'test.under', title = 'UNDER',
+			items = { { id = 'a', label = 'A' } }, on = function() end })
+		control.Pump(2)
+		form.Open({ owner = 'test', id = 'test.form', title = 'FORM',
+			fields = { { id = 'x', label = 'X' } }, on = function() end })
+		control.Pump(2)
+		check('a form over a menu: both open', menuOpen() and formOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('Escape cancels the form and keeps the menu', not formOpen() and menuOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('and the next one closes the menu', not menuOpen())
 	end
 end
 

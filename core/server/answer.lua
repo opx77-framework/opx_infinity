@@ -197,6 +197,9 @@ end
 -- @return boolean whether the host took it
 -- @return string|nil why it did not
 function OPX.NotifyLocale(source, key, params, kind)
+	-- An error or a warning takes the kind its situation calls for (too fast and
+	-- busy warn, too far and not allowed are errors): see `OPX.Result.Kind`.
+	if kind == 'error' or kind == 'warning' then kind = OPX.Result.Kind(key, kind) end
 	-- Relayed rather than swallowed: this is the door 45 of the 47 call sites use,
 	-- so dropping the answer here would put the read back where it was.
 	return OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
@@ -366,7 +369,9 @@ function OPX.Refuse(source, code, operation, icon, params)
 	source = tonumber(source)
 	if not source or source <= 0 then return end
 	TriggerClientEvent(NOTIFY, source, {
-		kind = 'error',
+		-- A refusal is an error, unless its situation is one the owner made a
+		-- warning (too fast, busy): see `OPX.Result.Kind`.
+		kind = OPX.Result.Kind(code, 'error'),
 		code = OPX.RefusalKey(code),
 		-- PARAMS, SO ONE DOOR IS ENOUGH. A refusal could not carry them, so a
 		-- module whose sentence names something (`Every exit at {garage} is

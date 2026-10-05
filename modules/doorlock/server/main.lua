@@ -699,7 +699,9 @@ local function editDoor(id, data, by)
 		if field ~= 'id' then
 			local current = merged[field]
 			if current ~= nil and value ~= '' and type(current) ~= type(value) then
-				return false, 'bad_' .. tostring(field)
+				-- One code, the field in the detail: `bad_<field>` was a code per
+				-- field a caller might send, and no catalogue can name them all.
+				return false, 'bad_field', tostring(field)
 			end
 			if value == '' then merged[field] = nil else merged[field] = value end
 		end
@@ -970,8 +972,11 @@ local function public(door)
 end
 
 --- A write's three answers as a contract Result.
+-- The code is answered under `doorlock.error.`, the family the panel already
+-- writes a sentence for every write refusal in: as `doorlock.<code>` it was a
+-- name a calling resource could show and no catalogue had ever written.
 local function written(ok, code, detail)
-	if not ok then return Result.Err('doorlock.' .. tostring(code), detail) end
+	if not ok then return Result.Err('doorlock.error.' .. tostring(code), detail) end
 	return Result.Ok(detail)
 end
 
@@ -1018,7 +1023,7 @@ function M.Api()
 		end,
 		--- ox's `createDoor(data)`, answering the new id. Yields.
 		Create = function(data, by)
-			if type(data) ~= 'table' then return Result.Err('doorlock.bad_door') end
+			if type(data) ~= 'table' then return Result.Err('doorlock.error.bad_door') end
 			return written(writeDoor(nil, shallow(data), by or 'contract', nil))
 		end,
 		--- ox's `editDoor(id, data)`. Yields.

@@ -18,6 +18,7 @@
 --   inventory.ui.<key>                 the words the page draws
 
 OPX.Locale.Register('en', {
+	['inventory.noOwner'] = 'That container belongs to nobody who can be found.',
 
 	['inventory.ui.bag'] = 'Bag',
 	['inventory.ui.ground'] = 'Ground',
@@ -387,6 +388,7 @@ OPX.Locale.Register('en', {
 })
 
 OPX.Locale.Register('fr', {
+	['inventory.noOwner'] = "Ce contenant n'appartient à personne de connu.",
 
 	['inventory.ui.bag'] = 'Sac',
 	['inventory.ui.ground'] = 'Sol',

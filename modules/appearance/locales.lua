@@ -8,6 +8,9 @@
 -- published and logged.
 
 local EN = {
+	['clothing.invalid'] = 'Those clothes could not be read as an outfit.',
+	['clothing.tooLarge'] = 'That outfit is too large to save.',
+	['clothing.unreadable'] = 'The saved clothes could not be read.',
 	['appearance.saved'] = 'Appearance saved.',
 	['appearance.saveFailed'] = 'Your appearance was not saved. Try again.',
 	['appearance.saveTimedOut'] = 'Appearance was not saved: nothing answered.',
@@ -106,6 +109,9 @@ local EN = {
 }
 
 local FR = {
+	['clothing.invalid'] = "Ces vêtements n'ont pas pu être lus comme une tenue.",
+	['clothing.tooLarge'] = 'Cette tenue est trop volumineuse pour être enregistrée.',
+	['clothing.unreadable'] = "Les vêtements enregistrés n'ont pas pu être lus.",
 	['appearance.saved'] = 'Apparence enregistrée.',
 	['appearance.saveFailed'] = "Votre apparence n'a pas été enregistrée. Réessayez.",
 	['appearance.saveTimedOut'] = "L'apparence n'a pas été enregistrée : personne n'a répondu.",

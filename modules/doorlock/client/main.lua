@@ -64,6 +64,8 @@ local bucket, mode, staff = 0, 'local', nil
 -- The door the player stands at (ox's ClosestDoor), the row drawn for it, and
 -- whether the key mapping answered.
 local nearest, shown, keyRegistered = nil, nil, false
+-- The distance to `nearest` the last scan measured, for the key's claim.
+local nearestDistance = nil
 
 -- Native ids this client put into a state, to the state it put them in.
 local applied = {}
@@ -125,7 +127,7 @@ function Runtime.Say(ok, code, name)
 	if not OPX.Locale.Exists(key) then key = ok and 'doorlock.answer.done' or 'doorlock.error.invalid' end
 	local raised = OPX.Toast.Show({
 		id = 'opx.doorlock.answer',
-		kind = ok and 'success' or 'error',
+		kind = ok and 'success' or OPX.Result.Kind(code, 'error'),
 		title = locale('doorlock.title'),
 		message = locale(key, { door = name or '' }),
 		icon = 'lock',
@@ -234,7 +236,11 @@ end
 local function syncPrompt()
 	if M.Panel ~= nil and M.Panel.Picking() then return end
 	local door = nil
-	if keyRegistered and nearest ~= nil and not nearest.hideUi and not captured() then door = nearest end
+	-- The claim on the shared key is filed every scan, row or no row.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	if keyRegistered and nearest ~= nil and not nearest.hideUi and not captured() and wins then
+		door = nearest
+	end
 	local signature = door and (door.id .. ':' .. door.state) or nil
 	if signature == shown then return end
 	local api = OPX.Api.Get('prompts')
@@ -268,7 +274,7 @@ function Runtime.Redraw() shown = nil end
 local function scan()
 	local x, y, z = position()
 	if x ~= nil then sweep(x, y, z) end
-	nearest = findNearest()
+	nearest, nearestDistance = findNearest()
 	syncPrompt()
 	enforce()
 end
@@ -309,6 +315,8 @@ end
 -- @return boolean whether something happened
 function Runtime.Use(origin)
 	if M.Panel ~= nil and M.Panel.Picking() then return M.Panel.Confirm() end
+	-- Mid-pick, E is the pick's: it neither turns this door nor any other.
+	if picking ~= nil then return false end
 	local door = findNearest()
 	-- NOT A WORD AWAY FROM A DOOR. E belongs to six modules, and every one of
 	-- them is silent where it has nothing to do.
@@ -529,7 +537,7 @@ local function install(list)
 		if list.index[leaf] == nil and native ~= nil then releaseNative(native, leaf) end
 	end
 	doors, byNative, order, near, cursor = list.doors, list.index, list.order, list.near, 0
-	nearest = findNearest()
+	nearest, nearestDistance = findNearest()
 	shown = nil
 end
 
@@ -724,9 +732,14 @@ function Runtime.Start()
 		-- The panel's "Pick in world" step first: the player is aiming a door
 		-- for the panel, and E confirms it whatever else is near. Then the door
 		-- the player stands at, at the rank of every other spot.
-		wants = function()
+		wants = function(x)
 			if M.Panel ~= nil and M.Panel.Picking() then return OPX.Spots.Key.Rank('PICK') end
-			local door, distance = findNearest()
+			-- A lockpick under way: the door being worked on holds E, however near
+			-- a garage or a lift stands. The press itself does nothing (`Use`).
+			if picking ~= nil then return OPX.Spots.Key.Rank('PICK') end
+			-- A press measures now; a row's claim (no position) reads the scan's.
+			local door, distance = nearest, nearestDistance
+			if x ~= nil then door, distance = findNearest() end
 			if door == nil then return nil end
 			return OPX.Spots.Key.Rank('SPOT'), distance
 		end,

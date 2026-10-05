@@ -51,6 +51,8 @@ local markers = OPX.Spots.Markers.New({
 -- The entrance the player is standing on, whether its row is up, and whether a
 -- trip this client asked for is still unanswered.
 local nearest, shown, asking = nil, false, false
+-- The squared distance to `nearest` the last scan measured, for the key's claim.
+local nearestSq = nil
 
 -- When `asking` was set, and how long it may stay set without an answer: the
 -- server's own `FLIGHT_MAX_MS`. A latch only an answer could open was a latch a
@@ -168,7 +170,10 @@ end
 -- key that does nothing and guessing why -- which is how "the teleport is
 -- broken" gets reported about a teleport that is working exactly as configured.
 local function syncPrompt()
-	local want = nearest ~= nil and keyLabel() ~= nil and not captured()
+	-- The claim on the shared key is filed every scan, row or no row, and the
+	-- row is drawn only when no other feature on that key would take the press.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	local want = nearest ~= nil and keyLabel() ~= nil and not captured() and wins
 	local label = nearest ~= nil and nearest.label or nil
 	local locked = nearest ~= nil and not nearest.allowed
 	local wanted = want and (label .. (locked and '\1locked' or '')) or nil
@@ -301,7 +306,7 @@ function Runtime.Use(origin)
 	end
 
 	publish(result)
-	say('error', locale(result.error, { reason = result.reason or '' }))
+	say(OPX.Result.Kind(result.error, 'error'), locale(result.error, { reason = result.reason or '' }))
 	return result
 end
 
@@ -348,7 +353,7 @@ local function scan()
 		markers.Reconcile(entrances, nil, nil)
 		return
 	end
-	nearest = Access.Nearest(entrances, at.x, at.y, at.z)
+	nearest, nearestSq = Access.Nearest(entrances, at.x, at.y, at.z)
 	syncPrompt()
 	markers.Reconcile(entrances, at.x, at.y)
 end
@@ -375,7 +380,7 @@ function Runtime.Start()
 		onPress = Runtime.Use,
 		wants = function(x, y)
 			if nearest == nil then return nil end
-			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y, nearestSq)
 		end,
 	})
 
@@ -418,7 +423,7 @@ function Runtime.Start()
 			say('success', locale('teleports.arrived',
 				{ place = type(reason) == 'string' and reason or '' }))
 		else
-			say('error', refusalText(code, reason))
+			say(OPX.Result.Kind(code, 'error'), refusalText(code, reason))
 		end
 		-- A refusal that was about the GATE means the client's copy of `allowed`
 		-- disagreed with the server's, so re-ask rather than wait out the poll.

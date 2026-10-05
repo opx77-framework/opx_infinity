@@ -200,7 +200,11 @@ local function shopAt(source, key)
 	if position.bucket ~= shop.bucket then return nil, 'too_far' end
 
 	local dx, dy, dz = position.x - shop.x, position.y - shop.y, position.z - shop.z
-	if math.sqrt(dx * dx + dy * dy + dz * dz) > tuning.reach then return nil, 'too_far' end
+	-- With the server's slack (`REACH_SLACK`): the eye row is offered out to
+	-- REACH from where the client stood, a moment ahead of this position.
+	if math.sqrt(dx * dx + dy * dy + dz * dz) > OPX.Spots.ServerReach(tuning.reach) then
+		return nil, 'too_far'
+	end
 
 	if not passes(source, shop.jobs, shop.onDuty) then return nil, 'not_for_you' end
 	return shop
