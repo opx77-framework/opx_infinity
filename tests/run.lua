@@ -39448,6 +39448,550 @@ do
 	end
 end
 
+-- ── hostile net events ───────────────────────────────────────────────────────
+-- Every server handler a client can reach, treated as what it is: a function
+-- whose arguments a stranger chose. The battery below is not a list of the
+-- events somebody remembered to test -- it walks `control.netEvents`, so a door
+-- added tomorrow is in it tomorrow, and a door nobody meant to open is found
+-- the day it opens.
+--
+-- What a hostile payload may NOT do, whatever it is:
+--   * raise out of the handler, or kill a thread the handler started;
+--   * reach another player: a direct event, a broadcast, or a toast;
+--   * write a row that names the other player, or move the sender's money;
+--   * leave state behind that grows with the number of distinct payloads.
+-- A door that legitimately reaches other players is named, with why, below.
+
+--- The bridge every hostile section boots with: it answers everything, so a
+--- handler is judged on what it decided, not on a database that said no.
+local function hostileBridge()
+	return Host.Database({
+		query = function() return {} end,
+		single = function() return nil end,
+		scalar = function() return 0 end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		transaction = function() return true end,
+	})
+end
+
+--- A world prop stub that refuses: enough for `hauling` to wire its doors.
+local function hostileProps(sandbox)
+	if sandbox.Open77.props == nil then
+		sandbox.Open77.props = { create = function() return nil, 'world_unavailable' end }
+	end
+end
+
+--- Plays one net event the way the host does: on a task, with `source` set for
+--- every resume, pumping between yields. Answers false and the raise, if any.
+local function fireNet(env, control, name, src, args)
+	local fn = control.netEvents[name]
+	local thread = coroutine.create(function() fn(table.unpack(args, 1, args.n)) end)
+	for _ = 1, 60 do
+		env.source = src
+		local ok, err = coroutine.resume(thread)
+		env.source = nil
+		if not ok then return false, err end
+		if coroutine.status(thread) == 'dead' then break end
+		control.Pump(1)
+	end
+	control.Pump(2)
+	return true
+end
+
+--- Empties the recordings a long battery would otherwise grow without bound.
+local function hostileReset(control)
+	for _, kind in ipairs({ 'debug', 'info', 'warn' }) do
+		local list = control.log[kind]
+		for index = #list, 1, -1 do list[index] = nil end
+	end
+	for _, list in ipairs({ control.clientEvents, control.notices, control.database.calls }) do
+		for index = #list, 1, -1 do list[index] = nil end
+	end
+end
+
+section('hostile net events: every server door survives a battery of bad input')
+do
+	local env, control, why = boot('server', hostileBridge(), hostileProps)
+	check('the server boots for the battery', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local ATTACKER, VICTIM, IDLE = 901, 902, 903
+		local attacker = standCharacter(env, control, ATTACKER, OPX.CitizenId.Generate())
+		local victim = standCharacter(env, control, VICTIM, OPX.CitizenId.Generate(),
+			{ EDDIES = 777, BANK = 0 })
+		-- A slot the host admitted and nothing loaded a character on: a client on
+		-- the character screen, which can send every event the others can.
+		control.Admit(IDLE, 'account-idle')
+		local victimCitizen = victim.PlayerData.citizenId
+
+		local names = {}
+		for name in pairs(control.netEvents) do names[#names + 1] = name end
+		table.sort(names)
+		-- Non-vacuity: a harness that found no doors would pass everything. 87 at
+		-- the time of writing; a door removed on purpose lowers this on purpose.
+		check('the battery finds every door the server opened', #names >= 85, #names)
+		local offChannel = {}
+		for _, name in ipairs(names) do
+			if name:sub(1, 8) ~= 'opx:net:' then offChannel[#offChannel + 1] = name end
+		end
+		check('and every one of them is on the net channel', #offChannel == 0,
+			table.concat(offChannel, ', '))
+
+		-- Doors that reach other players BY DESIGN, and the event they do it on.
+		-- Anything else reaching the victim, or everybody, is a finding.
+		local REACHES = {
+			-- A chat line goes to every client; a hostile one is cleaned first.
+			['opx:net:chat:say'] = { ['opx:net:chat:message'] = true },
+		}
+		-- What reaches every client on a clock, whoever is pumping.
+		local PERIODIC = { ['opx:net:weather:sync'] = true, ['opx:net:admin:doors'] = true }
+
+		local function deep(levels)
+			local root = {}
+			local cursor = root
+			for _ = 1, levels do
+				cursor.x = {}
+				cursor[1] = cursor.x
+				cursor = cursor.x
+			end
+			return root
+		end
+		local function wide(count)
+			local out = {}
+			for index = 1, count do out[index] = index; out['k' .. index] = 'vvvvvvvvvv' end
+			return out
+		end
+		local VALUES = {
+			{ 'nil', nil }, { 'true', true }, { 'zero', 0 }, { 'negative', -1 },
+			{ 'nan', 0 / 0 }, { 'inf', math.huge }, { '-inf', -math.huge }, { 'huge', 2 ^ 63 },
+			{ 'maxint', math.maxinteger }, { 'fraction', 1.5 }, { 'empty', '' },
+			{ 'long', ('A'):rep(10000) }, { 'utf8', '\255\254\192\128\237\160\128' },
+			{ 'control', 'a\nb\0c' }, { 'deep', deep(200) }, { 'wide', wide(1500) },
+			{ 'victim', VICTIM }, { 'victimText', tostring(VICTIM) }, { 'unknown', 77777 },
+			{ 'citizen', victimCitizen },
+		}
+		-- Every field name a server handler reads off a payload, so a table full
+		-- of the hostile value reaches past each handler's first type check.
+		local FIELDS = {}
+		for field in ([[id key name index leg step reason state code text target slot fromSlot
+			toSlot count container from to vehicleId plate door doors passcode finished heading
+			firstName lastName citizenId snapshot family clothing look shop amount mode yaw z
+			x y requestId inviteId orderId benchKey recipeKey entry garage spot floor sequence
+			body equipment wardrobe timeoutMs result placed metadata groups items label
+			maxDistance owner kind term seek]]):gmatch('%S+') do
+			FIELDS[#FIELDS + 1] = field
+		end
+		local function filled(value)
+			local out = {}
+			for _, field in ipairs(FIELDS) do out[field] = value end
+			return out
+		end
+		local function shapes(value)
+			local function pack(...) return { n = select('#', ...), ... } end
+			return {
+				pack(), pack(value), pack(value, value, value),
+				pack(value, value, value, value, value, value),
+				pack('x', value, value), pack(1, value, value), pack(filled(value)),
+				pack(1, 'move', filled(value)), pack(1, 'give', filled(value)),
+				pack(1, 'openTrunk', filled(value)), pack(value, filled(value)),
+			}
+		end
+
+		local raised, died, reached, wrote, charged = {}, {}, {}, {}, {}
+		-- Whether a door named in REACHES was ever seen reaching: the proof that
+		-- the reach check can see a reach at all.
+		local sawReach = false
+		local function note(list, line)
+			if #list < 8 then list[#list + 1] = line end
+		end
+
+		for _, name in ipairs(names) do
+			for _, pair in ipairs(VALUES) do
+				for _, args in ipairs(shapes(pair[2])) do
+					for _, src in ipairs({ ATTACKER, IDLE }) do
+						hostileReset(control)
+						local errors = #control.log.error
+						-- Past every floor, so the payload reaches the validation
+						-- behind it rather than bouncing off a window each time.
+						control.Advance(120000)
+						local label = ('%s %s/%d@%d'):format(name, pair[1], args.n, src)
+						local ok, failure = fireNet(env, control, name, src, args)
+						if not ok then note(raised, label .. ': ' .. tostring(failure):sub(1, 160)) end
+						for index = errors + 1, #control.log.error do
+							note(died, label .. ': ' .. tostring(control.log.error[index]):sub(1, 160))
+						end
+						for _, sent in ipairs(control.clientEvents) do
+							local outward = sent.source == VICTIM or sent.source == -1
+							if outward and REACHES[name] and REACHES[name][sent.name] then
+								sawReach = true
+							elseif outward and not PERIODIC[sent.name] then
+								note(reached, ('%s -> %s @%s'):format(label, sent.name,
+									tostring(sent.source)))
+							end
+						end
+						for _, notice in ipairs(control.notices) do
+							if notice.playerId == VICTIM then note(reached, label .. ' -> toast') end
+						end
+						for _, call in ipairs(control.database.calls) do
+							-- The autosave of every loaded character runs on the clock the
+							-- battery moves, and writes the victim's own row; that is
+							-- the one write naming them that no payload caused.
+							if call.method ~= 'query' and call.method ~= 'single'
+								and call.method ~= 'scalar'
+								and not tostring(call.sql):find('UPDATE opx77_characters', 1, true) then
+								local text = env.json.encode(call.params or {})
+								if text:find(victimCitizen, 1, true) then
+									note(wrote, ('%s: %s'):format(label, tostring(call.sql):sub(1, 60)))
+								end
+							end
+						end
+						if attacker.PlayerData.money.EDDIES ~= 500
+							or victim.PlayerData.money.EDDIES ~= 777 then
+							note(charged, label)
+							attacker.PlayerData.money.EDDIES = 500
+							victim.PlayerData.money.EDDIES = 777
+						end
+					end
+				end
+			end
+		end
+		hostileReset(control)
+		check('no hostile payload raises out of any door', #raised == 0, table.concat(raised, '\n'))
+		check('and none kills a thread or logs an error', #died == 0, table.concat(died, '\n'))
+		check('none reaches another player, alone or in a broadcast', #reached == 0,
+			table.concat(reached, '\n'))
+		check('and the check can see a reach: the chat line meant to go out did', sawReach)
+		check('none writes a row naming another player\'s character', #wrote == 0,
+			table.concat(wrote, '\n'))
+		check('and none moves anybody\'s money', #charged == 0, table.concat(charged, '\n'))
+
+		-- REPLAY. The same packet twenty times in one breath, inside every window:
+		-- a door that doubles an effect on a replay doubles it here.
+		local replayed = {}
+		for _, name in ipairs(names) do
+			hostileReset(control)
+			control.Advance(120000)
+			for _ = 1, 20 do
+				local ok, failure = fireNet(env, control, name, ATTACKER,
+					{ n = 3, 1, 'x', { id = 1, key = 'x' } })
+				if not ok then note(replayed, name .. ': ' .. tostring(failure):sub(1, 160)) end
+			end
+			if attacker.PlayerData.money.EDDIES ~= 500 then
+				note(replayed, name .. ': money moved')
+				attacker.PlayerData.money.EDDIES = 500
+			end
+		end
+		check('a packet replayed twenty times raises nowhere and charges nothing', #replayed == 0,
+			table.concat(replayed, '\n'))
+
+		-- GROWTH. Distinct payloads from one player, many of them: whatever a door
+		-- keeps per request has to be bounded per PLAYER, not per payload. Judged
+		-- against a door that keeps nothing, so the harness's own churn cancels.
+		control.netEvents['opx:net:tests:noop'] = function() end
+		local function grows(name)
+			hostileReset(control)
+			collectgarbage('collect')
+			collectgarbage('collect')
+			local before = collectgarbage('count')
+			for index = 1, 150 do
+				control.Advance(120000)
+				local unique = 'u' .. index
+				local payload = filled(index % 2 == 0 and unique or (100000 + index))
+				fireNet(env, control, name, ATTACKER, { n = 4, index, unique, payload, index })
+				hostileReset(control)
+			end
+			collectgarbage('collect')
+			collectgarbage('collect')
+			return collectgarbage('count') - before
+		end
+		local baseline = math.max(grows('opx:net:tests:noop'), grows('opx:net:tests:noop'))
+		control.netEvents['opx:net:tests:noop'] = nil
+		local growing = {}
+		for _, name in ipairs(names) do
+			local delta = grows(name) - baseline
+			if delta > 48 then growing[#growing + 1] = ('%s +%.0f KB'):format(name, delta) end
+		end
+		check('no door keeps more state the more distinct payloads it is sent', #growing == 0,
+			table.concat(growing, ', '))
+	end
+end
+
+-- Each finding the battery's audit turned up, held to its own fix. The battery
+-- above proves no door raises or reaches a stranger; these prove the specific
+-- decisions behind the doors that were wrong.
+section('hostile net events: the findings, one by one')
+do
+	local env, control, why = boot('server', hostileBridge(), hostileProps)
+	check('the server boots for the findings', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local P, OTHER = 911, 912
+		local player = standCharacter(env, control, P, OPX.CitizenId.Generate())
+		standCharacter(env, control, OTHER, OPX.CitizenId.Generate())
+		local function fire(name, ...)
+			control.Advance(120000)
+			return fireNet(env, control, name, P, table.pack(...))
+		end
+		local function sentTo(name, from)
+			local found
+			for index = from + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == P then found = sent end
+			end
+			return found
+		end
+		local function lastNotice(from)
+			local found
+			for index = from + 1, #control.notices do
+				if control.notices[index].playerId == P then found = control.notices[index] end
+			end
+			return found
+		end
+		local DOWN_TEXT = OPX.Locale.Text('error.incapacitated')
+		-- Back on their feet, as far as every source is concerned: the downed
+		-- module saw the death on its own scan, and has to see the life too.
+		local function standUp()
+			control.Life(P, 'alive')
+			return settle(control, function()
+				control.Advance(1000)
+				return not OPX.Life.Down(P)
+			end, 200)
+		end
+
+		-- ── OPX.Life.Down: one question, two sources ────────────────────────
+		check('a living player is not down', OPX.Life.Down(P) == false)
+		control.Life(P, 'dead')
+		check('a body the host calls dead is down', OPX.Life.Down(P) == true)
+		check('the player is back on their feet', standUp())
+		check('and the console, or nothing at all, never is',
+			OPX.Life.Down(0) == false and OPX.Life.Down(nil) == false and OPX.Life.Down('x') == false)
+		local downed = OPX.Api.Get('downed')
+		local realIsDown = downed.IsDown
+		downed.IsDown = function() return OPX.Result.Ok({ down = true }) end
+		check('the downed contract saying so is enough on its own', OPX.Life.Down(P) == true)
+		downed.IsDown = function() error('boom') end
+		check('and a contract that raises is not a player on the floor', OPX.Life.Down(P) == false)
+		downed.IsDown = realIsDown
+
+		-- ── calls: a contact offer says nothing about a stranger out of reach ─
+		-- Asked of the model directly, so the order of its questions is what is
+		-- tested and not the positions the harness happens to give two slots.
+		local Model = OPX.Modules.Get('calls').Model
+		local function registryWith(near)
+			return Model.New({ now = function() return 0 end, ttlMs = 30000,
+				judge = function(id) if id == 2 then return false, 'notAlive' end return true end,
+				near = function() return near end })
+		end
+		local _, far = registryWith(false).Consider(1, 2, 'contact')
+		check('a contact offer to a downed player across the map answers only tooFar',
+			far == 'tooFar', tostring(far))
+		local _, close = registryWith(true).Consider(1, 2, 'contact')
+		check('the same offer in reach still says why it cannot go', close == 'targetNotAlive',
+			tostring(close))
+		local _, call = registryWith(false).Consider(1, 2, nil)
+		check('and a call, which reaches the absent on purpose, still asks no distance',
+			call == 'targetNotAlive', tostring(call))
+
+		-- ── vehicles: no client door spawns or stores a car ──────────────────
+		check('nothing answers opx:net:vehicles:spawn any more',
+			control.netEvents['opx:net:vehicles:spawn'] == nil)
+		check('nor opx:net:vehicles:store', control.netEvents['opx:net:vehicles:store'] == nil)
+		local vehicles = OPX.Api.Get('vehicles')
+		check('the contract garages and staff use is untouched',
+			type(vehicles.Spawn) == 'function' and type(vehicles.Store) == 'function')
+
+		-- ── clothing: the list is asked once a second, and never from the floor ─
+		local clothing = OPX.Modules.Get('clothing')
+		local mark = #control.clientEvents
+		env.source = P
+		control.netEvents[clothing.Event.ASK]()
+		control.netEvents[clothing.Event.ASK]()
+		control.netEvents[clothing.Event.ASK]()
+		env.source = nil
+		local lists = 0
+		for index = mark + 1, #control.clientEvents do
+			if control.clientEvents[index].name == clothing.Event.SYNC then lists = lists + 1 end
+		end
+		check('three asks in one breath are answered once', lists == 1, lists)
+		control.commands['opx.clothing.add'].run(P, {})
+		control.Pump(8)
+		local appearance = OPX.Api.Get('appearance')
+		local realAllow = appearance.AllowClothingSave
+		local granted = 0
+		appearance.AllowClothingSave = function(...)
+			granted = granted + 1
+			return realAllow(...)
+		end
+		control.Life(P, 'dead')
+		fire(clothing.Event.OPEN)
+		check('a store key pressed from the floor grants no save', granted == 0, granted)
+		check('the player is back on their feet', standUp())
+		fire(clothing.Event.OPEN)
+		check('and the same key standing up does', granted == 1, granted)
+		appearance.AllowClothingSave = realAllow
+
+		-- ── shops: an outfit id is a row id or nothing ──────────────────────
+		local shops = OPX.Modules.Get('shops')
+		local outfitReads = function(from)
+			local count = 0
+			for index = from + 1, #control.database.calls do
+				if tostring(control.database.calls[index].sql):find('opx77_saved_outfits', 1, true) then
+					count = count + 1
+				end
+			end
+			return count
+		end
+		local bad = {}
+		for _, id in ipairs({ 0 / 0, math.huge, -math.huge, 1e300, -1, 0, 1.5, 2 ^ 40 }) do
+			local from = #control.database.calls
+			fire(shops.Event.LOAD, { id = id })
+			if outfitReads(from) > 0 then bad[#bad + 1] = tostring(id) end
+		end
+		check('an outfit id that cannot be a row is refused before any statement',
+			#bad == 0, table.concat(bad, ', '))
+		local from = #control.database.calls
+		fire(shops.Event.LOAD, { id = 7 })
+		check('and a real one is still looked up', outfitReads(from) > 0)
+
+		control.Stand(P, -1180.0, 1550.0, 25.0)
+		local realOpen = appearance.OpenWardrobe
+		local opened = 0
+		appearance.OpenWardrobe = function() opened = opened + 1; return true end
+		control.Life(P, 'dead')
+		local noticed = #control.notices
+		fire(shops.Event.OPEN, 'thrift_watson')
+		local told = lastNotice(noticed)
+		check('a shop does not open its room to somebody on the floor', opened == 0, opened)
+		check('and says why', told ~= nil and told.message == OPX.Locale.Text('shops.downed'),
+			told and told.message)
+		check('the player is back on their feet', standUp())
+		fire(shops.Event.OPEN, 'thrift_watson')
+		check('standing, the same counter opens it', opened == 1, opened)
+		appearance.OpenWardrobe = realOpen
+		control.Stand(P, 0.0, 0.0, 0.0)
+
+		-- ── crafting: a refusal names back a bench key or nothing ────────────
+		local crafting = OPX.Modules.Get('crafting')
+		mark = #control.clientEvents
+		fire(crafting.Event.OPEN, { 'a table is not a bench' })
+		local refused = sentTo(crafting.Event.REFUSED, mark)
+		check('a table sent as a bench key does not come back as its heap address',
+			refused ~= nil and refused[1] == '', refused and tostring(refused[1]))
+		mark = #control.clientEvents
+		fire(crafting.Event.OPEN, ('B'):rep(10000))
+		refused = sentTo(crafting.Event.REFUSED, mark)
+		check('nor does ten thousand bytes of one', refused ~= nil and refused[1] == '',
+			refused and #tostring(refused[1]))
+		local contract = OPX.Api.Get('crafting')
+		contract.RegisterBench('tests:floor', { owner = 'tests',
+			recipes = { { KEY = 'x', OUTPUT = 'ammo_handgun', SECONDS = 60,
+				INPUTS = { scrap_metal = 1 } } } })
+		control.Life(P, 'dead')
+		local ordered = contract.Order(P, 'tests:floor', 'x')
+		check('an order placed from the floor is refused as such',
+			ordered.ok == false and ordered.error == crafting.Refusal.DOWNED, tostring(ordered.error))
+		local collected = contract.Collect(P, 1)
+		check('and so is a collection', collected.ok == false
+			and collected.error == crafting.Refusal.DOWNED, tostring(collected.error))
+		check('with a sentence in both languages',
+			OPX.Locale.Exists('crafting.downed'))
+		check('the player is back on their feet', standUp())
+		ordered = contract.Order(P, 'tests:floor', 'x')
+		check('standing, the same order gets past the floor check',
+			ordered.error ~= crafting.Refusal.DOWNED, tostring(ordered.error))
+		contract.UnregisterBenches('tests')
+
+		-- ── garages: the answer names a known key, and nothing comes out to the floor ─
+		local garages = OPX.Modules.Get('garages')
+		mark = #control.clientEvents
+		fire(garages.Event.REQUEST, ('G'):rep(10000))
+		local answered = sentTo(garages.Event.ANSWER, mark)
+		check('a garage key nobody configured is not echoed back',
+			answered ~= nil and answered[1] == nil, answered and #tostring(answered[1]))
+		control.Life(P, 'dead')
+		mark = #control.clientEvents
+		fire(garages.Event.REQUEST, nil)
+		answered = sentTo(garages.Event.ANSWER, mark)
+		check('a garage key pressed from the floor is refused as such',
+			answered ~= nil and answered[2] == false and answered[3] == 'error.incapacitated',
+			answered and tostring(answered[3]))
+		check('the player is back on their feet', standUp())
+
+		-- ── dealership: the same two ─────────────────────────────────────────
+		local dealership = OPX.Modules.Get('dealership')
+		mark = #control.clientEvents
+		fire(dealership.Event.BUY, nil, ('D'):rep(10000), nil)
+		answered = sentTo(dealership.Event.ANSWER, mark)
+		check('a stock key nobody sells is not echoed back',
+			answered ~= nil and answered[3] == nil, answered and #tostring(answered[3]))
+		control.Life(P, 'dead')
+		mark = #control.clientEvents
+		fire(dealership.Event.BUY, nil, 'anything', nil)
+		answered = sentTo(dealership.Event.ANSWER, mark)
+		check('nobody buys a car from the floor',
+			answered ~= nil and answered[1] == false and answered[2] == 'error.incapacitated',
+			answered and tostring(answered[2]))
+		check('and nothing was charged for trying', player.PlayerData.money.EDDIES == 500,
+			player.PlayerData.money.EDDIES)
+		check('the player is back on their feet', standUp())
+
+		-- ── vehiclekeys: no lock turned from the floor ──────────────────────
+		local vehiclekeys = OPX.Modules.Get('vehiclekeys')
+		control.Life(P, 'dead')
+		noticed = #control.notices
+		fire(vehiclekeys.Event.TOGGLE, { vehicleId = 1 })
+		told = lastNotice(noticed)
+		check('a key turned from the floor is refused as such',
+			told ~= nil and told.message == DOWN_TEXT, told and told.message)
+		check('the player is back on their feet', standUp())
+
+		-- ── inventory: the stash door asks MayAct, as every other door does ───
+		local inventory = OPX.Api.Get('inventory')
+		control.Life(P, 'dead')
+		local stash = inventory.OpenStash(P, 'tests_chest', {})
+		check('a stash is not opened for somebody on the floor',
+			stash.ok == false and stash.error == 'dead', tostring(stash.error))
+		check('and the armoury that opens one through it has the words for that',
+			OPX.Locale.Exists('gunsmith.dead'))
+		check('the player is back on their feet', standUp())
+
+		-- ── inventory: an unknown verb spends the window like any other ─────
+		local inventoryModule = OPX.Modules.Get('inventory')
+		local allowance = OPX.Tune.Number('INVENTORY_RATE_REQUESTS', 1)
+		control.Advance(120000)
+		mark = #control.clientEvents
+		env.source = P
+		for index = 1, allowance * 5 do
+			control.netEvents[inventoryModule.Event.REQUEST](index, 'no_such_verb', {})
+		end
+		env.source = nil
+		local answers = 0
+		for index = mark + 1, #control.clientEvents do
+			if control.clientEvents[index].name == inventoryModule.Event.ANSWER then
+				answers = answers + 1
+			end
+		end
+		check('a flood of made-up verbs is answered no more than the window allows',
+			answers <= allowance * 3, ('%d answers for %d requests'):format(answers, allowance * 5))
+
+		-- ── doorlock: the staff floor is per kind of question, not per door id ─
+		local doorlock = OPX.Modules.Get('doorlock')
+		control.Allow(P, 'command.' .. doorlock.Command.OPEN)
+		control.Advance(120000)
+		mark = #control.clientEvents
+		env.source = P
+		for id = 1, 40 do control.netEvents[doorlock.Event.STAFF_ASK]({ id = id }) end
+		env.source = nil
+		local listed = 0
+		for index = mark + 1, #control.clientEvents do
+			if control.clientEvents[index].name == doorlock.Event.STAFF_LIST then listed = listed + 1 end
+		end
+		check('forty door ids asked in one breath are one question, answered once',
+			listed == 1, listed)
+	end
+end
+
 -- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
 -- client call site whose worst single resume cost more than the figure, the
 -- dearest first. Read it, do not gate on it -- a site here is a resume the
