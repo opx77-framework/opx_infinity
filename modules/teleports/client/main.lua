@@ -306,7 +306,7 @@ function Runtime.Use(origin)
 	end
 
 	publish(result)
-	say('error', locale(result.error, { reason = result.reason or '' }))
+	say(OPX.Result.Kind(result.error, 'error'), locale(result.error, { reason = result.reason or '' }))
 	return result
 end
 
@@ -423,7 +423,7 @@ function Runtime.Start()
 			say('success', locale('teleports.arrived',
 				{ place = type(reason) == 'string' and reason or '' }))
 		else
-			say('error', refusalText(code, reason))
+			say(OPX.Result.Kind(code, 'error'), refusalText(code, reason))
 		end
 		-- A refusal that was about the GATE means the client's copy of `allowed`
 		-- disagreed with the server's, so re-ask rather than wait out the poll.

@@ -12741,6 +12741,68 @@ do
 	end
 end
 
+-- ── one toast kind per situation ────────────────────────────────────────────
+-- "Too fast" was a warning in three modules and an error in the rest; "too far"
+-- an error at a lift and a warning in a duo emote. The owner's rule: too fast
+-- and busy warn, too far and not allowed are errors -- everywhere.
+section('toasts: too fast and busy warn, too far and not allowed are errors, everywhere')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the toast kinds', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local Kind = OPX.Result.Kind
+		check('too fast, in every spelling, is a warning',
+			Kind('error.tooFast', 'error') == 'warning' and Kind('too_fast', 'error') == 'warning'
+				and Kind('rate_limited', 'error') == 'warning' and Kind('vehiclekeys.tooFast', 'error') == 'warning')
+		check('busy is a warning', Kind('teleports.busy', 'error') == 'warning'
+			and Kind('duo_busy', 'error') == 'warning' and Kind('vehicle.busy', 'error') == 'warning')
+		check('too far is an error', Kind('too_far', 'warning') == 'error'
+			and Kind('garages.tooFar', 'warning') == 'error')
+		check('not allowed is an error', Kind('not_allowed', 'warning') == 'error'
+			and Kind('error.noPermission', 'warning') == 'error')
+		check('anything else keeps the kind the caller chose', Kind('expired', 'warning') == 'warning'
+			and Kind('garages.noSuchSpot', 'error') == 'error' and Kind(nil, 'info') == 'info')
+
+		control.Admit(81, 'account-kinds')
+		local function lastNotice()
+			local sent = control.clientEvents[#control.clientEvents]
+			return sent and sent[1] or nil
+		end
+		OPX.Refuse(81, 'error.tooFast', 'test')
+		check('OPX.Refuse sends too fast as a warning', (lastNotice() or {}).kind == 'warning')
+		OPX.Refuse(81, 'garages.tooFar', 'test')
+		check('and too far as an error', (lastNotice() or {}).kind == 'error')
+	end
+
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the toast kinds', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local kinds = {}
+		local realShow = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			kinds[#kinds + 1] = tostring(definition.kind)
+			return realShow(definition)
+		end
+		OPX.Toast.Locale('hauling.refused.busy', nil, 'error', 'box')
+		check('a client toast for busy is a warning, whatever the caller passed', kinds[#kinds] == 'warning',
+			kinds[#kinds])
+		local anim = OPX.Modules.Get('animations')
+		anim.Runtime.Refuse('too_far')
+		check('an emote refused as too far is an error, not the module\'s usual warning',
+			kinds[#kinds] == 'error', kinds[#kinds])
+		anim.Runtime.Refuse('rate_limited')
+		check('and one refused as too fast stays a warning', kinds[#kinds] == 'warning', kinds[#kinds])
+		local dl = OPX.Modules.Get('doorlock')
+		dl.Runtime.Say(false, 'too_fast', 'Front')
+		check('a door turned too fast warns', kinds[#kinds] == 'warning', kinds[#kinds])
+		dl.Runtime.Say(false, 'too_far', 'Front')
+		check('and a door too far away is an error', kinds[#kinds] == 'error', kinds[#kinds])
+		OPX.Toast.Show = realShow
+	end
+end
+
 -- ── every key a menu names is written, in both languages ────────────────────
 -- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
 -- never passes through that spelling: the staff menu hands a row helper its
@@ -31086,11 +31148,14 @@ do
 		local refused
 		for index = mark + 1, #control.clientEvents do
 			local sent = control.clientEvents[index]
-			if type(sent[1]) == 'table' and sent[1].kind == 'error' then refused = sent[1] end
+			if type(sent[1]) == 'table' and sent[1].code ~= nil then refused = sent[1] end
 		end
 		check('an answer inside the cooldown is refused as too fast',
 			refused ~= nil and refused.code == 'calls.error.tooFast',
 			refused and refused.code)
+		-- The owner's rule: too fast is a warning, everywhere.
+		check('and too fast is a warning, not an error', refused ~= nil and refused.kind == 'warning',
+			refused and refused.kind)
 		local pushed = lastState(C, mark)
 		check('and the state goes back with it, invite and all',
 			pushed ~= nil and pushed.invite ~= nil and pushed.invite.id == invite.id)

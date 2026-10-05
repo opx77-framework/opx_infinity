@@ -421,7 +421,7 @@ local function onToggleRequested(payload)
 	local src = tonumber(source)
 	if not src then return end
 	if OPX.Cooling(src, 'vehiclekeys.toggle', TOGGLE_MS) then
-		return OPX.NotifyLocale(src, 'vehiclekeys.tooFast', nil, 'error')
+		return OPX.NotifyLocale(src, 'vehiclekeys.tooFast', nil, 'warning')
 	end
 	-- `payload.vehicleId` is the only field read. Anything else in the table --
 	-- a plate, a label, a "locked" -- is a claim and goes nowhere.

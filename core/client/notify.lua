@@ -207,6 +207,8 @@ end
 -- @return string|nil
 -- @return string|nil why it was refused
 function OPX.Toast.Locale(key, params, kind, icon)
+	-- The situation's kind for an error or a warning: see `OPX.Result.Kind`.
+	if kind == 'error' or kind == 'warning' then kind = OPX.Result.Kind(key, kind) end
 	return OPX.Toast.Show({ kind = kind, message = locale(key, params), icon = icon })
 end
 

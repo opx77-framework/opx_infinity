@@ -62,20 +62,21 @@ end
 
 -- Writes a refusal as a chat line when no toast is possible. Optional: without
 -- the chat contract it is a log line and nothing else.
-local function chatLine(message)
+local function chatLine(message, kind)
 	local chat = OPX.Api.Get('chat')
 	if chat == nil or type(chat.AddMessage) ~= 'function' then
 		Open77.log.info('[elevators] ' .. message)
 		return
 	end
-	chat.AddMessage({ kind = 'error', author = locale('elevators.title'), text = message })
+	chat.AddMessage({ kind = kind or 'error', author = locale('elevators.title'), text = message })
 end
 
 -- Shows a refusal as one replaced toast, or as a chat line otherwise.
-local function toast(message)
+local function toast(message, code)
+	local kind = OPX.Result.Kind(code, 'error')
 	local raised = OPX.Toast.Show({
 		id = 'opx.elevators.answer',
-		kind = 'error',
+		kind = kind,
 		title = locale('elevators.title'),
 		message = message,
 		durationMs = 5000,
@@ -85,7 +86,7 @@ local function toast(message)
 		notifyReported = true
 		Open77.log.warn('[elevators] no toast: refusals go to the chat box instead')
 	end
-	chatLine(message)
+	chatLine(message, kind)
 end
 
 -- Forward-declared: the menu spec carries this callback, and it is written below
@@ -199,7 +200,7 @@ local function onDecision(payload)
 	if type(payload) ~= 'table' or openFor == nil or payload.elevator ~= openFor then return end
 	openFor = nil
 	if payload.ok == true then return end
-	toast(refusal(payload))
+	toast(refusal(payload), payload.error)
 end
 
 --- Clears the panel state.

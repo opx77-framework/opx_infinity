@@ -127,7 +127,7 @@ function Runtime.Say(ok, code, name)
 	if not OPX.Locale.Exists(key) then key = ok and 'doorlock.answer.done' or 'doorlock.error.invalid' end
 	local raised = OPX.Toast.Show({
 		id = 'opx.doorlock.answer',
-		kind = ok and 'success' or 'error',
+		kind = ok and 'success' or OPX.Result.Kind(code, 'error'),
 		title = locale('doorlock.title'),
 		message = locale(key, { door = name or '' }),
 		icon = 'lock',

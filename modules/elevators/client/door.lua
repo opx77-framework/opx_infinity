@@ -82,7 +82,7 @@ end
 local function say(failure)
 	local raised = OPX.Toast.Show({
 		id = 'opx.elevators.answer',
-		kind = 'error',
+		kind = OPX.Result.Kind(failure, 'error'),
 		title = locale('elevators.title'),
 		message = locale(Door.REFUSAL[failure] or 'elevators.refused'),
 		durationMs = 5000,
