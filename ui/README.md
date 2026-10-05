@@ -188,6 +188,9 @@ under-stroke baked in because a `border-image` cannot take a shadow.
 **`overlay` vs `modal`** is declared per module in `boot/registry.ts` and decides
 style as much as behaviour. An overlay surface is never focused, takes no pointer, and
 has no backing of any kind; a modal surface takes focus and the cursor while open.
+Two more layers stack above them, neither taking a pointer: `notice` (the toasts, so a
+refusal is never dimmed under the scrim of the view that caused it) and `cover` (the
+loading cover, over everything).
 
 ---
 

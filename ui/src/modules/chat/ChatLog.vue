@@ -244,6 +244,15 @@ onUnmounted(() => {
   padding: var(--op-space-1) 0 var(--op-space-1) var(--op-space-3);
   pointer-events: none;
 
+  /* NEVER TALLER THAN THE ROOM ITS ANCHOR LEAVES, and the overflow is the OLDEST
+     lines. Sixty lines at 14px is ~1100px; with the box open every one of them is
+     drawn, and at a top anchor the log grows down -- so the newest lines, the ones
+     the player opened the chat to read, were the ones below the bottom of the
+     screen. `flex-end` puts the overflow at the top, where the old lines are; each
+     anchor below sets the height it actually has. */
+  justify-content: flex-end;
+  overflow: hidden;
+
   /* The leading edge, and the only mark this block carries. */
   border-left: 1px solid var(--op-red-idle);
 
@@ -284,6 +293,7 @@ onUnmounted(() => {
 .anchor-bottom-left {
   left: var(--op-inset-x);
   bottom: calc(var(--chat-offset) + var(--chat-lift, 0px));
+  max-height: calc(100vh - var(--chat-offset) - var(--chat-lift, 0px) - var(--op-inset-y));
 }
 
 /* Centred on the screen's axis, clear of the vitals in the corner. The width is
@@ -293,6 +303,7 @@ onUnmounted(() => {
   left: 50%;
   transform: translateX(-50%);
   bottom: calc(var(--chat-offset) + var(--chat-lift, 0px));
+  max-height: calc(100vh - var(--chat-offset) - var(--chat-lift, 0px) - var(--op-inset-y));
 }
 
 /* TOP ANCHORS PUT THE LOG UNDER THE INPUT LINE, which is the mirror of the
@@ -306,12 +317,14 @@ onUnmounted(() => {
 .anchor-top-left {
   left: var(--op-inset-x);
   top: calc(var(--chat-offset) + var(--op-space-7) + var(--chat-lift, 0px));
+  max-height: calc(100vh - var(--chat-offset) - var(--op-space-7) - var(--chat-lift, 0px) - var(--op-inset-y));
 }
 
 .anchor-top-center {
   left: 50%;
   transform: translateX(-50%);
   top: calc(var(--chat-offset) + var(--op-space-7) + var(--chat-lift, 0px));
+  max-height: calc(100vh - var(--chat-offset) - var(--op-space-7) - var(--chat-lift, 0px) - var(--op-inset-y));
 }
 
 .chat-line {

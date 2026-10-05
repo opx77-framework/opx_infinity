@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { holdBottomCenter } from '@/stores/corners'
 import { num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -123,6 +124,51 @@ const outerFill = computed(() => {
   return Math.max(0, Math.min(100, share))
 })
 
+/**
+ * WHAT THE DIAL HOLDS OF THE BOTTOM EDGE, published for the hotbar peek. Both default to
+ * the bottom centre, and a peek while driving was drawn straight over the dial.
+ *
+ * MEASURED off the positioned wrapper (`.at` in HudRoot.vue), which is laid out whether
+ * or not the dial is showing and never transitions -- so the number is the dial's place,
+ * not a frame of its entrance. Published only while the car is live and only when the
+ * wrapper actually crosses the middle of the screen: a dial an operator anchored to a
+ * corner holds nothing the peek needs. The wrapper's own bleed is the gap between them.
+ */
+const root = ref<HTMLElement | null>(null)
+/** Half the peek's width, near enough: five 72px cells and their gaps. */
+const PEEK_HALF = 200
+let sizer: ResizeObserver | null = null
+
+function publish(): void {
+  const wrapper = root.value?.parentElement
+  if (!vehicle.value.active || !wrapper) {
+    holdBottomCenter(0)
+    return
+  }
+  const box = wrapper.getBoundingClientRect()
+  const middle = window.innerWidth / 2
+  const crosses = box.left < middle + PEEK_HALF && box.right > middle - PEEK_HALF
+  const low = box.bottom > window.innerHeight / 2
+  holdBottomCenter(crosses && low ? window.innerHeight - box.top : 0)
+}
+
+watch(() => vehicle.value.active, publish, { flush: 'post' })
+
+onMounted(() => {
+  window.addEventListener('resize', publish)
+  if (root.value && typeof ResizeObserver !== 'undefined') {
+    sizer = new ResizeObserver(publish)
+    sizer.observe(root.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', publish)
+  sizer?.disconnect()
+  sizer = null
+  holdBottomCenter(0)
+})
+
 const redlining = computed(() => vehicle.value.rpm >= REDLINE)
 
 const gearClass = computed(() => {
@@ -134,7 +180,7 @@ const gearClass = computed(() => {
 </script>
 
 <template>
-  <div class="vehicle" :class="{ live: vehicle.active, hot: redlining }">
+  <div ref="root" class="vehicle" :class="{ live: vehicle.active, hot: redlining }">
     <div class="dial">
       <svg class="rings" viewBox="0 0 120 120" aria-hidden="true">
         <!-- The black, as geometry. One stroke wider than the band it sits under. -->
@@ -373,6 +419,11 @@ const gearClass = computed(() => {
   align-items: center;
   justify-content: center;
   gap: var(--op-space-2);
+  /* THE LINE KEEPS THE AIRBORNE CHIP'S HEIGHT WHETHER OR NOT IT IS UP. The block is
+     anchored by its bottom edge, so this line growing by the chip (its 10px type plus
+     4px above and below) pushed the whole dial up 7px every time the car left the
+     ground, and dropped it back on landing. */
+  min-height: calc(var(--op-fs-label) + 8px);
   /* NO GROUND. A plate went under this line and came straight back off on the
      owner's word, with the rest of the HUD's; the padding went with it, because
      it was only ever there to keep the plate off the glyphs. */

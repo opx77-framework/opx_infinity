@@ -16,12 +16,20 @@ import { reactive, readonly } from 'vue'
 interface Corners {
   /** Height the open key strip takes in the bottom-right corner, or 0. */
   bottomRight: number
+  /** How far up from the screen's bottom edge the vehicle dial reaches while it is up
+      and sits over the middle of the screen, or 0. The hotbar peek, which is centred
+      on the same edge, stands on top of it instead of over it. */
+  bottomCenter: number
 }
 
-const state = reactive<Corners>({ bottomRight: 0 })
+const state = reactive<Corners>({ bottomRight: 0, bottomCenter: 0 })
 
 export const corners = readonly(state)
 
 export function holdBottomRight(px: number): void {
   state.bottomRight = px > 0 && Number.isFinite(px) ? Math.round(px) : 0
+}
+
+export function holdBottomCenter(px: number): void {
+  state.bottomCenter = px > 0 && Number.isFinite(px) ? Math.round(px) : 0
 }

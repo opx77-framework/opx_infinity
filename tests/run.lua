@@ -19353,12 +19353,14 @@ do
 	-- the one rule that stagger belongs to, and its name was wrong for months.
 	check('the stagger token is read by the design system',
 		system:find('var%(%-%-op%-slot') ~= nil)
-	local writers = 0
+	-- HOW MANY views stagger is the owner's call and has gone down (rows land
+	-- together on the HUD, the key strip and the form); what is asserted is that
+	-- none writes it under the old name, which is what silently broke it before.
+	local stale = {}
 	for _, path in ipairs(views) do
-		if read('ui/src/' .. path):find('%-%-op%-slot:', 1) then writers = writers + 1 end
+		if read('ui/src/' .. path):find('[^%w%-]%-%-slot:') then stale[#stale + 1] = path end
 	end
-	check('and written by the views that stagger, under the same name',
-		writers >= 5, writers)
+	check('and no view writes it under another name', #stale == 0, table.concat(stale, ', '))
 end
 
 -- copy.
@@ -25988,9 +25990,12 @@ do
 	-- TYPES INTO, and it carried one unconditionally.
 	local chat = read('ui/src/modules/chat/ChatInput.vue')
 	check('the live text field carries no filter',
-		chat:find('chat%-field op%-frame op%-arete op%-lift') == nil)
+		chat:find('class="chat%-field[^"]*op%-lift') == nil)
+	-- Not `.op-frame` any more: that preset carries the house hover, and the field
+	-- is under the cursor for as long as the chat is open. The lit arete and the
+	-- augmented frame are what say it is live.
 	check('and the frame that says it is live is still there',
-		chat:find('chat%-field op%-frame op%-arete', 1, false) ~= nil)
+		chat:find('class="chat%-field op%-arete" data%-augmented%-ui="tr%-clip border"') ~= nil)
 end
 
 -- ── the guards a mutation audit found nothing standing over ──────────────────
@@ -38419,6 +38424,191 @@ do
 	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
 	check('the toast bar scales rather than resizes under its filter',
 		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
+end
+
+-- ── the WebUI polish pass: what a player saw on screen ──────────────────────
+-- Each of these was a papercut in the shipped page -- a toast dimmed under a scrim,
+-- a stagger that never ran, a panel that emptied itself as it faded -- and none of
+-- them is visible to a Lua test. Read off the sources and off the built page, which
+-- is what ships and is committed separately from the sources it was built from.
+section('webui polish: layers, staggers, fades, scrollbars and number marks')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local built = slurp('web/index.html')
+	local VIEWS = {
+		'calls/HoloRoot', 'chat/ChatInput', 'chat/ChatLog', 'doorlock/DoorList',
+		'doorlock/DoorSettings', 'doorlock/DoorlockView', 'downed/DownedView', 'form/FormView',
+		'hud/HudInfo', 'hud/HudStatus', 'hud/HudVehicle', 'hud/HudVitals', 'hud/HudVoice',
+		'inventory/InventoryGrid', 'inventory/InventorySlot', 'inventory/InventoryView',
+		'inventory/SlotbarRoot', 'loading/LoadingCover', 'menu/MenuView', 'notify/NotifyRoot',
+		'notify/NotifyToast', 'panel/PanelView', 'progress/ProgressRoot', 'prompts/PromptsRoot',
+		'spawn/SpawnView', 'tags/TagsRoot', 'target/TargetView',
+	}
+	local views = {}
+	for _, name in ipairs(VIEWS) do views[name] = slurp('ui/src/modules/' .. name .. '.vue') end
+	local missing = {}
+	for _, name in ipairs(VIEWS) do
+		if views[name] == '' then missing[#missing + 1] = name end
+	end
+	check('every view the pass covers is readable', #missing == 0, table.concat(missing, ', '))
+
+	-- TOASTS ABOVE THE MODAL LAYER. On `overlay` a refusal raised by a form or the
+	-- join screen was drawn under that view's 0.58 scrim, exactly when it mattered.
+	local main = slurp('ui/src/boot/main.ts')
+	local root = slurp('ui/src/boot/SurfaceRoot.vue')
+	check('the toasts are registered on the notice layer',
+		main:find("id: 'notify', surface: 'notice'", 1, true) ~= nil)
+	local function zOf(layer)
+		return tonumber(root:match('%.layer%-' .. layer .. '%s*{[^}]-z%-index:%s*(%d+)'))
+	end
+	local modal, notice, cover = zOf('modal'), zOf('notice'), zOf('cover')
+	check('and that layer sits over the modal one and under the loading cover',
+		modal ~= nil and notice ~= nil and cover ~= nil and modal < notice and notice < cover,
+		('modal %s, notice %s, cover %s'):format(tostring(modal), tostring(notice), tostring(cover)))
+	check('and takes no pointer', (root:match('%.layer%-notice%s*({[^}]*})') or ''):find('pointer%-events:%s*none') ~= nil)
+	check('the built page has the notice layer', built:find('layer-notice', 1, true) ~= nil)
+
+	-- THE TOAST'S KIND IS AN EYEBROW. Its rule was lost in the move to the design
+	-- system and the tag drew at body size, as loud as the message.
+	check('the toast kind tag is a mono eyebrow, in the source and the built page',
+		views['notify/NotifyToast']:find('class="tag op-eyebrow"', 1, true) ~= nil
+			and built:find('tag op-eyebrow', 1, true) ~= nil)
+
+	-- ONE STAGGER VARIABLE. The templates write `--op-slot`; five rules read `--slot`,
+	-- so every one of those staggers had only ever used its fallback.
+	local stale = {}
+	for _, name in ipairs(VIEWS) do
+		if views[name]:find('var(--slot', 1, true) then stale[#stale + 1] = name end
+	end
+	check('no view reads the stagger under its old name', #stale == 0, table.concat(stale, ', '))
+	check('and neither does the built page', built:find('var(--slot', 1, true) == nil)
+
+	-- NO CASCADE, on the owner's word: rows land together, as the eye's do. The old
+	-- name above was what had kept these five from cascading; with it gone, the
+	-- stagger itself has to be gone too, or the rows trickle in one after another.
+	local cascading = {}
+	for _, name in ipairs({ 'hud/HudInfo', 'hud/HudStatus', 'hud/HudVitals', 'prompts/PromptsRoot',
+		'form/FormView' }) do
+		if views[name]:find('--op-slot', 1, true) or views[name]:find('%* *28ms') then
+			cascading[#cascading + 1] = name
+		end
+	end
+	check('the HUD lines, gauges and chips, the key strip and the form land together',
+		#cascading == 0, table.concat(cascading, ', '))
+
+	-- NO OS SCROLLBAR. Every rule that can scroll hides its bar, as the grids did.
+	local bare = {}
+	for _, name in ipairs(VIEWS) do
+		local style = (views[name]:match('<style.*') or ''):gsub('/%*.-%*/', '')
+		for selector, body in style:gmatch('([^{}]*){([^{}]*)}') do
+			local scrolls = body:find('overflow%-?y?:%s*auto') or body:find('overflow:%s*hidden%s+auto')
+			if scrolls and not body:find('scrollbar%-width:%s*none') then
+				bare[#bare + 1] = name .. ' ' .. selector:gsub('^%s+', ''):gsub('%s+$', '')
+			end
+		end
+	end
+	check('every scrolling box hides the OS scrollbar', #bare == 0, table.concat(bare, ' | '))
+
+	-- A CLOSED VIEW KEEPS ITS CONTENT THROUGH ITS FADE. Each of these emptied itself in
+	-- the tick it closed, so it faded out as a collapsed frame.
+	for _, name in ipairs({ 'menu/MenuView', 'form/FormView', 'panel/PanelView', 'spawn/SpawnView',
+		'doorlock/DoorlockView' }) do
+		check(('%s wipes its content after the fade, not under it'):format(name),
+			views[name]:find('const WIPE_MS', 1, true) ~= nil
+				and views[name]:find('function cancelWipe', 1, true) ~= nil)
+	end
+	check('and a menu opened during that fade still gets rows of its own',
+		views['menu/MenuView']:find(':key="`${generation}:${row.index}`"', 1, true) ~= nil)
+
+	-- THE SMALLER ONES, one line each.
+	check('the dial does not jump when the airborne chip comes and goes',
+		(views['hud/HudVehicle']:match('\n%.meta%s*({[^}]*})') or ''):find('min%-height') ~= nil)
+	check('a weight is written with the language\'s decimal mark',
+		slurp('ui/src/modules/inventory/format.ts'):find('labels.decimal', 1, true) ~= nil)
+	check('the count dialog has the slot card\'s ground',
+		(views['inventory/InventoryView']:match('\n%.dialog%s*{[^}]*left: 50%%[^}]*}') or '')
+			:find('background:%s*var%(%-%-op%-plate%)') ~= nil)
+	check('the form\'s black shadow is on everything under the head, not the head alone',
+		(views['form/FormView']:match('\n%.bay%-inner%s*({[^}]*})') or ''):find('text%-shadow') ~= nil
+			and (views['form/FormView']:match('\n%.head%s*({[^}]*})') or ''):find('text%-shadow') == nil)
+	check('the form\'s character count holds its place on every field',
+		views['form/FormView']:find(":class=\"{ quiet: !field.on }\"", 1, true) ~= nil)
+	check('the panel re-measures its list window whenever the grid changes size',
+		views['panel/PanelView']:find('new ResizeObserver', 1, true) ~= nil)
+	check('a picker tile under the pointer is not drawn as the chosen one',
+		views['panel/PanelView']:find('.tile:hover:not(:disabled):not(.is-on)', 1, true) ~= nil)
+	check('a second timed action starts its bar from empty',
+		views['progress/ProgressRoot']:find(':key="run"', 1, true) ~= nil)
+	check('the down screen does not zero its clocks under its own fade',
+		(views['downed/DownedView']:match('function blank%(%)[^}]*}') or 'fellAt.value = 0')
+			:find('fellAt.value = 0', 1, true) == nil)
+	check('and its give-up countdown is tabular',
+		(views['downed/DownedView']:match('\n%.choice%-hint%s*({[^}]*})') or ''):find('tabular%-nums') ~= nil)
+	check('a door deleted from the list is named by its own id',
+		views['doorlock/DoorlockView']:find('function doorNamed', 1, true) ~= nil)
+	check('and the list keeps its search and page across a door\'s settings',
+		views['doorlock/DoorlockView']:find('v-show="view === \'list\'"', 1, true) ~= nil)
+	check('an armed contact delete is disarmed by a close or a tab change',
+		views['calls/HoloRoot']:find('watch([open, tab]', 1, true) ~= nil)
+	check('the chat field does not take the house hover it is always under',
+		views['chat/ChatInput']:find('class="chat-field op-frame', 1, true) == nil)
+	check('and the chat log never runs off the screen with its newest lines',
+		(views['chat/ChatLog']:match('\n%.chat%-log%s*({[^}]*})') or ''):find('overflow:%s*hidden') ~= nil)
+
+	-- THE OWNER'S ANSWERS to the questions this pass raised.
+	check('the down screen keeps its notice line in the layout, so nothing jumps',
+		views['downed/DownedView']:find('<p v-if="notice"', 1, true) == nil
+			and (views['downed/DownedView']:match('\n%.notice%s*({[^}]*})') or ''):find('min%-height') ~= nil)
+
+	local callsWords = slurp('modules/calls/locales.lua')
+	local _, offers = callsWords:gsub("%['calls%.holo%.contactOffer'%]", '')
+	check('a contact offer under the caller\'s name does not say the name again, in both languages',
+		offers == 2 and views['calls/HoloRoot']:find("inviteIsContact ? t('calls.holo.contactOffer')", 1, true) ~= nil)
+
+	local doorWords = slurp('modules/doorlock/locales.lua')
+	local plural = true
+	for _, key in ipairs({ 'countZero', 'countOne', 'decimal' }) do
+		local _, found = doorWords:gsub("%['doorlock%.ui%." .. key .. "'%]", '')
+		if found ~= 2 then plural = false end
+	end
+	check('the door count has a zero and a one, and distances a decimal mark, in both languages',
+		plural and doorWords:find("['doorlock.ui.countOne'] = '{n} door'", 1, true) ~= nil
+			and doorWords:find("['doorlock.ui.countZero'] = '{n} porte'", 1, true) ~= nil
+			and doorWords:find("['doorlock.ui.decimal'] = ','", 1, true) ~= nil
+			and views['doorlock/DoorList']:find("t('doorlock.ui.decimal')", 1, true) ~= nil)
+
+	local chatWords = slurp('modules/chat/locales.lua')
+	check('the chat keycaps are words from the catalogue: Entrée and Échap in French',
+		chatWords:find("['chat.key.enter'] = 'Entrée'", 1, true) ~= nil
+			and chatWords:find("['chat.key.escape'] = 'Échap'", 1, true) ~= nil
+			and views['chat/ChatInput']:find('>Enter</kbd>', 1, true) == nil
+			and views['chat/ChatInput']:find('>Esc</kbd>', 1, true) == nil)
+
+	check('the hotbar peek stands on the vehicle dial rather than over it',
+		views['hud/HudVehicle']:find('holdBottomCenter(', 1, true) ~= nil
+			and views['inventory/SlotbarRoot']:find('corners.bottomCenter', 1, true) ~= nil)
+
+	-- ONE HOVER WEIGHT, the menu's. The eye's rows are the exception the owner named:
+	-- under the pointer is their cursor, the lit state, and it is drawn as one.
+	local heavy = {}
+	for _, name in ipairs(VIEWS) do
+		if name ~= 'target/TargetView' then
+			local style = (views[name]:match('<style.*') or ''):gsub('/%*.-%*/', '')
+			for selector, body in style:gmatch('([^{}]*){([^{}]*)}') do
+				local weight = body:match('%-%-aug%-border%-all:%s*([%d%.]+)px')
+				if selector:find(':hover', 1, true) and weight and weight ~= '1.5' then
+					heavy[#heavy + 1] = name .. ' ' .. selector:gsub('^%s+', ''):gsub('%s+$', '') .. ' ' .. weight
+				end
+			end
+		end
+	end
+	check('every hover frame is 1.5px, as the menu\'s is', #heavy == 0, table.concat(heavy, ' | '))
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────

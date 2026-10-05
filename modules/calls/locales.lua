@@ -38,6 +38,8 @@ local EN = {
 	['calls.holo.close'] = 'CLOSE',
 	['calls.holo.ringing'] = '{name} is calling you.',
 	['calls.holo.sharing'] = '{name} wants to give you their contact.',
+	-- The same offer under a line that already names the caller: the sphere's second line.
+	['calls.holo.contactOffer'] = 'Wants to give you their contact.',
 	['calls.holo.calling'] = 'Calling {name}...',
 	['calls.holo.offering'] = 'Offering your contact...',
 	-- The sphere's line under the callee's name, which already says who.
@@ -128,6 +130,7 @@ local FR = {
 	['calls.holo.close'] = 'FERMER',
 	['calls.holo.ringing'] = '{name} vous appelle.',
 	['calls.holo.sharing'] = '{name} veut vous donner son contact.',
+	['calls.holo.contactOffer'] = 'Veut vous donner son contact.',
 	['calls.holo.calling'] = 'Appel vers {name}...',
 	['calls.holo.offering'] = 'Proposition de votre contact...',
 	['calls.holo.dialing'] = 'Appel sortant...',

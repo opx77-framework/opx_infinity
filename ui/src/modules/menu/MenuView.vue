@@ -101,6 +101,15 @@ const ANCHORS: Record<string, string> = {
   'center': 'anchor-center'
 }
 
+/** How long a closed menu keeps its rows on screen: past the strip's 90ms fade, with
+    room to spare, so the rows leave once nothing can see them go. */
+const WIPE_MS = 240
+
+/** Bumped on every open and folded into the row keys, so a menu opened while the last
+    one's rows are still fading out gets new elements and its own entrance, instead of
+    inheriting the old rows' elements because their indices match. */
+const generation = ref(0)
+
 const handle = ref<Handle | null>(null)
 const open = ref(false)
 const hint = ref('')
@@ -204,13 +213,28 @@ function readFrame(payload: Payload, stagger = false): void {
   })
 }
 
-/** Blanked on hide, not on the next open: a frame arriving during the fade-out would
-    otherwise show the previous menu's rows. Straight from menu.js `hide()`. */
+/** Blanked on hide, not on the next open, so nothing of this menu is left behind for
+    the next one. Straight from menu.js `hide()` -- with one change: the rows go when the
+    fade has FINISHED. They went in the same tick as `open`, so for the whole fade the
+    player watched an empty bay collapse to a sliver and then disappear. A frame arriving
+    during the fade cannot redraw them: `mine()` drops it, the handle is already gone. */
+let wipe: ReturnType<typeof setTimeout> | undefined
+
+function cancelWipe(): void {
+  if (wipe !== undefined) clearTimeout(wipe)
+  wipe = undefined
+}
+
 function blank(): void {
   open.value = false
-  slots.value = []
-  hint.value = ''
-  total.value = 0
+  cancelWipe()
+  wipe = setTimeout(() => {
+    wipe = undefined
+    if (open.value) return
+    slots.value = []
+    hint.value = ''
+    total.value = 0
+  }, WIPE_MS)
 }
 
 /* Focus is held for exactly as long as a menu is open, and released by whatever ends it
@@ -246,6 +270,8 @@ useBridge('opx:menu:open', (payload: Payload) => {
     release?.()
     release = undefined
     listen(false)
+    cancelWipe()
+    generation.value += 1
     handle.value = payload.handle
     readConfig(payload)
     readFrame(payload, true)
@@ -298,6 +324,7 @@ useBridge('opx:menu:close', (payload: Payload) => {
 })
 
 onUnmounted(() => {
+  cancelWipe()
   listen(false)
   release?.()
 })
@@ -329,7 +356,7 @@ function choose(row: Slot): void {
                row standing in it changed, which transitioned the wrong thing. -->
           <li
             v-for="row in slots"
-            :key="row.index"
+            :key="`${generation}:${row.index}`"
             class="slot op-enter"
             :class="{ gap: row.blank }"
             :style="`--op-slot: ${row.stagger}`"
