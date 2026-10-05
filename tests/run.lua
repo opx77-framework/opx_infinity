@@ -7312,6 +7312,55 @@ do
 		check('and it is said once, not as a second notice beside it',
 			#control.notices == noticesBeforeBays, #control.notices - noticesBeforeBays)
 
+		-- ── two players at one garage in the same moment ──────────────────
+		-- The spawn yields on the database before the car exists, so a bay read
+		-- free by one bring-out is still free to the next one in that window.
+		-- Two players' cars used to be created on the same exit, one inside the
+		-- other. The contract's own `List` and `Spawn` are stood in for here so
+		-- the yield can be held open; the bay choice under test is the module's.
+		place('garage_twin', {
+			KIND = 'garage', LABEL = 'THE TWIN BAYS',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 400.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 400.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = {
+					{ X = 400.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+					{ X = 410.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				} } },
+		})
+		local twinA, twinB = 63, 64
+		load(twinA, 'citizen-twin-a')
+		load(twinB, 'citizen-twin-b')
+		control.Stand(twinA, 400.0, 0.0, 0.0)
+		control.Stand(twinB, 400.0, 0.0, 0.0)
+		local realList, realSpawn = vehicleApi.List, vehicleApi.Spawn
+		vehicleApi.List = function(citizenId)
+			return OPX.Result.Ok({ { plate = citizenId == 'citizen-twin-a' and 'TWIN0A' or 'TWIN0B',
+				record = 'Vehicle.v_standard2_archer_hella_player', garage = 'garage_twin' } })
+		end
+		local hold, landed = true, {}
+		vehicleApi.Spawn = function(_, plate, at)
+			while hold do coroutine.yield() end
+			local id = env.Open77.vehicles.create({ record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = at.x, y = at.y, z = at.z }, yaw = at.yaw, bucket = at.bucket })
+			landed[plate] = at.x
+			return OPX.Result.Ok({ id = id })
+		end
+		local firstOut, secondOut
+		env.CreateThread(function() firstOut = contract.Bring(twinA, 'garage_twin') end)
+		control.Pump(2)
+		env.CreateThread(function() secondOut = contract.Bring(twinB, 'garage_twin') end)
+		control.Pump(2)
+		hold = false
+		settle(control, function() return firstOut ~= nil and secondOut ~= nil end, 40)
+		vehicleApi.List, vehicleApi.Spawn = realList, realSpawn
+		check('two players bringing out at one garage in the same moment are both served',
+			firstOut ~= nil and firstOut.ok and secondOut ~= nil and secondOut.ok,
+			(firstOut and tostring(firstOut.error)) .. ' / ' .. (secondOut and tostring(secondOut.error)))
+		check('on two different bays, never one car inside the other',
+			landed.TWIN0A == 400.0 and landed.TWIN0B == 410.0,
+			('%s / %s'):format(tostring(landed.TWIN0A), tostring(landed.TWIN0B)))
+
 		-- ── a car standing on its own only exit ───────────────────────────
 		-- The one occupancy that must NOT count. A single-exit garage whose own
 		-- car is parked on it would otherwise be a garage that can never hand

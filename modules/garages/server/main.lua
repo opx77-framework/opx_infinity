@@ -69,6 +69,18 @@ local running = false
 -- refusing over, but it is worth an operator being able to find it.
 local reportedOccupancy = false
 
+-- EXITS PROMISED TO A BRING-OUT STILL ON ITS WAY, exit -> the clock time the
+-- promise lapses. `freeExit` reads the world, and the spawn after it yields on
+-- the database before the car exists: two players at one garage pressing the
+-- key in the same moment both read bay one free and both cars were created on
+-- it, one inside the other. A bay is held from the choice until the car stands
+-- on it (it is then in the world, which is what `freeExit` reads) or the spawn
+-- is refused. Weak keys: a rebuilt garage table lets the old exits go.
+local promised = setmetatable({}, { __mode = 'k' })
+-- Long enough for a spawn's database round trip, short enough that a thread the
+-- host dropped mid-yield costs one bay for a moment, not for the session.
+local PROMISE_MS = 10000
+
 -- Longest wire value a log line carries, in characters.
 local MAX_LOGGED = 64
 
@@ -277,6 +289,8 @@ local function freeExit(place, skipId)
 				break
 			end
 		end
+		local held = promised[exit]
+		if free and held ~= nil and OPX.Now() < held then free = false end
 		if free then return exit, slot end
 	end
 	return nil, nil
@@ -444,6 +458,8 @@ function M.Bring(source, key, wanted)
 		return Result.Err('garages.noFreeExit', built.label)
 	end
 
+	promised[exit] = OPX.Now() + PROMISE_MS
+
 	-- The exit itself, never the player's side: that is the whole point of a
 	-- marker. An AV is lifted clear of the pad it materialises on.
 	local z = exit.z
@@ -457,6 +473,9 @@ function M.Bring(source, key, wanted)
 		yaw = exit.heading,
 		bucket = exit.bucket,
 	})
+	-- Either way the promise is kept or void now: a car on the bay is read off
+	-- the world from here on, and a refused spawn left it empty.
+	promised[exit] = nil
 	if not spawned.ok then return spawned end
 
 	-- THE OWNER LEAVES WITH A KEY, and with ONE. `Ensure` cuts a key only when
