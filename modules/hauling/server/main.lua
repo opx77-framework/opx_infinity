@@ -1554,27 +1554,32 @@ function M.Start()
 		-- sale would take the FINISH that bar sends and the pickup would never end.
 		if step ~= Step.DELIVER then sales[player] = nil end
 
-		local ok, reason
-		if step == Step.PICKUP then
-			ok, reason = beginPickup(player, subject)
-		elseif step == Step.LOAD then
-			ok, reason = beginLoad(player, subject)
-		elseif step == Step.DELIVER then
-			ok, reason = beginSale(player, subject)
-		else
-			ok, reason = false, 'unknown_step'
-		end
+		-- ON A THREAD OF ITS OWN, as every other handler here that reaches the
+		-- inventory does: a sale counts the stock, which yields, and a handler is
+		-- not something to leave suspended on the platform's event dispatch.
+		CreateThread(function()
+			local ok, reason
+			if step == Step.PICKUP then
+				ok, reason = beginPickup(player, subject)
+			elseif step == Step.LOAD then
+				ok, reason = beginLoad(player, subject)
+			elseif step == Step.DELIVER then
+				ok, reason = beginSale(player, subject)
+			else
+				ok, reason = false, 'unknown_step'
+			end
 
-		-- A sale runs its own bar; the other two steps run the crate's.
-		if ok and step ~= Step.DELIVER then
-			local crate = Claim.HeldBy(crates, player)
-			if crate ~= nil then runBar(player, crate.step, crate.id, crate.site) end
-		end
-		answer(player, ok, reason)
-		if not ok and within(logWindows, player, 1, 1000) then
-			Open77.log.info(('[hauling] player %d refused %s on %s: %s'):format(player,
-				safe(step), safe(subject), safe(reason)))
-		end
+			-- A sale runs its own bar; the other two steps run the crate's.
+			if ok and step ~= Step.DELIVER then
+				local crate = Claim.HeldBy(crates, player)
+				if crate ~= nil then runBar(player, crate.step, crate.id, crate.site) end
+			end
+			answer(player, ok, reason)
+			if not ok and within(logWindows, player, 1, 1000) then
+				Open77.log.info(('[hauling] player %d refused %s on %s: %s'):format(player,
+					safe(step), safe(subject), safe(reason)))
+			end
+		end)
 	end)
 
 	RegisterNetEvent(M.Event.FINISH, function()
@@ -1583,12 +1588,20 @@ function M.Start()
 		if not within(requestWindows, player, REQUESTS_PER_WINDOW, REQUEST_WINDOW_MS) then
 			return answer(player, false, 'rate_limited')
 		end
-		local ok, reason = complete(player)
-		answer(player, ok, reason)
-		if not ok and within(logWindows, player, 1, 1000) then
-			Open77.log.info(('[hauling] player %d could not finish: %s'):format(player,
-				safe(reason)))
-		end
+		-- On a thread: a load and a sale move crates through the inventory, and
+		-- every one of those calls yields. Run inline, a FINISH whose handler was
+		-- not resumed after its first yield took the crates and never paid, or left
+		-- a crate `loading` for good. What the record guards (a sale cleared before
+		-- its first yield, `crate.loading`) is unchanged and still holds against a
+		-- second FINISH arriving meanwhile.
+		CreateThread(function()
+			local ok, reason = complete(player)
+			answer(player, ok, reason)
+			if not ok and within(logWindows, player, 1, 1000) then
+				Open77.log.info(('[hauling] player %d could not finish: %s'):format(player,
+					safe(reason)))
+			end
+		end)
 	end)
 
 	RegisterNetEvent(M.Event.DROP, function(where)

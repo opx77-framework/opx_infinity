@@ -20690,9 +20690,23 @@ do
 		end
 
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 
 		fire(7, M.Event.HELLO)
@@ -21010,9 +21024,23 @@ do
 			return out
 		end
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 		-- An EMPTY TABLE and never nil when nothing was answered: a check that
 		-- raises on a nil index reports which line blew up, not which guard went,
@@ -21358,9 +21386,23 @@ do
 		end
 
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 		local function lastAnswer()
 			local out = nil
@@ -21775,6 +21817,41 @@ do
 		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 2, 'quit')
 		check('the seller leaving mid-sale leaves the crate where it was',
 			bags[2].docks == 1 and #paid == 2)
+
+		-- ── the handler itself never waits on the inventory ──────────────────
+		-- A FINISH used to run the sale inside the network handler, and every
+		-- inventory call yields. Here they really do yield: the handler must
+		-- return at once, and the sale finish on a thread of its own.
+		trunks['veh-1'].docks = 1
+		local yieldingRemove = inventory.RemoveFromTrunk
+		inventory.RemoveFromTrunk = function(...)
+			coroutine.yield()
+			return yieldingRemove(...)
+		end
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		local paidAt = #paid
+		local spawned, realCreate = {}, env.CreateThread
+		env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
+		local handler = coroutine.create(function()
+			env.source = 2
+			control.netEvents[M.Event.FINISH]()
+			env.source = nil
+		end)
+		coroutine.resume(handler)
+		env.CreateThread = realCreate
+		check('a FINISH handler returns without waiting on a yielding inventory',
+			coroutine.status(handler) == 'dead' and #spawned == 1, coroutine.status(handler))
+		-- The sale's own thread, resumed through its yields and nothing else.
+		local sale = coroutine.create(spawned[1] or function() end)
+		for _ = 1, 20 do
+			coroutine.resume(sale)
+			if coroutine.status(sale) == 'dead' then break end
+		end
+		inventory.RemoveFromTrunk = yieldingRemove
+		check('and the sale still completes and is paid, on its own thread',
+			#paid == paidAt + 1 and trunks['veh-1'].docks == 0, #paid - paidAt)
 		OPX.Api.Get = realGet
 
 		-- ── a subject that is not a name never reaches a native ──────────────
