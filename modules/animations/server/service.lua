@@ -410,7 +410,7 @@ function Service.Play(player, name, variant, options)
 	local allowed, first = within('play', player, 1)
 	if not allowed then
 		return { ok = false, error = 'rate_limited', quiet = not first,
-			animation = type(name) == 'string' and name:sub(1, 64) or nil }
+			animation = type(name) == 'string' and OPX.Text.Clean(name, 64) or nil }
 	end
 
 	local entry, variants = Service.Offered(name)

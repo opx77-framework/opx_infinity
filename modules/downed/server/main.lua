@@ -98,13 +98,13 @@ local function isDead(playerId)
 	return read and dead == true
 end
 
--- A player's name, stripped of control characters and cut to 32 bytes. Not
+-- A player's name, stripped of control characters, mended and cut to 32 characters. Not
 -- `OPX.Audit.Safe`: this name is also listed to a caller, and it is cut without
 -- an ellipsis.
 local function nameOf(playerId)
 	local read, name = pcall(Open77.players.name, playerId)
 	if not read or type(name) ~= 'string' then return nil end
-	return (name:gsub('%c', ' ')):sub(1, 32)
+	return OPX.Text.Clean(name, 32)
 end
 
 -- A player's finite position and bucket, or nil.

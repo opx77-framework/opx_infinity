@@ -196,7 +196,7 @@ local function registerCommands()
 		for index = 2, #args do
 			label = label .. (index > 2 and ' ' or '') .. tostring(args[index])
 		end
-		if #label > 64 then label = label:sub(1, 64) end
+		label = OPX.Text.Clean(label, 64)
 
 		CreateThread(function()
 			capture(source, key, label)

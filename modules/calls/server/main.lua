@@ -148,7 +148,7 @@ local function nameOf(playerId)
 	local last = type(info.lastName) == 'string' and info.lastName or ''
 	local full = (first .. ' ' .. last):gsub('^%s+', ''):gsub('%s+$', '')
 	if full == '' then return nil end
-	return (full:gsub('%c', ' ')):sub(1, 32)
+	return OPX.Text.Clean(full, 32)
 end
 
 -- What one player's screen calls another: see `labelFor` below. Declared here

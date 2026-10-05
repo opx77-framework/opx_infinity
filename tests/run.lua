@@ -4604,6 +4604,30 @@ do
 			Text.Clean(('\xC3\xA9'):rep(20), 3, '') == ('\xC3\xA9'):rep(3))
 		check('a text exactly at its bound is not cut', Text.Clean('abcd', 4, '...') == 'abcd')
 	end
+
+	-- BROKEN UTF-8 IS MENDED, with the 5.3 library both runtimes install. A
+	-- client sends whatever bytes it likes, and a lone lead byte relayed to the
+	-- whole server, or written into a JSON column, is a row MySQL refuses.
+	env.utf8 = utf8
+	chunk = loadfile('lib/shared/text.lua', 't', env)
+	if chunk then
+		chunk()
+		local Text = env.OPX.Text
+		check('a stray byte is replaced, the rest is kept',
+			Text.Clean('\xFF\xFE hi', 32) == '?? hi', Text.Clean('\xFF\xFE hi', 32))
+		check('a valid accented text is untouched', Text.Clean('Zoé Ça', 32) == 'Zoé Ça')
+		local flood = Text.Clean('\xC3' .. ('\x80'):rep(2000), 240, '...')
+		check('a lead byte followed by a flood of continuations comes out valid and short',
+			utf8.len(flood) ~= nil and #flood <= 64, #flood)
+		check('text that is mostly broken bytes is cut short rather than walked whole',
+			utf8.len(Text.Clean(('\xFFa'):rep(400), 600)) ~= nil
+				and #Text.Clean(('\xFFa'):rep(400), 600) <= 40)
+		-- The contact-name case: 33 bytes of a 17-character name, cut where a
+		-- byte count would have split the last letter in two.
+		local name = 'A' .. ('\xC3\xA9'):rep(16)
+		check('a name cut to 32 characters never ends inside a letter',
+			Text.Clean(name, 32) == name and utf8.len(Text.Clean(name, 16)) == 16)
+	end
 end
 
 -- THE SERVER BUS IS QUEUED, so a `session:forgotten` handler runs a tick after
