@@ -255,35 +255,25 @@ function Server.UserOf(playerId)
 	return M.Trimmed(identifier, 64)
 end
 
---- One string key off a player's replicated bag, or nil.
--- Reading a bag costs no permission and no round trip; a host that does not
--- replicate them answers nil for everything, which is the same answer as a slot
--- with no character on it.
--- @author dop42
--- @param playerId Source
--- @param key string
--- @return any
-local function bagKey(playerId, key)
-	local state = Open77.state
-	if type(state) ~= 'table' or type(state.player) ~= 'function' then return nil end
+-- The PlayerData of the character loaded on a slot, through the `character`
+-- contract, or nil for a slot at the selection screen or a runtime without the
+-- module.
+local function loadedData(playerId)
+	local character = OPX.Api.Get('character')
+	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
 	if (tonumber(playerId) or 0) <= 0 then return nil end
-	local read, bag = pcall(state.player, playerId)
-	if not read or type(bag) ~= 'table' then return nil end
-	-- `bag:get(key)` and not `bag.key`: five key names are shadowed by the handle's
-	-- own methods, and a reader that used the sugar would answer a function for a
-	-- key called `name` on a platform that ever added one.
-	local got, value = pcall(bag.get, bag, key)
-	if not got then return nil end
-	return value
+	local read, player = pcall(character.GetPlayer, playerId)
+	if not read or type(player) ~= 'table' or type(player.PlayerData) ~= 'table' then return nil end
+	return player.PlayerData
 end
 
 --- The name of the CHARACTER a player is playing, or nil.
 --
--- Read off the replicated state bag and not through the `character` contract, and
--- that is the point rather than a shortcut: this module then says nothing at all
--- about who publishes the key. A runtime whose characters come from somewhere
--- else writes the same `name` and every staff line here follows it; a runtime
--- with no character module at all loses a name and keeps working.
+-- Through the `character` contract, on the server. It was read off the player's
+-- replicated state bag, and the bag no longer carries it: a bag goes to every
+-- client in the bucket, and never a name to a stranger is the owner's decision
+-- (`modules/character/server/state.lua`). Staff still see it -- on their own
+-- lines and on the staff name-tag list, both behind the ACL.
 --
 -- Nil is an ordinary answer twice over: for somebody still at the selection
 -- screen, and for a character that has not been named yet -- a character is a row
@@ -292,17 +282,25 @@ end
 -- @param playerId Source
 -- @return string|nil
 function Server.CharacterOf(playerId)
-	return M.Trimmed(bagKey(playerId, 'name'), 64)
+	local data = loadedData(playerId)
+	local info = data ~= nil and type(data.charInfo) == 'table' and data.charInfo or nil
+	if info == nil then return nil end
+	local first = type(info.firstName) == 'string' and info.firstName or ''
+	local last = type(info.lastName) == 'string' and info.lastName or ''
+	local full = OPX.String.Trim(first .. ' ' .. last)
+	if full == '' then return nil end
+	return M.Trimmed(full, 64)
 end
 
---- The public id of the character a player is playing, off the same bag.
+--- The public id of the character a player is playing, through the contract.
 -- Seven symbols in a three-dash-four group, and the one thing on a staff line
 -- that survives a rename. Nil before a character is loaded.
 -- @author dop42
 -- @param playerId Source
 -- @return string|nil
 function Server.CitizenBagOf(playerId)
-	return M.Trimmed(bagKey(playerId, 'citizenId'), 32)
+	local data = loadedData(playerId)
+	return data ~= nil and M.Trimmed(data.citizenId, 32) or nil
 end
 
 --- What a staff line calls a player: the character, and the account behind it.

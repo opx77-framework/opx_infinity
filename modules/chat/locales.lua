@@ -20,7 +20,9 @@ OPX.Locale.Register('en', {
 
 	['chat.author.command'] = 'COMMAND',
 	['chat.author.network'] = 'NETWORK',
-	['chat.author.unknown'] = 'Player {id}',
+	-- A player's line is signed with their server id, never a name: never a name
+	-- to a stranger.
+	['chat.author.player'] = 'Player #{id}',
 
 	['chat.placeholder'] = 'Say something, or type / for a command',
 
@@ -51,7 +53,7 @@ OPX.Locale.Register('fr', {
 
 	['chat.author.command'] = 'COMMANDE',
 	['chat.author.network'] = 'RÉSEAU',
-	['chat.author.unknown'] = 'Joueur {id}',
+	['chat.author.player'] = 'Joueur #{id}',
 
 	['chat.placeholder'] = 'Dites quelque chose, ou tapez / pour une commande',
 

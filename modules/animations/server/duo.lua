@@ -210,25 +210,12 @@ local function near(a, b)
 	return squared ~= nil and squared <= Opt.SHARED_RANGE * Opt.SHARED_RANGE
 end
 
--- The name the other player reads: the CHARACTER'S, the account's as a fallback.
-local function nameOf(playerId)
-	local character = OPX.Api.Get('character')
-	if character ~= nil and type(character.GetPlayer) == 'function' then
-		local read, loaded = pcall(character.GetPlayer, playerId)
-		local data = read and type(loaded) == 'table' and loaded.PlayerData or nil
-		local info = type(data) == 'table' and type(data.charInfo) == 'table' and data.charInfo
-			or nil
-		if info ~= nil then
-			local first = type(info.firstName) == 'string' and info.firstName or ''
-			local last = type(info.lastName) == 'string' and info.lastName or ''
-			local full = OPX.String.Trim(first .. ' ' .. last)
-			if full ~= '' then return (full:gsub('%c', ' ')):sub(1, 32) end
-		end
-	end
-	local read, name = pcall(Open77.players.name, playerId)
-	if read and type(name) == 'string' and name ~= '' then return (name:gsub('%c', ' ')):sub(1, 32) end
-	return '#' .. tostring(playerId)
-end
+-- NO NAME CROSSES IN EITHER DIRECTION. The invitation carried the asker's
+-- character name (the account gamertag as a fallback) to whoever happened to
+-- stand nearest, and "sent / accepted / declined" carried theirs back: two
+-- strangers who had never spoken were told each other's names by asking for a
+-- hug. Never a name to a stranger, the owner's decision (#91); the other person
+-- is the one standing next to you, and the words say so.
 
 -- Tells one player how their emote with somebody went.
 local function notify(player, kind, code, params)
@@ -299,9 +286,8 @@ function Duo.Request(player, spec)
 	local invite = { id = serial, actor = player, target = target, plan = plan,
 		untilMs = OPX.Now() + Opt.SHARED_INVITE_MS }
 	invites[invite.id], inviteOf[player], inviteOf[target] = invite, invite.id, invite.id
-	TriggerClientEvent(M.Event.INVITE, target, invite.id, plan.what, nameOf(player),
-		Opt.SHARED_INVITE_MS)
-	return { ok = true, name = nameOf(target) }
+	TriggerClientEvent(M.Event.INVITE, target, invite.id, plan.what, Opt.SHARED_INVITE_MS)
+	return { ok = true }
 end
 
 -- The coordinator's options for a plan. `carry` and `escort` reject a profile
@@ -339,7 +325,7 @@ end
 function Duo.Tell(player, result)
 	if result.quiet then return result end
 	if result.ok then
-		notify(player, 'info', 'sent', { name = result.name })
+		notify(player, 'info', 'sent')
 	else
 		notify(player, 'warning', result.error)
 	end
@@ -384,7 +370,7 @@ function Duo.Reply(target, inviteId, accepted)
 		return
 	end
 	if accepted ~= true then
-		notify(actor, 'info', 'declined', { name = nameOf(target) })
+		notify(actor, 'info', 'declined')
 		return
 	end
 	-- MEASURED AGAIN AT THE YES: the invitation can wait fifteen seconds, and
@@ -416,7 +402,7 @@ function Duo.Reply(target, inviteId, accepted)
 	end
 	running[state.id] = { actor = actor, target = target }
 	runningOf[actor], runningOf[target] = state.id, state.id
-	notify(actor, 'success', 'accepted', { name = nameOf(target) })
+	notify(actor, 'success', 'accepted')
 end
 
 --- Answers the invitation a player has been sent, from a typed command.
@@ -442,7 +428,7 @@ function Duo.Cancel(player, reason)
 		if player == invite.actor then
 			TriggerClientEvent(M.Event.UNINVITE, invite.target, invite.id)
 		else
-			notify(invite.actor, 'info', 'declined', { name = nameOf(player) })
+			notify(invite.actor, 'info', 'declined')
 		end
 	end
 	local id = runningOf[player]

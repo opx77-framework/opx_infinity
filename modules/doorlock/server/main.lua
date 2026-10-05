@@ -323,13 +323,17 @@ local function syncBuckets(buckets)
 end
 
 --- Tells everyone in a door's bucket its new state (ox's `setState` to -1).
-local function pushState(door, by)
+--
+-- THE DOOR'S STATE AND NOTHING ABOUT WHO MOVED IT. This carried `by`, the server
+-- id of the player who locked or unlocked it, to every client in the bucket --
+-- the whole city -- and no client read it. Who opened a door is something you
+-- learn by watching the door; the journal keeps it for staff.
+local function pushState(door)
 	local state = states[door.id]
 	for _, player in ipairs(players()) do
 		local at = pointOf(player)
 		if at ~= nil and at.bucket == door.bucket then
-			TriggerClientEvent(M.Event.STATE, player, { id = door.id, state = state.state,
-				by = type(by) == 'number' and by or nil })
+			TriggerClientEvent(M.Event.STATE, player, { id = door.id, state = state.state })
 		end
 	end
 end
@@ -360,7 +364,7 @@ local function setState(door, state, by, player, item)
 	if live.state == 0 and door.autolock > 0 then
 		live.relockAt = OPX.Now() + door.autolock * 1000
 	end
-	pushState(door, by)
+	pushState(door)
 	Backend.Apply(door, live.state == 1)
 	OPX.Publish(M.Event.ON_CHANGED, player, { id = door.id, door = door.id, name = door.name,
 		state = live.state, locked = live.state == 1, by = tostring(by), item = item and item.name or nil })
