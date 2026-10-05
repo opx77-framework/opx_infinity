@@ -17464,6 +17464,19 @@ do
 		env.source = nil
 		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
 
+		-- A RIDER WHO LEAVES MID-TRAVEL. The cabin used to be recalled to floor 0
+		-- with every other passenger in it; it carries on to the floor asked for.
+		env.source = 4
+		control.netEvents[M.Event.REQUEST]('arasaka_tower', 2)
+		env.source = nil
+		control.Pump(1)
+		local tripsBefore = #lifts.trips
+		check('a floor asked for is a trip', tripsBefore >= 1, tripsBefore)
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, 4, 'quit')
+		control.Pump(2)
+		check('the rider leaving mid-travel sends the cabin nowhere else',
+			#lifts.trips == tripsBefore, #lifts.trips - tripsBefore)
+
 		-- `Open77.elevators.nearby` takes 1..300 metres; a wider scan found no lift
 		-- at all and nothing said why.
 		local settings = env.OPX.Config.MODULES.elevators

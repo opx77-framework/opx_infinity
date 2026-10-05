@@ -471,9 +471,14 @@ local function state()
 	return OPX.Result.Ok({ adopted = adopted })
 end
 
--- Forgets a departing player and recalls a cabin left in motion. A cabin left
--- travelling goes back to floor 0, which every configured elevator has and none
--- gates, rather than parking open on a gated floor nobody answers.
+-- Forgets a departing player.
+--
+-- A CABIN IN MOTION IS LEFT TO ARRIVE. It used to be recalled to floor 0 when
+-- the player who last asked for a floor left mid-travel, which took every other
+-- passenger away from the floor they were riding to. Now it finishes the trip
+-- it was given with whoever is in it, and an empty cabin simply stays where it
+-- stops: a floor nobody answers is the floor the rider chose, and the next
+-- caller moves it.
 local function forget(playerId, reason)
 	local player = tonumber(playerId) or 0
 	if player <= 0 then return end
@@ -482,15 +487,12 @@ local function forget(playerId, reason)
 	logWindows[player] = nil
 	for _, players in pairs(told) do players[player] = nil end
 
-	local at = OPX.Now()
 	for key, record in pairs(owned) do
 		if record.rider == player then
 			record.rider = nil
-			if (record.rideEndsAtMs or 0) > at then
-				record.rideEndsAtMs = nil
-				local sent = moveCabin(record.id, 0)
-				Open77.log.info(('[elevators] %s: rider %d left mid-travel (%s); recalled to ' ..
-					'floor 0 (%s)'):format(key, player, tostring(reason), tostring(sent)))
+			if (record.rideEndsAtMs or 0) > OPX.Now() then
+				Open77.log.info(('[elevators] %s: rider %d left mid-travel (%s); the cabin ' ..
+					'carries on'):format(key, player, tostring(reason)))
 			end
 		end
 	end
