@@ -28367,43 +28367,45 @@ do
 
 		if chat ~= nil and character ~= nil then
 			local said = chat.Event.SAY
-			control.Admit(31, 'account-speaker')
-			OPX.EnsureSession(31)
-
-			--  is a flat list of every TriggerClientEvent, newest
-			-- last, so the message is found by name rather than by key.
-			local function lastAuthor()
+			local function lastLine()
 				for index = #control.clientEvents, 1, -1 do
 					local sent = control.clientEvents[index]
 					if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then
-						return sent[1].author
+						return sent[1], sent.source
 					end
 				end
 				return nil
 			end
 
-			-- Nobody loaded: the account name is all there is, and that is right.
+			control.Admit(31, 'account-id-31-durable')
+			OPX.EnsureSession(31)
 			env.source = 31
 			control.netEvents[said]('hello')
 			control.Pump(4)
-			local anonymous = lastAuthor()
-			check('with no character loaded the account name is used',
-				anonymous ~= nil, tostring(anonymous))
+			local line = lastLine() or {}
+			check('with no character loaded the line is signed with the server id',
+				tostring(line.author):find('#31', 1, true) ~= nil, tostring(line.author))
+			local wire = env.json.encode(line)
+			check('and carries neither the account name nor the account id',
+				wire:find('player-31', 1, true) == nil and wire:find('account-id', 1, true) == nil, wire)
 
-			-- A SECOND SPEAKER, not the same one again: the box rate-limits a
-			-- player to one line per RATE_MS and the second would simply be
-			-- dropped, leaving the first message's author standing and the check
-			-- passing or failing for the wrong reason.
-			control.Admit(32, 'account-named')
+			control.Admit(32, 'account-id-32-durable')
 			OPX.EnsureSession(32)
-			character.Players[32] = {
-				PlayerData = { charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } },
-			}
+			character.Players[32] = { PlayerData = { source = 32, citizenId = 'VKW-4A7C',
+				charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } } }
 			env.source = 32
 			control.netEvents[said]('hello again')
 			control.Pump(4)
-			check('once a character is loaded the message is theirs',
-				lastAuthor() == 'Vincent Kowalski', tostring(lastAuthor()))
+			local named, to = lastLine()
+			named = named or {}
+			check('a loaded character speaks as their server id too',
+				tostring(named.author):find('#32', 1, true) ~= nil, tostring(named.author))
+			check('to everybody', to == -1, tostring(to))
+			wire = env.json.encode(named)
+			for _, secret in ipairs({ 'Vincent', 'Kowalski', 'VKW-4A7C', 'player-32', 'account-id' }) do
+				check(('and the line never carries %s'):format(secret),
+					wire:find(secret, 1, true) == nil, wire)
+			end
 			character.Players[32] = nil
 		end
 	end
