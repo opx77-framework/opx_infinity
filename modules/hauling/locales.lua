@@ -33,7 +33,7 @@ local EN = {
 	['hauling.refused.already_carrying'] = 'Your hands are full.',
 	['hauling.refused.stale_revision'] = 'That crate moved. Try it again.',
 	['hauling.refused.claim_expired'] = 'You took too long, so the crate went back.',
-	['hauling.refused.carry_dropped'] = 'You cannot get in with that. Load it into the trunk.',
+	['hauling.refused.carry_dropped'] = 'You put the crate down to get in. Load it into the trunk to take it along.',
 	['hauling.refused.carry_ended'] = 'You are no longer carrying the crate.',
 	['hauling.refused.too_soon'] = 'Too fast. Try again.',
 	['hauling.refused.too_far'] = 'You are too far away.',
@@ -92,7 +92,7 @@ local FR = {
 	['hauling.refused.already_carrying'] = 'Vous avez déjà les mains prises.',
 	['hauling.refused.stale_revision'] = 'Cette caisse a bougé. Réessayez.',
 	['hauling.refused.claim_expired'] = 'Vous avez trop attendu : la caisse est repartie.',
-	['hauling.refused.carry_dropped'] = 'Impossible de monter avec. Chargez-la dans le coffre.',
+	['hauling.refused.carry_dropped'] = "Vous posez la caisse pour monter. Chargez-la dans le coffre pour l'emporter.",
 	['hauling.refused.carry_ended'] = 'Vous ne portez plus la caisse.',
 
 	['hauling.refused.too_soon'] = 'Trop rapide. Réessayez.',

@@ -6919,6 +6919,17 @@ do
 		check('and the answer says it was moved rather than brought from the roster',
 			answer ~= nil and answer[2] == true and answer[5] == 'recalled',
 			answer and tostring(answer[5]))
+		-- And the toast says so, naming the car as the list does.
+		local function lastNoticeTo(id)
+			for index = #control.notices, 1, -1 do
+				if control.notices[index].playerId == id then return tostring(control.notices[index].message) end
+			end
+			return ''
+		end
+		check('and the toast says Recalled, with the model and the plate',
+			lastNoticeTo(src) == OPX.Locale.Text('garages.recalled',
+				{ vehicle = OPX.Locale.Text('garages.vehicleLabel', { name = 'Archer Hella', plate = 'AA111AA' }) }),
+			lastNoticeTo(src))
 
 		-- ── the owner leaves with a key, and with one ─────────────────────
 		-- AA111AA has come out twice now -- brought, then recalled -- and AA222AA
@@ -7020,6 +7031,12 @@ do
 		check('and the answer says STORED, which is not the same thing as brought out',
 			answer ~= nil and answer[2] == true and answer[5] == 'stored',
 			answer and tostring(answer[5]))
+		local putAway = ''
+		for index = #control.notices, 1, -1 do
+			if control.notices[index].playerId == src then putAway = tostring(control.notices[index].message) break end
+		end
+		check('and the toast names the car by its model and plate',
+			putAway:find('Archer Hella', 1, true) ~= nil and putAway:find('AA111AA', 1, true) ~= nil, putAway)
 		check('and the character is on foot again as far as the contract is concerned',
 			vehicleApi.Occupied(src).value == nil)
 
@@ -7609,8 +7626,17 @@ do
 		check('a door is a door and the client knows which it is',
 			Runtime.Report().nearest == 'garage_dock#1.in' and Runtime.Report().role == 'entry',
 			Runtime.Report().role)
-		check('and on foot it asks the player to drive in',
-			Runtime.Report().label == 'garages.prompt.driveIn', Runtime.Report().label)
+		check('and on foot it offers the garage, as a menu point does',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		-- THE LEAD'S DECISION: on foot, a door opens the list, so a player with two
+		-- cars filed there chooses which one comes out.
+		local footMark = #cctl.serverEvents
+		mapping.pressed()
+		local onFoot = cctl.serverEvents[#cctl.serverEvents]
+		check('and on foot the key on a door asks for the list, not for a car',
+			#cctl.serverEvents == footMark + 1 and onFoot ~= nil
+				and onFoot.name == garages.Event.LIST and onFoot[1] == 'garage_dock#1.in',
+			onFoot and tostring(onFoot.name))
 		cctl.Seat(1, { seat = 'driver' })
 		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
 		check('seated in a vehicle, the door says put away',
@@ -8309,21 +8335,16 @@ do
 				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
 		end
 		local createdBefore = #control.vehicleCreates
-		local noticesBefore = #control.notices
 		character.Players[src].PlayerData.money.EDDIES = 2000000
 		local waiting = contract.Buy(src, 'yard', 'hella', nil)
-		local toldWhere = false
-		for index = noticesBefore + 1, #control.notices do
-			local notice = control.notices[index]
-			if notice.playerId == src and tostring(notice.message):find('waiting', 1, true) then
-				toldWhere = true
-			end
-		end
 		check('with every spot taken the sale still stands, and no car is created inside another',
 			waiting.ok == true and waiting.value.spawned == false
 				and #control.vehicleCreates == createdBefore,
 			tostring(waiting.error))
-		check('and the buyer is told the car is waiting in its garage', toldWhere)
+		check('and the answer carries where the car is waiting, for whoever tells the buyer',
+			waiting.ok and type(waiting.value.handOver) == 'table'
+				and waiting.value.handOver.key == 'dealership.handOverBlocked')
+
 		for _, id in ipairs(blockers) do env.Open77.vehicles.remove(id) end
 		while #rows > rowsBefore do table.remove(rows) end
 
@@ -8505,6 +8526,40 @@ do
 		check('and nothing was charged for it',
 			character.Players[src].PlayerData.money.EDDIES == wireBalance - hella.price,
 			tostring(character.Players[src].PlayerData.money.EDDIES))
+
+		-- THE ORDER THE BUYER READS IT IN: what they bought, then where it is.
+		-- The where came first, said from inside the purchase. Every spot beside
+		-- the dealer is taken again for it. A function of its own: this section
+		-- already holds as many locals as one Lua function may.
+		;(function()
+		local rowsAtStart = #rows
+		local walls = {}
+		for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+			walls[#walls + 1] = env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
+		end
+		control.Pump(60)
+		local noticesBefore = #control.notices
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		env.source = src
+		control.netEvents[dealership.Event.BUY]('yard', 'hella', nil)
+		env.source = nil
+		control.Pump(20)
+		local order = {}
+		for index = noticesBefore + 1, #control.notices do
+			local notice = control.notices[index]
+			if notice.playerId == src then
+				local message = tostring(notice.message)
+				if message:find('waiting', 1, true) then order[#order + 1] = 'where'
+				elseif message:find('bought', 1, true) then order[#order + 1] = 'bought' end
+			end
+		end
+		check('the buyer reads "You bought" first, then where the car is',
+			order[1] == 'bought' and order[2] == 'where', table.concat(order, ', '))
+		for _, id in ipairs(walls) do env.Open77.vehicles.remove(id) end
+		while #rows > rowsAtStart do table.remove(rows) end
+		end)()
 		-- ── selling to somebody standing in front of you ───────────────────
 		-- THE OWNER'S OWN TWO CHOICES ARE WHAT IS UNDER TEST. "The buyer must
 		-- have the money, and THE BUYER'S CLIENT CONFIRMS the purchase" -- chosen
@@ -9309,6 +9364,7 @@ do
 				('%d raised, longest un-yielded run was %d'):format(raised, longest))
 		end
 
+
 		-- ── and a car written in config is on the floor from Init ──────────
 		-- THE CONFIG HALF OF THE SAME MERGE. Everything above exercises the
 		-- database half; this is the half that matters from here on, because
@@ -9349,6 +9405,7 @@ do
 		end
 		check('an offer to nobody is settled as refused for the seller', settled == 1, settled)
 		check('and the server raises no second toast beside it', refusedToasts == 0, refusedToasts)
+
 	end
 end
 
@@ -20753,13 +20810,23 @@ do
 		check('a fresh carrier has the crate',
 			OPX.Api.Get('hauling').State().value.sites.docks.carried == 1)
 		local smuggled = CRATE
+		-- Carried ten metres across the yard first: the crate is put down where
+		-- the player got in, never teleported back to its point (the lead's call).
+		positions[4] = { x = home.x + 10.0, y = home.y, z = home.z, bucket = 0 }
 		control.Fire(M.PLAYER_ENTERED_VEHICLE, 4, 'vehicle-1', 0)
-		local dropped = crateAtHome()
+		local dropped
+		for id, prop in pairs(props.byId) do
+			if prop.attachment == nil and math.abs(prop.x - (home.x + 10.0)) < 0.001
+				and math.abs(prop.y - home.y) < 0.001 then dropped = id end
+		end
 		check('getting into a vehicle drops the crate rather than smuggling it',
-			dropped ~= nil and dropped ~= smuggled
-				and OPX.Api.Get('hauling').State().value.sites.docks.carried == 0,
+			dropped ~= nil and OPX.Api.Get('hauling').State().value.sites.docks.carried == 0,
 			tostring(dropped))
-		CRATE = dropped or CRATE
+		check('at the feet of the player, not back on its point', crateAtHome() == nil, tostring(crateAtHome()))
+		-- Back on its point for the rest of the section.
+		at = at + Access.DROP_RETURN_MS + 1
+		control.Pump(1)
+		CRATE = crateAtHome() or dropped or CRATE
 		check('and the carrier is told why',
 			lastAnswer()[1] == false and lastAnswer()[2] == 'carry_dropped',
 			tostring(lastAnswer()[2]))

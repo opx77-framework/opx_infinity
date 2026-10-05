@@ -1644,7 +1644,16 @@ function M.Start()
 		if player <= 0 then return end
 		local crate = Claim.HeldBy(crates, player)
 		if crate == nil or crate.where ~= Where.CARRIED then return end
-		putBack(crate, ('player %d got into a vehicle while carrying it'):format(player))
+		-- AT THEIR FEET, NOT BACK ON ITS POINT. It used to go home: a crate
+		-- carried across the yard teleported back and was offered to rivals. The
+		-- lead's decision is that it is put down where the player got in. A bar
+		-- under way ends with it; a trunk write already running is left to land.
+		if crate.loading then return end
+		crate.step, crate.claimedAtMs, crate.pendingVehicle = nil, nil, nil
+		local put = dropCrate(player, nil, nil)
+		if not put then
+			putBack(crate, ('player %d got into a vehicle while carrying it'):format(player))
+		end
 		answer(player, false, 'carry_dropped')
 	end)
 
