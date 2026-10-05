@@ -34684,6 +34684,36 @@ do
 		local again = call('my_shop', 'CountInStash', 'my_shop.backroom', 'water')
 		check('and it loads again on the next call', again.ok == true, tostring(again.error))
 
+		-- ── a stash a player opened is put away too, once closed ──────────────
+		-- It used to be taken off the sweep for good the moment it was opened,
+		-- so every stash ever opened stayed in memory for the session.
+		local World = inventory.World
+		local opened = nil
+		env.CreateThread(function()
+			opened = World.Stash('opened_by_hand', { slots = 10, maxWeight = 10000 }, nil, 'Hand')
+		end)
+		settle(control, function() return opened ~= nil end)
+		control.Admit(662, 'account-662')
+		Containers.View(662, opened, false)
+		opened.externalAt = 0
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('a stash a player has open is never put away, however long it is open',
+			Containers.Find('stash', 'opened_by_hand') ~= nil)
+		Containers.CloseSecondary(662, false)
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('nor at once when it is closed: the idle time starts at the close',
+			Containers.Find('stash', 'opened_by_hand') ~= nil)
+		control.Pump(15)
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('and once it has been closed for IDLE_MS it is written and unloaded',
+			Containers.Find('stash', 'opened_by_hand') == nil)
+
 		-- ── a load whose thread was dropped does not hang the next one ────────
 		db.park = function(method, sql)
 			return method == 'single' and sql:find('FROM opx77_inventories', 1, true) ~= nil
