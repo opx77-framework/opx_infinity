@@ -16950,8 +16950,16 @@ do
 		check('the economy starts at a known size', total() == START, tostring(total()))
 
 		-- ── the mint ──────────────────────────────────────────────────────────
+		local noticesBeforeDraw = #control.notices
 		local drew, refusal = Currency.Withdraw(ALICE, 300)
 		check('a withdraw inside the balance is accepted', drew == true, tostring(refusal))
+		-- Said as money, the language's own way: it read "You drew 300x Eddies."
+		local drawn = control.notices[noticesBeforeDraw + 1]
+		check('and it is said as an amount of money, not a count of items',
+			drawn ~= nil and drawn.playerId == ALICE
+				and tostring(drawn.message):find(OPX.Locale.Money(300, 'EDDIES'), 1, true) ~= nil
+				and not tostring(drawn.message):find('300x', 1, true),
+			drawn and drawn.message)
 		check('and it moved the money out of the balance',
 			character.GetMoney(ALICE, 'EDDIES') == 700,
 			tostring(character.GetMoney(ALICE, 'EDDIES')))
@@ -20899,6 +20907,34 @@ do
 		check('so somebody else may take that crate straight away',
 			lastAnswer()[1] == true, tostring(lastAnswer()[2]))
 		fire(14, M.Event.ABORT, 'cancelled')
+	end
+end
+
+-- ── hud: a money line has a caption in the player's language ────────────────
+-- The line's label was the purse's config id, and the page looked it up and
+-- missed, so it drew the id raw: a French HUD read BANK.
+section('hud: every configured money line has a caption in both languages')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the money captions', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local order = OPX.Config.MODULES.hud.MONEY or {}
+		local missing = {}
+		for _, code in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(code)
+			for _, key in ipairs(order) do
+				if not OPX.Locale.Exists('hud.money.' .. key) then
+					missing[#missing + 1] = code .. ':' .. key
+				end
+			end
+		end
+		check('each configured purse has a caption in English and French',
+			#order > 0 and #missing == 0, table.concat(missing, ', '))
+		OPX.Locale.Set('fr')
+		check('and the French bank line is not the English word',
+			OPX.Locale.Text('hud.money.BANK') ~= 'BANK', OPX.Locale.Text('hud.money.BANK'))
+		OPX.Locale.Set('en')
 	end
 end
 

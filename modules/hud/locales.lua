@@ -20,6 +20,11 @@ OPX.Locale.Register('en', {
 	['hud.info.job'] = 'JOB',
 	['hud.info.cred'] = 'CRED',
 
+	-- A money line's caption, by the purse's config id. Without one the HUD drew
+	-- the raw id, so a French HUD read BANK.
+	['hud.money.EDDIES'] = 'EDDIES',
+	['hud.money.BANK'] = 'BANK',
+
 	['hud.voice.state.idle'] = 'MIC',
 	['hud.voice.state.detected'] = 'MIC',
 	['hud.voice.state.talking'] = 'TX',
@@ -48,6 +53,9 @@ OPX.Locale.Register('fr', {
 
 	['hud.info.job'] = 'MÉTIER',
 	['hud.info.cred'] = 'CRED',
+
+	['hud.money.EDDIES'] = 'EDDIES',
+	['hud.money.BANK'] = 'BANQUE',
 
 	['hud.voice.state.idle'] = 'MICRO',
 	['hud.voice.state.detected'] = 'MICRO',

@@ -340,9 +340,12 @@ local function moneyLines(data, lines)
 		local key = index <= led and order[index] or extra[index - led]
 		local amount = purse[key]
 		if finite(amount) and amount ~= 0 then
+			-- A caption from the catalogue when it has one; the id itself, as
+			-- before, for a purse nobody wrote words for.
+			local caption = 'hud.money.' .. key
 			lines[#lines + 1] = {
 				id = key:lower(),
-				label = key,
+				label = OPX.Locale.Exists(caption) and caption or key,
 				value = OPX.Math.GroupDigits(amount, Settings.MONEY_SEPARATOR),
 				tone = 'neutral',
 			}
