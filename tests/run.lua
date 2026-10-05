@@ -36055,6 +36055,48 @@ do
 	end
 end
 
+
+-- ── the staff lists arrive in pages, and each page fits a resume ────────────
+-- `OPX_BUDGET_METER` flags `opx:net:admin:items` and `opx:net:admin:roster`
+-- past the client's per-resume budget. Those figures are the FIXTURES' doing:
+-- the sections above hand 600 items or 150 players to the client in ONE event,
+-- to load the screen fast, and no server sends that -- `pushChunks` in
+-- `modules/admin/server/menu.lua` sends 20 rows an event. This plays the same
+-- lists the way the server does and holds every event to the budget.
+section('the staff lists are paged by the server, and each page fits one resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local PAGE = 20
+		local function played(event, total, row)
+			local dearest = 0
+			for offset = 0, total - 1, PAGE do
+				local chunk = {}
+				for index = offset + 1, math.min(offset + PAGE, total) do chunk[#chunk + 1] = row(index) end
+				local payload = { rows = chunk, offset = offset, total = total,
+					done = offset + #chunk >= total }
+				local cost = callCost(control.netEvents[event], payload)
+				if cost > dearest then dearest = cost end
+			end
+			return dearest
+		end
+		local items = played(admin.Event.ITEMS, 600, function(index)
+			return { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
+		end)
+		check('600 catalogue items, as the server pages them, cost well under a resume each',
+			items < 5000, items)
+		local roster = played(admin.Event.ROSTER, 150, function(index)
+			return { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
+				user = 'user' .. index, citizenId = 'CID' .. index }
+		end)
+		check('and so do 150 players on the roster', roster < 5000, roster)
+	end
+end
 -- ── a staff screen built over a big catalogue yields as it walks ────────────
 -- The owner's second log, after the redraw moved onto its own thread: still
 -- `admin/client/menu.lua: ... budget exceeded` in `drawNow`, at the builder.
@@ -36074,6 +36116,9 @@ do
 		for index = 1, 600 do
 			rows[index] = { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
 		end
+		-- ONE EVENT OF 600 ROWS, which no server sends (it pages them 20 at a time):
+		-- a fixture shortcut, and the reason `OPX_BUDGET_METER` names this handler.
+		-- What a real page costs is held by "the staff lists are paged by the server".
 		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 600, done = true })
 		local realWait, fromBuilder = env.Wait, 0
 		env.Wait = function(ms)
@@ -36122,6 +36167,8 @@ do
 			rows[index] = { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
 				user = 'user' .. index, citizenId = 'CID' .. index }
 		end
+		-- One event of 150 players, a fixture shortcut as the catalogue above is:
+		-- the server pages the roster 20 a time (see that same section).
 		control.netEvents[admin.Event.ROSTER]({ rows = rows, offset = 0, total = 150, done = true })
 		control.Pump(10)
 
