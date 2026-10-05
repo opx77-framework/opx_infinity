@@ -66,6 +66,12 @@ M.Event = {
 	-- choose from.
 	OPENED = OPX.Event(NET, 'spawn', 'opened'),
 
+	-- Client to server. "The join is still busy ahead of the menu" -- the name
+	-- form or the fitting room is up -- so the hold is not run out under it. See
+	-- `M.Waiting`: it extends the hold, never past a hard cap, and never once
+	-- the menu itself is up.
+	WAITING = OPX.Event(NET, 'spawn', 'waiting'),
+
 	-- THIS MODULE'S OWN STATE, ON THE LOCAL BUS, and the reason the header above
 	-- is wrong about there being nothing to watch. It was: this menu only ever
 	-- had to WAIT on somebody, and `entry` published what it was waiting behind.

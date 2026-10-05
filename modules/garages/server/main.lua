@@ -492,6 +492,7 @@ function M.Bring(source, key, wanted)
 		label = built.label,
 		exit = slot,
 		plate = pick.plate,
+		name = OPX.Vehicle.DisplayName(pick.record),
 		id = spawned.value and spawned.value.id or nil,
 		-- Forwarded, not decided here: whether the vehicle had to be moved is
 		-- the vehicles contract's answer, and this half only repeats it.
@@ -562,6 +563,10 @@ function M.Use(source, key, wanted)
 		if othersAboard(seated.value.id, source) then
 			return Result.Err('garages.passengers', built.label)
 		end
+		-- The model is read before the car goes, for the sentence that says so.
+		local row = type(vehicles.Get) == 'function' and vehicles.Get(seated.value.plate) or nil
+		local record = type(row) == 'table' and row.ok and type(row.value) == 'table'
+			and row.value.record or nil
 		local put = vehicles.Store(seated.value.plate, built.key)
 		if not put.ok then return put end
 		return Result.Ok({
@@ -569,6 +574,7 @@ function M.Use(source, key, wanted)
 			garage = built.key,
 			label = built.label,
 			plate = seated.value.plate,
+			name = OPX.Vehicle.DisplayName(record),
 			stored = true,
 		})
 	end
@@ -588,6 +594,15 @@ function M.Use(source, key, wanted)
 end
 
 -- ── the doors ───────────────────────────────────────────────────────────────
+
+--- What a sentence calls a vehicle: `Model · PLATE`, or the plate alone.
+local function vehicleLabel(value)
+	local plate = tostring(value.plate or '')
+	if type(value.name) == 'string' and value.name ~= '' then
+		return locale('garages.vehicleLabel', { name = value.name, plate = plate })
+	end
+	return plate
+end
 
 --- One request off the wire. Rate-limited, then answered either way.
 local function onRequested(key, plate)
@@ -637,10 +652,16 @@ local function onRequested(key, plate)
 		-- marker first, and one the player just handed over.
 		local value = used.value
 		local action = value.stored and 'stored' or (value.recalled and 'recalled' or 'brought')
+		-- NAMED AS THE LIST NAMES IT, model and plate, and a recall says it was
+		-- recalled: it said "Brought out XX" for a car that had been moved from
+		-- across the map, which is the phrasing behind the six-presses report.
+		local vehicle = vehicleLabel(value)
 		if value.stored then
-			OPX.NotifyLocale(src, 'garages.storedAway', { plate = value.plate }, 'success')
+			OPX.NotifyLocale(src, 'garages.storedAway', { vehicle = vehicle }, 'success')
+		elseif value.recalled then
+			OPX.NotifyLocale(src, 'garages.recalled', { vehicle = vehicle }, 'success')
 		else
-			OPX.NotifyLocale(src, 'garages.broughtOut', { plate = value.plate }, 'success')
+			OPX.NotifyLocale(src, 'garages.broughtOut', { vehicle = vehicle }, 'success')
 		end
 		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
 		Open77.log.info(('[garages] player %d %s %s at %s%s'):format(src,
@@ -734,7 +755,8 @@ local function registerCommands()
 				OPX.NotifyLocale(source, brought.error, { garage = safe(brought.detail) }, 'error')
 				return OPX.CommandResult(source, false, tostring(brought.error))
 			end
-			OPX.NotifyLocale(source, 'garages.broughtOut', { plate = brought.value.plate }, 'success')
+			OPX.NotifyLocale(source, brought.value.recalled and 'garages.recalled' or 'garages.broughtOut',
+				{ vehicle = vehicleLabel(brought.value) }, 'success')
 			OPX.CommandResult(source, true, ('%s out at %s'):format(brought.value.plate,
 				brought.value.label))
 		end)

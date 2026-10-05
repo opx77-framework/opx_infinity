@@ -761,6 +761,11 @@ end
 -- door, which is the whole of the difference from what was here before.
 local DRESSING_MS = 600000
 
+-- How long an open room's grant may be kept alive by its client (`ROOM_ALIVE`),
+-- counted from the ask. Half an hour of browsing is generous; past it the room
+-- is somebody who walked away with it open.
+local ROOM_CAP_MS = 30 * 60 * 1000
+
 -- source -> the grants this connection holds, three kinds:
 --   open    { untilMs, owner }          any save, free: the join's own room, a
 --                                       staff member, a clothing store
@@ -888,6 +893,18 @@ end
 -- stored look back.
 -- @return table|nil `{ undo = function|nil }` when it may be written
 -- @return string|nil the refusal code
+--- Runs one charge function, answering `(paid, code, undo)` and never raising.
+local function runCharge(fn, owner, source, ...)
+	local ran, paid, code, undo = pcall(fn, source, ...)
+	if not ran then
+		Open77.log.error(('[appearance] the %s charge for player %d raised: %s')
+			:format(owner, source, tostring(paid)))
+		return false, 'clothing.unpaid'
+	end
+	if paid ~= true then return false, type(code) == 'string' and code or 'clothing.unpaid' end
+	return true, nil, type(undo) == 'function' and undo or nil
+end
+
 local function admitSave(source, player, canonical)
 	local held = grantsOf(source)
 	if held == nil then return nil, 'clothing.noFittingRoom' end
@@ -895,47 +912,81 @@ local function admitSave(source, player, canonical)
 	-- nil is "the stored record could not be read", which `SaveClothing` refuses.
 	if stored == nil then return {} end
 
+	-- A LOOK WITH A PRICE IS BILLED HERE, ON THE SAVE, and not when it was put
+	-- on. A shop's uniform used to be charged the moment it was picked, so a
+	-- Cancel kept the money and dropped the clothes; now the grant carries a
+	-- `bill`, run only by the save that keeps it. A room left by Cancel saves
+	-- nothing and costs nothing.
+	local undos = {}
+	local function settle(code)
+		for index = #undos, 1, -1 do pcall(undos[index]) end
+		return nil, code
+	end
+	local function bill(grant)
+		if type(grant.bill) ~= 'function' then return true end
+		local paid, code, undo = runCharge(grant.bill, grant.owner, source)
+		if not paid then return false, code end
+		if undo ~= nil then undos[#undos + 1] = undo end
+		return true
+	end
+	local function done()
+		if #undos == 0 then return {} end
+		return { undo = function() for index = #undos, 1, -1 do pcall(undos[index]) end end }
+	end
+
 	for index = 1, #held.looks do
-		if fitsLook(held.looks[index].wear, stored, canonical) then
+		local grant = held.looks[index]
+		if fitsLook(grant.wear, stored, canonical) then
+			local paid, code = bill(grant)
+			if not paid then return settle(code) end
 			table.remove(held.looks, index)
-			return {}
+			return done()
 		end
 	end
 	if held.open ~= nil then return {} end
 
 	local priced = held.priced
 	if priced == nil then return nil, 'clothing.noFittingRoom' end
-	-- A LOOK ALREADY PAID FOR IS NOT BILLED AGAIN. A uniform bought inside the
-	-- room is charged by the shop and laid on the room's draft, so the save that
-	-- leaves the room carries it beside whatever else moved: its slots are the
-	-- look grant's, spent here, and only the rest is the room's to charge.
-	local prepaid = {}
+	-- A LOOK'S OWN SLOTS ARE NOT BILLED AGAIN BY THE ROOM. A uniform picked
+	-- inside the room is laid on its draft, so the save that leaves the room
+	-- carries it beside whatever else moved: the slots that are wearing it are
+	-- the look's, billed once at the look's price, and only the rest is the
+	-- room's to charge by the slot. A piece this body could not wear kept the
+	-- garment it had, which moved nothing and is billed nothing; it used to make
+	-- the whole uniform count as not worn and bill every slot of it again.
+	local prepaid, spent = {}, {}
 	for index = #held.looks, 1, -1 do
-		local wear, covered, worn = held.looks[index].wear, true, false
-		for slot, wanted in pairs(wear) do
-			local now = canonical.equipment[slot]
-			if now == wanted and wanted ~= false then worn = true end
-			if now ~= wanted and now ~= false then covered = false break end
+		local grant = held.looks[index]
+		local matched = {}
+		for slot, wanted in pairs(grant.wear) do
+			if wanted ~= false and canonical.equipment[slot] == wanted then matched[#matched + 1] = slot end
 		end
-		if covered and worn then
-			for slot in pairs(wear) do prepaid[slot] = true end
-			table.remove(held.looks, index)
+		if #matched > 0 then
+			local paid, code = bill(grant)
+			if not paid then return settle(code) end
+			for _, slot in ipairs(matched) do prepaid[slot] = true end
+			-- Spent only once the whole save is paid for: a refusal below gives
+			-- the money back and must leave the grant to be used again.
+			spent[#spent + 1] = index
 		end
+	end
+	local function spend()
+		for _, index in ipairs(spent) do table.remove(held.looks, index) end
 	end
 	local slots = {}
 	local moved = M.Clothing.Moved(stored, canonical)
 	for index = 1, #moved do
 		if not prepaid[moved[index]] then slots[#slots + 1] = moved[index] end
 	end
-	if #slots == 0 then return {} end
-	local ran, paid, code, undo = pcall(priced.charge, source, slots)
-	if not ran then
-		Open77.log.error(('[appearance] the %s charge for player %d raised: %s')
-			:format(priced.owner, source, tostring(paid)))
-		return nil, 'clothing.unpaid'
+	if #slots == 0 then
+		spend()
+		return done()
 	end
-	if paid ~= true then return nil, type(code) == 'string' and code or 'clothing.unpaid' end
-	return { undo = type(undo) == 'function' and undo or nil }
+	local paid, code, undo = runCharge(priced.charge, priced.owner, source, slots)
+	if not paid then return settle(code) end
+	if undo ~= nil then undos[#undos + 1] = undo end
+	spend()
+	return done()
 end
 
 --- Forgets a departed player's look, absence, warning, floors and grant.
@@ -990,6 +1041,25 @@ local function registerEvents()
 			-- is a creation that did not happen, and its body belongs to nobody.
 			if family ~= nil then M.AdoptBodyFamily(player, family) end
 		end)
+	end)
+
+	-- A ROOM STILL OPEN KEEPS ITS GRANT. The client says so every two minutes
+	-- while its fitting room is up; the room's grant (open or priced, never a
+	-- one-look grant) is pushed a full window on, never past `ROOM_CAP_MS` from
+	-- the ask. A forged ping keeps alive a grant the player already holds, for
+	-- at most the cap, and grants nothing that was not granted.
+	RegisterNetEvent(M.Event.ROOM_ALIVE, function()
+		local src = tonumber(source)
+		if src == nil or src <= 0 then return end
+		local held = grantsOf(src)
+		if held == nil then return end
+		local now = OPX.Now()
+		for _, grant in ipairs({ held.priced, held.open }) do
+			if grant ~= nil then
+				local cap = (grant.sinceMs or now) + ROOM_CAP_MS
+				grant.untilMs = math.min(cap, math.max(grant.untilMs, now + DRESSING_MS))
+			end
+		end
 	end)
 
 	RegisterNetEvent(M.Event.SAVE_CLOTHING, function(payload)
@@ -1231,7 +1301,10 @@ function M.Api()
 		local id = tonumber(playerId)
 		if id == nil or id <= 0 then return false, 'invalid_player' end
 		options = type(options) == 'table' and options or {}
-		local grant = { untilMs = OPX.Now() + DRESSING_MS, owner = tostring(owner or '?') }
+		local grant = { untilMs = OPX.Now() + DRESSING_MS, owner = tostring(owner or '?'),
+			sinceMs = OPX.Now() }
+		-- A look's price, run by the save that keeps it (see `admitSave`).
+		if type(options.bill) == 'function' then grant.bill = options.bill end
 		local wear
 		if type(options.charge) ~= 'function' and type(options.wear) == 'table' then
 			wear = {}

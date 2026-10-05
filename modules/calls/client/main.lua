@@ -342,6 +342,14 @@ function M.FromView(action, payload)
 		-- The page puts the question; this is the yes.
 		return M.Invite(type(payload) == 'table' and payload.id or nil, 'contact')
 	end
+	if action == 'forget' then
+		-- A row's reference, as the server minted it with the list; the server
+		-- alone knows which contact it stands for, and judges it again.
+		local ref = type(payload) == 'table' and payload.ref or nil
+		if type(ref) ~= 'string' or #ref > 8 then return end
+		TriggerServerEvent(M.Event.FORGET, ref)
+		return
+	end
 	if action == 'diag' then
 		OPX.Note('calls', ('view: %s'):format(tostring(type(payload) == 'table'
 			and payload.detail or payload)))

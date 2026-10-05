@@ -305,12 +305,12 @@ end
 -- A LOOK GRANT, NOT A ROOM. What is granted is one save of exactly `wear` on top
 -- of what is stored: an open grant here was ten minutes of the whole catalogue,
 -- free, from anywhere a saved outfit could be loaded -- which is everywhere.
-local function dressIn(source, look, wear)
+local function dressIn(source, look, wear, bill)
 	if appearance == nil or type(appearance.AllowClothingSave) ~= 'function' then
 		refuse(source, 'shops.unavailable')
 		return false
 	end
-	if not appearance.AllowClothingSave(source, 'shops', { wear = wear }) then
+	if not appearance.AllowClothingSave(source, 'shops', { wear = wear, bill = bill }) then
 		refuse(source, 'shops.unavailable')
 		return false
 	end
@@ -326,7 +326,10 @@ local function onOpen(source, key)
 		return refuse(source, 'shops.unavailable')
 	end
 
-	TriggerClientEvent(M.Event.LOOKS, source, { shop = shop.key, looks = looksFor(source, shop) })
+	-- AND THE PRICES, so the room can say what Save will cost before it costs
+	-- it. The server still bills from its own table; this is the display.
+	TriggerClientEvent(M.Event.LOOKS, source, { shop = shop.key, looks = looksFor(source, shop),
+		prices = tuning.charge and shop.prices or {}, currency = tuning.currency })
 
 	local ok, reason = appearance.OpenWardrobe(source, { owner = 'shops', charge = chargeFor(shop) })
 	if not ok then
@@ -361,25 +364,33 @@ local function onWear(source, payload)
 		if not here then return refuse(source, 'shops.notHere') end
 	end
 
-	-- BEFORE THE MONEY. `dressIn` needs the `appearance` contract to grant the
-	-- save, and a till that charged for a uniform this server then could not put
-	-- on would be the one failure on this path nobody can undo.
 	if appearance == nil or type(appearance.AllowClothingSave) ~= 'function' then
 		return refuse(source, 'shops.unavailable')
 	end
 
+	-- BILLED ON THE SAVE, NOT ON THE PICK. The uniform used to be charged here,
+	-- the moment it was chosen, and a Cancel then kept the money and dropped
+	-- the clothes. The price now rides on the look's grant, and `appearance`
+	-- runs it only for the save that keeps the uniform: Cancel costs nothing,
+	-- and a uniform this body cannot wear any of is never saved, so never paid.
+	local bill = nil
 	if tuning.charge and look.cost > 0 then
-		local paid, reason = character.RemoveMoney(source, tuning.currency, look.cost,
-			('%s at %s'):format(look.label, shop.label))
-		if not paid then return refuse(source, unpaidKey(reason),
-			{ total = OPX.Locale.Money(look.cost, tuning.currency) }) end
-		-- SAID, as a fitting-room charge already is. The money left without a
-		-- word, and the uniform only lands on the room's draft.
-		OPX.NotifyLocale(source, 'shops.paid',
-			{ total = OPX.Locale.Money(look.cost, tuning.currency), shop = shop.label }, 'success')
+		bill = function(payer)
+			local reason = ('%s at %s'):format(look.label, shop.label)
+			local paid, refused = character.RemoveMoney(payer, tuning.currency, look.cost, reason)
+			if not paid then
+				refuse(payer, unpaidKey(refused), { total = OPX.Locale.Money(look.cost, tuning.currency) })
+				return false, 'clothing.unpaid'
+			end
+			OPX.NotifyLocale(payer, 'shops.paid',
+				{ total = OPX.Locale.Money(look.cost, tuning.currency), shop = shop.label }, 'success')
+			return true, nil, function()
+				character.AddMoney(payer, tuning.currency, look.cost, 'refund: ' .. reason)
+			end
+		end
 	end
 
-	dressIn(source, look.key, look.wear)
+	dressIn(source, look.key, look.wear, bill)
 end
 
 -- ── saved looks ─────────────────────────────────────────────────────────────

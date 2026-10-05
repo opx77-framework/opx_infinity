@@ -59,6 +59,11 @@ end
 -- client that never draws the menu cannot strand a body for the session.
 local HOLD_MAX_FLOOR_SECONDS = 60
 
+-- The most a hold can be stretched by a join that keeps reporting itself busy
+-- (`M.Waiting`), counted from the offer: half an hour in the fitting room and
+-- on the name form together is a player who is not coming back to choose.
+local HOLD_CAP_MS = 30 * 60 * 1000
+
 local function holdMs()
 	return math.floor(M.Number(M.Settings.HOLD_MAX_SECONDS, HOLD_MAX_FLOOR_SECONDS) * 1000)
 end
@@ -175,6 +180,9 @@ local function settle(source, token, point, reason)
 			-- The label only, for the sentence the client shows. The coordinates
 			-- are not the client's business in either direction.
 			place = point ~= nil and point.label or nil,
+			-- And its id, which the client turns into the place's name in the
+			-- player's language when the catalogue has one.
+			placeId = point ~= nil and point.id or nil,
 		})
 	end)
 	return true
@@ -251,6 +259,7 @@ function M.Offer(source, citizenId)
 		resume = resume,
 		expiresAtMs = nil,
 		holdUntilMs = OPX.Now() + holdMs(),
+		offeredAtMs = OPX.Now(),
 	}
 
 	-- A DURATION, not a deadline. The page counts down to its own clock plus this
@@ -311,6 +320,25 @@ function M.Opened(source)
 	held.expiresAtMs = OPX.Now() + life
 	Open77.log.info(('[spawn] %s has the menu up: %d second(s) to choose')
 		:format(held.citizenId, math.floor(life / 1000)))
+end
+
+--- The join is still busy ahead of the menu: the hold is stretched.
+-- @author dop42
+-- THE HOLD RAN OUT UNDER THE FITTING ROOM. It is five minutes from the offer,
+-- and the offer comes at world entry, before the name form and the clothes: a
+-- new player who took their time there was placed by the server ("No choice
+-- was made") -- a kill and a respawn under an open modal -- for a menu they
+-- had never seen. The client says, while the entry module reports itself
+-- busy, that it still is; each report pushes the hold a full hold away, up to
+-- `HOLD_CAP_MS` from the offer. A forged report buys its own player a later
+-- placement and nothing else, which is the bound `M.Opened` already accepts.
+-- @param source Source
+function M.Waiting(source)
+	local held = pending and pending[source]
+	if held == nil or held.expiresAtMs ~= nil then return end
+	local now = OPX.Now()
+	local cap = (held.offeredAtMs or now) + HOLD_CAP_MS
+	held.holdUntilMs = math.min(cap, math.max(held.holdUntilMs, now + holdMs()))
 end
 
 --- Handles the click. Every field on the payload is attacker-controlled.
@@ -457,6 +485,13 @@ function M.Start()
 		local src = tonumber(source)
 		if not src then return end
 		M.Opened(src)
+	end)
+
+	RegisterNetEvent(M.Event.WAITING, function()
+		local src = tonumber(source)
+		if not src then return end
+		if OPX.Cooling(src, 'spawn:waiting', 5000) then return end
+		M.Waiting(src)
 	end)
 
 	-- A character put down on a slot that stays connected: its choice goes with it.

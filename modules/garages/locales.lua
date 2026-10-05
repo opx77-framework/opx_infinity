@@ -18,7 +18,6 @@ local EN = {
 	-- other opens a list, and a player who cannot tell them apart drives into the
 	-- wrong one.
 	['garages.prompt.putAway'] = 'Put your vehicle away',
-	['garages.prompt.driveIn'] = 'Take out your vehicle',
 
 	-- The two things a row in the list can be. A garage is in several places
 	-- now, so "the car you left here" and "the car you left at the other end of
@@ -27,8 +26,10 @@ local EN = {
 	['garages.list.here'] = 'Parked here',
 	['garages.list.away'] = 'Elsewhere',
 
-	['garages.broughtOut'] = 'Brought out {plate}.',
-	['garages.storedAway'] = 'Put away {plate}.',
+	['garages.broughtOut'] = 'Brought out {vehicle}.',
+	['garages.storedAway'] = 'Put away {vehicle}.',
+	['garages.recalled'] = 'Recalled {vehicle} here.',
+	['garages.vehicleLabel'] = '{name} · {plate}',
 
 	['garages.noSuchSpot'] = 'There is no garage here.',
 	['garages.noCharacter'] = 'Your character is not loaded yet. Try again in a moment.',
@@ -61,14 +62,15 @@ local FR = {
 	['garages.prompt.garage'] = 'Ouvrir votre garage',
 	['garages.prompt.avpad'] = 'Ouvrir votre hangar',
 	['garages.prompt.putAway'] = 'Ranger votre véhicule',
-	['garages.prompt.driveIn'] = 'Sortir votre véhicule',
 
 	['garages.menu.title'] = '{garage}',
 	['garages.list.here'] = 'Garé ici',
 	['garages.list.away'] = 'Ailleurs',
 
-	['garages.broughtOut'] = 'Véhicule sorti : {plate}.',
-	['garages.storedAway'] = 'Véhicule rangé : {plate}.',
+	['garages.broughtOut'] = 'Véhicule sorti : {vehicle}.',
+	['garages.storedAway'] = 'Véhicule rangé : {vehicle}.',
+	['garages.recalled'] = 'Véhicule rappelé ici : {vehicle}.',
+	['garages.vehicleLabel'] = '{name} · {plate}',
 
 	['garages.noSuchSpot'] = 'Il n’y a pas de garage ici.',
 	['garages.noCharacter'] = "Votre personnage n'est pas encore chargé. Réessayez dans un instant.",

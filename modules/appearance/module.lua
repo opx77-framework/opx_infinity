@@ -97,6 +97,11 @@ M.Event = {
 	-- own travel doors.
 	SHOW = OPX.Event(NET, 'appearance', 'show'),
 
+	-- Client to server, every two minutes while a fitting room is open: "the
+	-- room is still up". The server keeps the room's save grant alive with it,
+	-- up to a hard cap, so a long browse is not answered "not saved".
+	ROOM_ALIVE = OPX.Event(NET, 'appearance', 'roomAlive'),
+
 	-- The client's own bus. `decision` is what this module says after every
 	-- decision it reaches, and is public: a bare AddEventHandler listens to it.
 	-- `view` is the seam a view module attaches to; see client/wardrobe.lua.

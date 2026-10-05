@@ -201,8 +201,9 @@ are errors (`OPX.Result.Kind`).
 
 `garages` is a **place**, like a dealer and a store: stand on the marker, press its
 key — **E** by default and rebindable — and it does one of two things. On foot it
-brings one of the character's own vehicles out AT the spot; **sitting in one of them,
-the same key puts it away**, filed under the spot the player is standing on, which is
+opens the garage's list, so the player picks which of their own vehicles comes out AT
+the spot; **sitting in one of them, the same key puts it away** (sitting in somebody
+else's, it says so and does nothing), filed under the spot the player is standing on, which is
 what makes it come out there next time. Which of the two is decided on the SERVER, from
 the seat the host reports and the plate the `vehicles` contract holds: a client that
 said "I am in my car" would be a client deciding what gets stored. The client's half of

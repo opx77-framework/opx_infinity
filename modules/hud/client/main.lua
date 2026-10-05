@@ -357,10 +357,18 @@ end
 local function identityLines(data, lines)
 	local job = data.job
 	if Settings.SHOW_JOB ~= false and type(job) == 'table' and job.label ~= nil then
+		-- IN THE PLAYER'S LANGUAGE when the catalogue has the job and the grade
+		-- (`character.job.<job>`, `character.grade.<job>.<level>`), and the
+		-- config's own text otherwise: a French HUD read "Unemployed / Freelancer".
+		-- The label travels as a key the page looks up; the value is drawn as it
+		-- comes, so it is resolved here.
+		local jobKey = 'character.job.' .. tostring(job.name)
+		local grade = type(job.grade) == 'table' and job.grade or {}
+		local gradeKey = ('character.grade.%s.%s'):format(tostring(job.name), tostring(grade.level))
 		lines[#lines + 1] = {
 			id = 'job',
-			label = tostring(job.label),
-			value = type(job.grade) == 'table' and tostring(job.grade.name or '') or '',
+			label = OPX.Locale.Exists(jobKey) and jobKey or tostring(job.label),
+			value = OPX.Locale.Exists(gradeKey) and locale(gradeKey) or tostring(grade.name or ''),
 			tone = job.onDuty == true and 'on' or 'neutral',
 		}
 	end

@@ -1380,6 +1380,117 @@ end
 -- asking this module nothing. The choice still open for the first stayed open:
 -- its menu up and holding the keyboard until the hold ran out, and a second
 -- offer on the slot refused behind it.
+-- ── spawn: the hold waits for a join that is busy ahead of the menu ─────────
+-- The hold is counted from the offer, which comes before the name form and the
+-- fitting room: a new player who took their time there was placed by the
+-- server for a menu they had never seen. A join that reports itself busy
+-- stretches the hold, up to a cap; once the menu is up, its own window rules.
+section('spawn: the hold waits for a join that is busy ahead of the menu')
+do
+	local env, control, why = boot('server', nil, nil, function(sandbox, file)
+		if file == 'config/spawn.lua' then
+			sandbox.OPX.Config.MODULES.spawn.HOLD_MAX_SECONDS = 60
+			sandbox.OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		end
+	end)
+	check('the server boots with a one-minute hold', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local src = 77
+		control.Admit(src, 'account-hold')
+		OPX.EnsureSession(src)
+		check('a choice is offered', spawn.Offer(src, 'citizen-hold') == true)
+		check('the client can report the join busy', type(control.netEvents[spawn.Event.WAITING]) == 'function')
+		-- Fifty seconds in, the name form is still up.
+		control.Pump(500)
+		env.source = src
+		control.netEvents[spawn.Event.WAITING]()
+		env.source = nil
+		control.Pump(200)
+		check('seventy seconds in, a busy join still holds its choice', spawn.IsPending(src) == true)
+		-- Reported no more: the stretched hold runs out like any other.
+		control.Pump(500)
+		check('and a hold nobody stretches again still runs out', spawn.IsPending(src) == false)
+	end
+end
+
+-- The client tells the server, while the entry module says the join is busy
+-- and the offer is waiting behind it.
+section('spawn: the client reports a busy join while an offer waits')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local function waits()
+			local n = 0
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == spawn.Event.WAITING then n = n + 1 end
+			end
+			return n
+		end
+		env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = true, phase = 'name' })
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 45000 })
+		control.Pump(320)
+		check('an offer waiting behind the name form is reported busy', waits() >= 1, waits())
+		env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false, phase = 'idle' })
+		local after = waits()
+		control.Pump(320)
+		check('and nothing is reported once the join is through', waits() == after, waits() - after)
+	end
+end
+
+-- ── job, grade and spawn-place names are in the player's language ───────────
+-- The HUD drew the config's English ("Unemployed / Freelancer") and the spawn
+-- menu its English place names to every player. Each shipped job, grade and
+-- place has a line in both languages now; one an operator adds without a line
+-- keeps the config's own text.
+section('labels: every shipped job, grade and spawn place has words in both languages')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the labels', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Config.MODULES.character.JOBS or {}
+		local places = OPX.Config.MODULES.spawn.LOCATIONS or {}
+		local missing, counted = {}, 0
+		for _, code in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(code)
+			for name, job in pairs(jobs) do
+				counted = counted + 1
+				if not OPX.Locale.Exists('character.job.' .. name) then
+					missing[#missing + 1] = code .. ':job.' .. name
+				end
+				for level in pairs(job.grades or {}) do
+					if not OPX.Locale.Exists(('character.grade.%s.%s'):format(name, tostring(level))) then
+						missing[#missing + 1] = ('%s:grade.%s.%s'):format(code, name, tostring(level))
+					end
+				end
+			end
+			for _, place in ipairs(places) do
+				for _, suffix in ipairs({ '', '.district' }) do
+					if not OPX.Locale.Exists('spawn.place.' .. place.id .. suffix) then
+						missing[#missing + 1] = code .. ':place.' .. place.id .. suffix
+					end
+				end
+			end
+		end
+		table.sort(missing)
+		check('each one has a line in English and French', counted > 0 and #places > 0 and #missing == 0,
+			table.concat(missing, ', '))
+		OPX.Locale.Set('fr')
+		check('and French reads French',
+			OPX.Locale.Text('character.job.unemployed') ~= 'Unemployed'
+				and OPX.Locale.Text('spawn.place.stoop') ~= 'King Stoop forecourt')
+		OPX.Locale.Set('en')
+		check('the English lines say what the config says, so nothing moves for English players',
+			OPX.Locale.Text('character.job.unemployed') == jobs.unemployed.label
+				and OPX.Locale.Text('character.grade.unemployed.0') == jobs.unemployed.grades[0].name)
+	end
+end
+
 section('spawn: a choice left by a character that left the slot')
 do
 	local env, control, why = boot('server')
@@ -3544,6 +3655,13 @@ do
 
 		check('the fitting room carries a category strip', groups() ~= nil,
 			'no groups ever reached the page')
+		-- And while it is up it tells the server so, which keeps the room's save
+		-- grant alive through a long browse.
+		local pinged = false
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == env.OPX.Modules.Get('appearance').Event.ROOM_ALIVE then pinged = true end
+		end
+		check('an open room tells the server it is still up', pinged)
 		local ids = {}
 		for _, row in ipairs(groups() or {}) do ids[#ids + 1] = row.id end
 		check('and saved outfits, saving and codes are all reachable from it',
@@ -3567,6 +3685,23 @@ do
 			not hasGroup('looks'))
 		check('and the list lands inside a small budget',
 			listing < 4000, ('%d instructions'):format(listing))
+
+		-- THE ROOM SAYS WHAT SAVE WILL COST. It showed no price anywhere, and the
+		-- first amount a player saw was "Paid X". A shop's price list arrives with
+		-- its looks, and the status line is the bill of what moved.
+		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji', looks = {},
+			prices = { OuterChest = 500 }, currency = 'EDDIES' })
+		control.PageEmit(page, 'opx:panel:slide', { handle = handle, id = 'OuterChest', index = 4, commit = true })
+		local status
+		for index = 1, #page.sent do
+			local sentStatus = page.sent[index].payload.status
+			if sentStatus ~= nil then status = sentStatus end
+		end
+		local expected = env.OPX.Locale.Text('shops.room.total',
+			{ total = env.OPX.Locale.Money(500, 'EDDIES') })
+		check('a priced room shows what Save will cost, on its status line',
+			type(status) == 'table' and status.text == expected and status.kind ~= 'error',
+			type(status) == 'table' and tostring(status.text) or tostring(status))
 
 		-- ── a shared code, all the way onto the sliders ──────────────────────
 		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
@@ -6919,6 +7054,17 @@ do
 		check('and the answer says it was moved rather than brought from the roster',
 			answer ~= nil and answer[2] == true and answer[5] == 'recalled',
 			answer and tostring(answer[5]))
+		-- And the toast says so, naming the car as the list does.
+		local function lastNoticeTo(id)
+			for index = #control.notices, 1, -1 do
+				if control.notices[index].playerId == id then return tostring(control.notices[index].message) end
+			end
+			return ''
+		end
+		check('and the toast says Recalled, with the model and the plate',
+			lastNoticeTo(src) == OPX.Locale.Text('garages.recalled',
+				{ vehicle = OPX.Locale.Text('garages.vehicleLabel', { name = 'Archer Hella', plate = 'AA111AA' }) }),
+			lastNoticeTo(src))
 
 		-- ── the owner leaves with a key, and with one ─────────────────────
 		-- AA111AA has come out twice now -- brought, then recalled -- and AA222AA
@@ -7020,6 +7166,12 @@ do
 		check('and the answer says STORED, which is not the same thing as brought out',
 			answer ~= nil and answer[2] == true and answer[5] == 'stored',
 			answer and tostring(answer[5]))
+		local putAway = ''
+		for index = #control.notices, 1, -1 do
+			if control.notices[index].playerId == src then putAway = tostring(control.notices[index].message) break end
+		end
+		check('and the toast names the car by its model and plate',
+			putAway:find('Archer Hella', 1, true) ~= nil and putAway:find('AA111AA', 1, true) ~= nil, putAway)
 		check('and the character is on foot again as far as the contract is concerned',
 			vehicleApi.Occupied(src).value == nil)
 
@@ -7609,8 +7761,17 @@ do
 		check('a door is a door and the client knows which it is',
 			Runtime.Report().nearest == 'garage_dock#1.in' and Runtime.Report().role == 'entry',
 			Runtime.Report().role)
-		check('and on foot it asks the player to drive in',
-			Runtime.Report().label == 'garages.prompt.driveIn', Runtime.Report().label)
+		check('and on foot it offers the garage, as a menu point does',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		-- THE LEAD'S DECISION: on foot, a door opens the list, so a player with two
+		-- cars filed there chooses which one comes out.
+		local footMark = #cctl.serverEvents
+		mapping.pressed()
+		local onFoot = cctl.serverEvents[#cctl.serverEvents]
+		check('and on foot the key on a door asks for the list, not for a car',
+			#cctl.serverEvents == footMark + 1 and onFoot ~= nil
+				and onFoot.name == garages.Event.LIST and onFoot[1] == 'garage_dock#1.in',
+			onFoot and tostring(onFoot.name))
 		cctl.Seat(1, { seat = 'driver' })
 		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
 		check('seated in a vehicle, the door says put away',
@@ -8309,21 +8470,16 @@ do
 				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
 		end
 		local createdBefore = #control.vehicleCreates
-		local noticesBefore = #control.notices
 		character.Players[src].PlayerData.money.EDDIES = 2000000
 		local waiting = contract.Buy(src, 'yard', 'hella', nil)
-		local toldWhere = false
-		for index = noticesBefore + 1, #control.notices do
-			local notice = control.notices[index]
-			if notice.playerId == src and tostring(notice.message):find('waiting', 1, true) then
-				toldWhere = true
-			end
-		end
 		check('with every spot taken the sale still stands, and no car is created inside another',
 			waiting.ok == true and waiting.value.spawned == false
 				and #control.vehicleCreates == createdBefore,
 			tostring(waiting.error))
-		check('and the buyer is told the car is waiting in its garage', toldWhere)
+		check('and the answer carries where the car is waiting, for whoever tells the buyer',
+			waiting.ok and type(waiting.value.handOver) == 'table'
+				and waiting.value.handOver.key == 'dealership.handOverBlocked')
+
 		for _, id in ipairs(blockers) do env.Open77.vehicles.remove(id) end
 		while #rows > rowsBefore do table.remove(rows) end
 
@@ -8505,6 +8661,40 @@ do
 		check('and nothing was charged for it',
 			character.Players[src].PlayerData.money.EDDIES == wireBalance - hella.price,
 			tostring(character.Players[src].PlayerData.money.EDDIES))
+
+		-- THE ORDER THE BUYER READS IT IN: what they bought, then where it is.
+		-- The where came first, said from inside the purchase. Every spot beside
+		-- the dealer is taken again for it. A function of its own: this section
+		-- already holds as many locals as one Lua function may.
+		;(function()
+		local rowsAtStart = #rows
+		local walls = {}
+		for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+			walls[#walls + 1] = env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
+		end
+		control.Pump(60)
+		local noticesBefore = #control.notices
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		env.source = src
+		control.netEvents[dealership.Event.BUY]('yard', 'hella', nil)
+		env.source = nil
+		control.Pump(20)
+		local order = {}
+		for index = noticesBefore + 1, #control.notices do
+			local notice = control.notices[index]
+			if notice.playerId == src then
+				local message = tostring(notice.message)
+				if message:find('waiting', 1, true) then order[#order + 1] = 'where'
+				elseif message:find('bought', 1, true) then order[#order + 1] = 'bought' end
+			end
+		end
+		check('the buyer reads "You bought" first, then where the car is',
+			order[1] == 'bought' and order[2] == 'where', table.concat(order, ', '))
+		for _, id in ipairs(walls) do env.Open77.vehicles.remove(id) end
+		while #rows > rowsAtStart do table.remove(rows) end
+		end)()
 		-- ── selling to somebody standing in front of you ───────────────────
 		-- THE OWNER'S OWN TWO CHOICES ARE WHAT IS UNDER TEST. "The buyer must
 		-- have the money, and THE BUYER'S CLIENT CONFIRMS the purchase" -- chosen
@@ -9309,6 +9499,7 @@ do
 				('%d raised, longest un-yielded run was %d'):format(raised, longest))
 		end
 
+
 		-- ── and a car written in config is on the floor from Init ──────────
 		-- THE CONFIG HALF OF THE SAME MERGE. Everything above exercises the
 		-- database half; this is the half that matters from here on, because
@@ -9349,6 +9540,7 @@ do
 		end
 		check('an offer to nobody is settled as refused for the seller', settled == 1, settled)
 		check('and the server raises no second toast beside it', refusedToasts == 0, refusedToasts)
+
 	end
 end
 
@@ -20753,13 +20945,23 @@ do
 		check('a fresh carrier has the crate',
 			OPX.Api.Get('hauling').State().value.sites.docks.carried == 1)
 		local smuggled = CRATE
+		-- Carried ten metres across the yard first: the crate is put down where
+		-- the player got in, never teleported back to its point (the lead's call).
+		positions[4] = { x = home.x + 10.0, y = home.y, z = home.z, bucket = 0 }
 		control.Fire(M.PLAYER_ENTERED_VEHICLE, 4, 'vehicle-1', 0)
-		local dropped = crateAtHome()
+		local dropped
+		for id, prop in pairs(props.byId) do
+			if prop.attachment == nil and math.abs(prop.x - (home.x + 10.0)) < 0.001
+				and math.abs(prop.y - home.y) < 0.001 then dropped = id end
+		end
 		check('getting into a vehicle drops the crate rather than smuggling it',
-			dropped ~= nil and dropped ~= smuggled
-				and OPX.Api.Get('hauling').State().value.sites.docks.carried == 0,
+			dropped ~= nil and OPX.Api.Get('hauling').State().value.sites.docks.carried == 0,
 			tostring(dropped))
-		CRATE = dropped or CRATE
+		check('at the feet of the player, not back on its point', crateAtHome() == nil, tostring(crateAtHome()))
+		-- Back on its point for the rest of the section.
+		at = at + Access.DROP_RETURN_MS + 1
+		control.Pump(1)
+		CRATE = crateAtHome() or dropped or CRATE
 		check('and the carrier is told why',
 			lastAnswer()[1] == false and lastAnswer()[2] == 'carry_dropped',
 			tostring(lastAnswer()[2]))
@@ -24027,6 +24229,93 @@ do
 		check('a look already paid for inside the room is not charged again by it',
 			refused == nil and billed[1] == 'Feet', tostring(billed[1]))
 
+		-- ── a look with a price is billed by the save that keeps it ──────────
+		-- THE LEAD'S DECISION: a uniform is billed on Save, not on the pick, and
+		-- a Cancel -- which saves nothing -- costs nothing.
+		load()
+		billed = {}
+		local looked, lookAnswer = 0, { true }
+		local lookUndone = 0
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return true
+		end })
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01',
+			Legs = 'Items.Uniform_Pants' }, bill = function()
+				looked = looked + 1
+				return lookAnswer[1], lookAnswer[2], function() lookUndone = lookUndone + 1 end
+			end })
+		check('a priced look costs nothing until a save keeps it', looked == 0)
+		lookAnswer = { false, 'clothing.unpaid' }
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01' }))
+		check('a priced look the wallet refuses is a save refused',
+			refused == 'clothing.unpaid' and looked == 1, tostring(refused))
+		load()
+		lookAnswer = { true }
+		writes = 0
+		-- The trousers did not fit this body: the old ones stayed on. The jacket
+		-- is the uniform's and billed at its price, once; the room bills nothing
+		-- for it, and nothing for the trousers that never moved.
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01' }))
+		check('the same look, paid, is written: billed once at its price and not again by the slot',
+			refused == nil and looked == 2 and #billed == 0 and writes == 1,
+			('%s, %d bill(s), %d slot charge(s)'):format(tostring(refused), looked, #billed))
+
+		-- The shop's own Uniforms row takes no money when it is picked.
+		do
+			local contract = OPX.Api.Get('appearance')
+			local granted
+			local realAllow = contract.AllowClothingSave
+			contract.AllowClothingSave = function(id, owner, options) granted = options; return true end
+			local money = OPX.Api.Get('character')
+			local realRemove = money.RemoveMoney
+			local taken = 0
+			money.RemoveMoney = function() taken = taken + 1; return true end
+			control.Admit(PLAYER, 'account-shopper')
+			control.Stand(PLAYER, -1180.0, 1550.0, 25.0)
+			env.source = PLAYER
+			control.netEvents[shops.Event.WEAR]({ shop = 'thrift_watson', look = 'corpo_black' })
+			env.source = nil
+			control.Pump(5)
+			check('picking a priced uniform takes no money', taken == 0, taken)
+			check('it hands appearance the bill for the save instead',
+				type(granted) == 'table' and type(granted.bill) == 'function')
+			if type(granted) == 'table' and type(granted.bill) == 'function' then
+				local ok, _, undo = granted.bill(PLAYER)
+				check('and that bill is the price of the look, with an undo',
+					ok == true and taken == 1 and type(undo) == 'function', tostring(ok))
+			end
+			money.RemoveMoney = realRemove
+			contract.AllowClothingSave = realAllow
+		end
+
+		-- ── a room still open keeps its grant, to a cap ──────────────────────
+		-- A long browse outlived the ten-minute grant and the save that left the
+		-- room was refused "not saved". The client pings while the room is up.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load()
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function() return true end })
+		local function alive()
+			env.source = PLAYER
+			control.netEvents[appearance.Event.ROOM_ALIVE]()
+			env.source = nil
+		end
+		for _ = 1, 6 do
+			control.Pump(1200)
+			alive()
+		end
+		load()
+		check('a room kept alive is still saved twelve minutes in',
+			save(wearing({ Head = 'Items.Hat_Alive' })) == nil)
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function() return true end })
+		for _ = 1, 17 do
+			control.Pump(1200)
+			alive()
+		end
+		load()
+		check('and not past the half-hour cap, however long it is kept alive',
+			save(wearing({ Head = 'Items.Hat_Late' })) == 'clothing.noFittingRoom')
+
 		-- ── the shop's own door hands out a priced room ──────────────────────
 		local contract = OPX.Api.Get('appearance')
 		local seen
@@ -26919,6 +27208,183 @@ end
 -- "That did not work.", a refused drop toasted twice, a hand-over announced
 -- itself twice to the receiver, a hotbar key ate four burritos in one bite, and
 -- an owner locking the car shut the trunk with no word.
+-- ── inventory papercuts, second pass: the owner's decisions ─────────────────
+-- Medical items heal (they were destroyed and did nothing); drawing a weapon
+-- closes the screen as food does; notes are told once, by the server, as money.
+section('inventory: medical items heal, a drawn weapon closes the screen, notes are money')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		local Containers, Players, Options, KIND, Catalog =
+			inventory.Containers, inventory.Players, inventory.Options, inventory.KIND, inventory.Catalog
+		local REQUEST, ANSWER, USED = inventory.Event.REQUEST, inventory.Event.ANSWER, inventory.Event.USED
+		control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+		local function seat(player, citizen)
+			control.Admit(player, 'account-' .. player)
+			control.Stand(player, 10.0, 20.0, 30.0)
+			character.Players[player] = {
+				PlayerData = { citizenId = citizen, source = player,
+					userId = 'account-' .. player, money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizen] = player
+			character.Registry.byUserId['account-' .. player] = player
+			local bag = Containers.Transient(KIND.CHARACTER, citizen, Options.BAG_SLOTS,
+				Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(player)
+			return bag
+		end
+		local PLAYER, OTHER = 831, 832
+		local bag = seat(PLAYER, 'citizen-medic')
+		seat(OTHER, 'citizen-medic-2')
+
+		local nextId = 0
+		local function ask(action, payload)
+			nextId = nextId + 1
+			local id, mark = nextId, #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[REQUEST](id, action, payload)
+			env.source = nil
+			control.Pump(20)
+			local reply, used = nil, nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER and event[1] == id then
+					reply = { ok = event[2], code = event[3] }
+				elseif event.name == USED and event.source == PLAYER then
+					used = event[1]
+				end
+			end
+			return reply, used
+		end
+		local function slotOf(name)
+			for index, entry in pairs(bag.items) do if entry.name == name then return index end end
+		end
+		local function countOf(name)
+			local total = 0
+			for _, entry in pairs(bag.items) do if entry.name == name then total = total + entry.count end end
+			return total
+		end
+
+		-- ── a bandage heals ──────────────────────────────────────────────────
+		check('the shipped medical items are configured to heal',
+			Options.HEALING.bandage ~= nil and Options.HEALING.bounce_back ~= nil
+				and Options.HEALING.maxdoc ~= nil
+				and Options.HEALING.bandage < Options.HEALING.bounce_back
+				and Options.HEALING.bounce_back < Options.HEALING.maxdoc)
+		local health, set = { health = 50, maxHealth = 200 }, {}
+		local players = env.Open77.players
+		local realGet, realSet = players.getHealth, players.setHealth
+		players.getHealth = function() return { health = health.health, maxHealth = health.maxHealth } end
+		players.setHealth = function(id, value)
+			set[#set + 1] = { id = id, value = value }
+			health.health = value
+			return true
+		end
+		Containers.Add(bag, 'bandage', 2)
+		local healed = ask('use', { slot = slotOf('bandage') })
+		check('a bandage is used', healed ~= nil and healed.ok == true, healed and healed.code)
+		check('and heals by its share of the maximum, on the server',
+			#set == 1 and set[1].id == PLAYER
+				and math.abs(set[1].value - (50 + 200 * Options.HEALING.bandage / 100)) < 1e-6,
+			set[1] and set[1].value)
+		check('and costs one bandage', countOf('bandage') == 1, countOf('bandage'))
+
+		health.health = 200
+		local full = ask('use', { slot = slotOf('bandage') })
+		check('at full health it is refused, in words',
+			full ~= nil and full.ok == false and full.code == 'full_health'
+				and OPX.Locale.Exists('inventory.error.full_health'), full and full.code)
+		check('and nothing is spent', countOf('bandage') == 1 and #set == 1)
+
+		health.health = 20
+		local downed = OPX.Api.Get('downed')
+		local realDown = downed and downed.IsDown
+		if downed then downed.IsDown = function() return OPX.Result.Ok({ down = true, waiting = false }) end end
+		local down = ask('use', { slot = slotOf('bandage') })
+		if downed then downed.IsDown = realDown end
+		check('down, a bandage revives nobody and is not spent',
+			downed ~= nil and down ~= nil and down.ok == false and countOf('bandage') == 1 and #set == 1,
+			down and down.code)
+		players.getHealth, players.setHealth = realGet, realSet
+
+		-- ── a drawn weapon closes the screen ─────────────────────────────────
+		local weaponName
+		for _, name in ipairs(Catalog.Names()) do
+			if Catalog.Get(name).weapon then weaponName = name break end
+		end
+		local sequence = 0
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() sequence = sequence + 1; return sequence end,
+			remove = function() sequence = sequence + 1; return sequence end,
+			setAmmo = function() sequence = sequence + 1; return sequence end,
+			requestSnapshot = function() sequence = sequence + 1; return sequence end,
+			get = function() return { fresh = true, drawn = true } end,
+		}
+		Containers.Add(bag, weaponName, 1)
+		local drew, used = ask('use', { slot = slotOf(weaponName) })
+		check('a weapon is drawn from the bag', drew ~= nil and drew.ok == true, drew and drew.code)
+		check('and the screen is told to close, as it is for food',
+			used ~= nil and used.close == true and used.weapon == true)
+		env.Open77.weapons = realWeapons
+
+		-- ── notes handed over are told as money, to both sides ───────────────
+		local currency = Options.CURRENCY_ITEM
+		if currency ~= nil and Options.CURRENCY_MONEY_TYPE ~= nil then
+			Containers.Add(bag, currency, 500)
+			local mark = #control.notices
+			local given = ask('give', { target = OTHER, slot = slotOf(currency), count = 200 })
+			local toReceiver
+			for index = mark + 1, #control.notices do
+				if control.notices[index].playerId == OTHER then toReceiver = control.notices[index].message end
+			end
+			check('notes handed over go through', given ~= nil and given.ok == true, given and given.code)
+			check('and the receiver is told the amount, as money',
+				toReceiver ~= nil and toReceiver:find(OPX.Locale.Money(200, Options.CURRENCY_MONEY_TYPE), 1, true) ~= nil,
+				toReceiver)
+		end
+	end
+end
+
+-- The client leaves the notes out of its own "+N" line: the server tells them.
+section('inventory: the client does not announce notes a second time')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local currency = inventory.Options.CURRENCY_ITEM
+		local lines = {}
+		local realShow = OPX.Toast.Show
+		OPX.Toast.Show = function(spec)
+			if type(spec) == 'table' and spec.id == 'inventory.change' then lines[#lines + 1] = spec.message end
+			return realShow(spec)
+		end
+		local OWN = inventory.Event.OWN
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 1 } } })
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 1 }, { name = currency, count = 1000 } } })
+		check('a withdraw of notes raises no "+1000" line', #lines == 0, table.concat(lines, ' | '))
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 3 }, { name = currency, count = 1000 } } })
+		check('while anything else still does', #lines == 1, table.concat(lines, ' | '))
+		OPX.Toast.Show = realShow
+		-- The page asks for the give list again whenever a bag slot's card opens.
+		local file = io.open('ui/src/modules/inventory/InventoryView.vue', 'r')
+		local source = file and file:read('a') or ''
+		if file then file:close() end
+		local body = source:match('function openMenu%(.-\n}\n') or ''
+		check('the slot card asks who is near every time it opens',
+			body:find("tell('nearby')", 1, true) ~= nil)
+	end
+end
+
 section('inventory papercuts: refusals are said once, and the trunk Close closes')
 do
 	local env, control, why = boot('server')
@@ -30856,6 +31322,141 @@ end
 -- two bodies are standing. A call reaches across the city; that is the feature.
 -- Handing somebody your number is something you do in front of them, and it is
 -- the one thing a client could otherwise claim to have done from anywhere.
+-- ── calls: a full contact list refuses, a contact can be deleted ────────────
+-- The lead's decisions: a full list used to make room by dropping the oldest
+-- contact without a word -- it now refuses, saying so -- and a contact can be
+-- deleted from the list. And the ring itself is no toast: the sphere says it.
+section('calls: a full contact list refuses, a contact can be deleted, a ring is no toast')
+do
+	local env, control, why = boot('server', nil, nil, function(sandbox, file)
+		if file == 'config/calls.lua' then sandbox.OPX.Config.MODULES.calls.MAX_CONTACTS = 1 end
+	end)
+	check('the server boots with a one-contact list', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C = 841, 842, 843
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Ripper', lastName = tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'fa')
+		incarnate(B, 'fb')
+		incarnate(C, 'fc')
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function refusalFor(mark, playerId)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId and type(sent[1]) == 'table' and sent[1].kind == 'error' then
+					return sent[1].code
+				end
+			end
+			return nil
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+		local function contactsOf(playerId)
+			local answer = calls.Contacts(playerId)
+			return answer.ok and answer.value.contacts or {}
+		end
+
+		-- A and B exchange contacts: each list is now full.
+		ask(A, module.Event.INVITE, B, 'contact')
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('two players exchange contacts', #contactsOf(A) == 1 and #contactsOf(B) == 1)
+
+		-- A full list refuses an offer before anybody is asked.
+		local mark = ask(A, module.Event.INVITE, C, 'contact')
+		check('a full list refuses to offer another contact, saying so',
+			refusalFor(mark, A) == 'calls.error.contactsFull', refusalFor(mark, A))
+		check('and nothing is put to the other side', inviteOn(C) == nil)
+
+		-- An offer INTO a full list is refused at the answer, and nobody is dropped.
+		ask(C, module.Event.INVITE, B, 'contact')
+		mark = ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('accepting into a full list is refused, saying so',
+			refusalFor(mark, B) == 'calls.error.contactsFull', refusalFor(mark, B))
+		check('and nobody was dropped to make room',
+			#contactsOf(B) == 1 and contactsOf(B)[1].citizenId == 'citizen-fa' and #contactsOf(C) == 0)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- A deletes B, by the reference the list carried.
+		control.Pump(20)
+		env.source = A
+		control.netEvents[module.Event.ASK_ROSTER]()
+		env.source = nil
+		local roster
+		for index = #control.clientEvents, 1, -1 do
+			local sent = control.clientEvents[index]
+			if sent.name == module.Event.ROSTER and sent.source == A then roster = sent[1] break end
+		end
+		local row = roster and roster.rows[1] or nil
+		check('the list carries a reference for each contact, and no citizen id',
+			row ~= nil and type(row.ref) == 'string' and row.citizenId == nil)
+		check('a stranger\'s reference deletes nothing',
+			(function()
+				ask(C, module.Event.FORGET, row and row.ref)
+				return #contactsOf(A) == 1
+			end)())
+		local noticeMark = #control.notices
+		ask(A, module.Event.FORGET, row and row.ref)
+		check('the reference deletes that contact', #contactsOf(A) == 0, #contactsOf(A))
+		local said = false
+		for index = noticeMark + 1, #control.notices do
+			if control.notices[index].playerId == A
+				and control.notices[index].message == OPX.Locale.Text('calls.contact.forgotten') then said = true end
+		end
+		check('and says so', said)
+
+		-- A ring is the sphere's, not a toast's.
+		noticeMark = #control.notices
+		ask(B, module.Event.INVITE, A)
+		check('B, who still has A, can ring A', inviteOn(A) ~= nil)
+		local toasts = 0
+		for index = noticeMark + 1, #control.notices do
+			local id = control.notices[index].playerId
+			if id == A or id == B then toasts = toasts + 1 end
+		end
+		check('and neither side gets a toast repeating the sphere', toasts == 0, toasts)
+	end
+end
+
 section('calls: a refusal is an answer, and a contact needs two people and a consent')
 do
 	local env, control, why = boot('server')
@@ -30940,12 +31541,11 @@ do
 			refused ~= nil and refused.code == 'calls.error.notContact',
 			refused and tostring(refused.code))
 		check('and nothing rings on their side', inviteOn(B) == nil)
-		local placedText = OPX.Locale.Text('calls.placed', { name = 'Fixer cb' })
 		local leaked = false
 		for _, notice in ipairs(control.notices) do
 			if notice.playerId == A and tostring(notice.message):find('cb', 1, true) then leaked = true end
 		end
-		check('and the caller is not told who is behind the id', not leaked, placedText)
+		check('and the caller is not told who is behind the id', not leaked)
 		control.Life(B, 'dead')
 		mark = ask(A, module.Event.INVITE, B)
 		refused = refusalFor(mark)
@@ -31192,17 +31792,23 @@ do
 		ask(B, module.Event.HANG_UP)
 		control.Pump(20)
 
-		-- ── a contact who is not connected is simply absent ──────────────────
-		-- Not listed as unavailable. A list that reported who was OFFLINE would
-		-- be a presence tracker; one that lists who is CALLABLE is the feature.
+		-- ── a contact who is not connected is listed, and cannot be called ───
+		-- IT USED TO BE ABSENT. The lead's decision that a contact can be deleted
+		-- needs every contact on the list -- a row nobody can see is a row nobody
+		-- can delete -- so one not connected is greyed `offline`. It says no more
+		-- than its absence said (the list always showed who was callable), and
+		-- it carries no server id: there is nobody to call, nothing to point at.
 		control.Fire('onPlayerDisconnected', B)
 		control.Admit(B, nil)
 		character.Players[B] = nil
 		character.Registry.byCitizenId['citizen-cb'] = nil
 		control.Pump(10)
 		roster = rosterFor(A)
-		check('a contact who is not connected is absent from the list, not greyed in it',
-			roster ~= nil and #roster.rows == 0, roster and #roster.rows)
+		local away = roster ~= nil and roster.rows[1] or nil
+		check('a contact who is not connected is greyed offline, with no id to call',
+			roster ~= nil and #roster.rows == 1 and away.refusal == 'offline' and away.id == 0
+				and type(away.ref) == 'string' and away.citizenId == nil,
+			roster and #roster.rows)
 		check('and the stored contact row itself is untouched -- they are away, not deleted',
 			#contactsOf(A) == 1, #contactsOf(A))
 

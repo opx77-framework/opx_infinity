@@ -117,9 +117,8 @@ end
 -- point says what it opens, per kind.
 local function promptLabel()
 	if nearest == nil then return nil end
-	if nearest.role == M.ROLE.ENTRY then
-		return seated() and 'garages.prompt.putAway' or 'garages.prompt.driveIn'
-	end
+	if nearest.role == M.ROLE.ENTRY and seated() then return 'garages.prompt.putAway' end
+	-- On foot, a door opens the list, as a menu point does (see `Runtime.Use`).
 	return 'garages.prompt.' .. tostring(nearest.kind)
 end
 
@@ -354,7 +353,15 @@ function Runtime.Use(origin)
 	-- A menu point asks for a roster; a door asks the server to act, and the
 	-- server -- never the client -- decides whether that is a put-away or a
 	-- bring-out, from the seat the host reports.
-	local event = nearest.role == M.ROLE.MENU and M.Event.LIST or M.Event.REQUEST
+	--
+	-- ON FOOT, A DOOR OPENS THE LIST TOO. It used to bring out whichever car
+	-- ranked first, so a player with two cars filed there could not choose; the
+	-- lead's decision is that the list is the answer on foot. Seated, the door
+	-- still asks the server, which puts the car away. Whether the player is
+	-- seated is this client's hint only -- the server reads the seat itself
+	-- before it stores anything, and a list asked for while seated is harmless.
+	local listing = nearest.role == M.ROLE.MENU or (nearest.role == M.ROLE.ENTRY and not seated())
+	local event = listing and M.Event.LIST or M.Event.REQUEST
 	local sent, reason = TriggerServerEvent(event, nearest.key)
 	if not sent then
 		result.ok, result.error = false, tostring(reason or 'not_sent')

@@ -124,7 +124,9 @@ OPX.Config.MODULES.shops = {
 	--
 	-- THESE ARE NOT PRICED BY SLOT. A ready-made look states its own COST, once,
 	-- because it is one purchase and not a rummage -- and a uniform a job hands
-	-- out states `COST = 0`, which is the point of it.
+	-- out states `COST = 0`, which is the point of it. It is billed when the
+	-- room is SAVED with the look on, not when it is picked: a Cancel costs
+	-- nothing, and the fitting room's status line shows the bill before Save.
 	--
 	-- `WEAR` is a partial record: the slots it names are set, and the slots it
 	-- does NOT name are left exactly as the player already had them. `false`
