@@ -523,7 +523,7 @@ onUnmounted(() => {
   >
     <ul
       v-if="matches.length > 0"
-      class="chat-suggestions op-frame"
+      class="chat-suggestions"
       :class="{ 'is-signature': signature }"
       data-augmented-ui="tr-clip border"
     >
@@ -566,7 +566,11 @@ onUnmounted(() => {
          wall took the same way out: `HudVoice.vue` ("THE BLOOM IS NOT THE
          ANSWER") and `DownedView.vue` ("NO FILTER, ANYWHERE"). The frame, the
          arete and the 2px border are what say this box is live. -->
-    <div class="chat-field op-frame op-arete" data-augmented-ui="tr-clip border">
+    <!-- NOT `.op-frame`, though it is drawn like one: that preset carries the house
+         hover, and the field is under the cursor for as long as the chat is open --
+         a pointer resting on it dropped the lit 2px arete to the 1.5px hover frame.
+         The cut and the type colour it gave are restated below. -->
+    <div class="chat-field op-arete" data-augmented-ui="tr-clip border">
       <span class="chat-caret" aria-hidden="true">&gt;</span>
       <input
         ref="field"
@@ -696,6 +700,8 @@ onUnmounted(() => {
      the street behind it is moving. It is the one surface where the ground is
      worth more than the openness. */
   background: rgba(var(--op-plate-rgb), 0.92);
+  color: var(--op-red-text);
+  --aug-tr: var(--op-cut-sm);
   --aug-border-all: 2px;
 }
 
@@ -747,6 +753,10 @@ onUnmounted(() => {
      would square the chamfer back up; augmented-ui clips the element, so the
      ground is the cut shape and nothing has to be painted into a sprite. */
   background: var(--op-plate);
+  /* What `.op-frame` gave it, without the hover: a list of completions is not
+     pressed, so it does not light under the pointer as a button would. */
+  color: var(--op-red-text);
+  --aug-tr: var(--op-cut-sm);
 }
 
 /* Nothing is filled, so the marked row is marked by its leading rule going lit
