@@ -301,6 +301,36 @@ it; `/opx.dealership.stock` lists what is for sale and which kind sells it; and
 client whose list could not open. `list` is ACL-gated and the two that act on the caller
 alone are not.
 
+### Four rules the server keeps (the owner, 2026-10)
+
+Decided after the hostile-net-events audit (#99), and each one is a door a client
+used to hold.
+
+- **Needs are the server's.** `modules/needs` decays hunger and thirst on the
+  server's clock (`DECAY_MS`, each need's `DECAY_PER_MINUTE`) while a character is
+  loaded, and a need goes up only when an item's `USE.STATUS` is consumed (the
+  inventory adds it on the server, after the unit is gone), through
+  `/opx.needs.set <player> <need> <value>` (ACL `command.opx.needs.set`), or through
+  the creator exports `AddNeeds` / `SetNeeds`. The client asks for the values once
+  and draws every `values` it is sent; there is no push, so a value a client makes
+  up has nowhere to land. Nothing happens to a body whose need reaches its MIN.
+- **Global chat needs a loaded character.** A slot on the character screen is told
+  `chat.notLoaded` and its line goes nowhere. Staff (`STAFF_PERMISSION` in
+  `config/chat.lua`, `command.opx.admin` out of the box) may still speak, and the
+  console speaks through the `chat` contract and is never asked.
+- **A share code is worn in a shop's fitting room, at its prices.** The code form is
+  in the room; the server checks the player stands at that shop's counter with that
+  shop's priced room open, puts the look on in the room, and the save that leaves
+  the room is billed slot by slot by the room's own charge -- the shop's `PRICES`,
+  exactly as if the pieces came off its racks. Cancel costs nothing and keeps nothing.
+- **A give asks the receiver.** Pressing give raises an offer; the receiver is shown
+  the item, the count and where the giver stands (*To your left · 1.2 m*, the #91
+  wording -- never a name) with Accept / Refuse, for fifteen seconds. The server holds
+  the token, and on a yes checks again that both can act, that they are still in
+  reach, that the same stack is still in the giver's slot and that the receiver has
+  room. One offer out per giver, one in per receiver, three seconds between two
+  offers from one giver. Closing the card is a no.
+
 ### Vehicle keys
 
 A key is an inventory item, `vehicle_key`, and **which vehicle it opens is its
@@ -845,6 +875,11 @@ queue?, recipes, jobs? = { ncpd = 0 }, onDuty? })` registers a bench under
 because a function cannot cross. A player opens it with the client export
 `OpenCraftingBench('counter')`. It goes when the caller stops.
 
+**Needs**: `GetNeeds(src)` answers `{ values, citizenId }`; `AddNeeds(src, { hunger =
+10 })` and `SetNeeds(src, patch)` (WRITERS) move them on the server, clamped to
+`config/needs.lua`, and the client and `opx:on:needs:changed` are told the move came
+from `ext:<caller>`. The server owns every need: the client draws what it is sent.
+
 **Downed**: `IsDown(src)` answers `{ down, waiting, downForMs? }`; `Revive(src,
 reason?)` goes through the module's own revive (its `REVIVERS` switch, its gate,
 its audit line naming caller and reason) and answers its codes: `not_down`,
@@ -853,7 +888,9 @@ its audit line naming caller and reason) and answers its codes: `not_down`,
 **Server events** are `(source, payload)` on the host-wide bus (`AddEventHandler`;
 `source` is nil for a character who is not online): `opx:on:character:loaded`,
 `unloaded`, `money`, `job`, `gang`; `opx:on:inventory:changed`, `used`;
-`opx:on:downed:changed`; `opx:on:vehicles:spawned`, `stored`;
+`opx:on:downed:changed`; `opx:on:needs:changed` (`{ citizenId, values, changed,
+source }`, `source` naming what moved them: `decay`, `use`, `staff`, `ext:<caller>`);
+`opx:on:vehicles:spawned`, `stored`;
 `opx:on:dealership:sold`; `opx:on:hauling:sold`; `opx:on:doorlock:changed` (`{ id,
 name, state, locked, by, item }`); `opx:on:character:created` / `deleted`;
 `opx:on:inventory:items` (`{ citizenId, changes = { { name, delta, count } } }`,
