@@ -89,6 +89,21 @@ local function applyCondition(vehicle, record, snapshot)
 	vehicle.metadata.flags = finiteNumber(snapshot.flags)
 end
 
+-- ONE REGISTRATION PER CHARACTER AT A TIME, citizen id -> when it began. The
+-- ceiling is counted (a yield) and then the row inserted (another), so two
+-- registrations for one character in the same moment both counted the same
+-- number and both went in: a character at PER_CHARACTER - 1 ended with one
+-- over. The dealership serialises its own buyers; a staff grant, a reward from
+-- another module and a purchase did not. A registration now waits for the one
+-- in flight for that character, then counts afresh.
+local registering = {}
+local REGISTER_WAIT_MS = 5000
+local REGISTER_POLL_MS = 50
+-- A turn held past this can only be a coroutine the host dropped mid-yield.
+local REGISTER_STALE_MS = 30000
+
+local registerNow
+
 --- Stores a new vehicle for a character under a fresh plate.
 -- @author dop42
 -- @param citizenId CitizenId
@@ -96,6 +111,24 @@ end
 -- @param options table|nil appearance, garage, paint and metadata.
 -- @return Result
 function M.Register(citizenId, record, options)
+	if type(citizenId) ~= 'string' then
+		return Result.Err('error.badRequest', 'citizenId and record are required')
+	end
+	local deadline = OPX.Now() + REGISTER_WAIT_MS
+	while registering[citizenId] ~= nil
+		and OPX.Now() - registering[citizenId] < REGISTER_STALE_MS do
+		if OPX.Now() >= deadline then return Result.Err('vehicle.registering', citizenId) end
+		Wait(REGISTER_POLL_MS)
+	end
+	local mine = OPX.Now()
+	registering[citizenId] = mine
+	local ran, answer = pcall(registerNow, citizenId, record, options)
+	if registering[citizenId] == mine then registering[citizenId] = nil end
+	if not ran then error(answer, 0) end
+	return answer
+end
+
+registerNow = function(citizenId, record, options)
 	options = options or {}
 	if type(citizenId) ~= 'string' or type(record) ~= 'string' or record == '' then
 		return Result.Err('error.badRequest', 'citizenId and record are required')
@@ -777,6 +810,7 @@ function M.Init()
 	claiming = {}
 	storing = {}
 	owners = {}
+	registering = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
 

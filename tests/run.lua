@@ -23715,6 +23715,47 @@ do
 			first == 1, first)
 	end
 end
+
+-- The ceiling is counted, then the row inserted, with a yield between. Two
+-- registrations for one character in the same moment both counted the same
+-- number, and a character one under the ceiling ended one over it.
+section('vehicles: two registrations for one character never pass the ceiling together')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local vehicles = env.OPX.Modules.Get('vehicles')
+		local Store = vehicles.Storage
+		local realCount, realInsert = Store.CountByOwner, Store.Insert
+		local rows = 2
+		Store.CountByOwner = function()
+			local seen = rows
+			coroutine.yield()
+			coroutine.yield()
+			return env.OPX.Result.Ok(seen)
+		end
+		Store.Insert = function()
+			coroutine.yield()
+			rows = rows + 1
+			return env.OPX.Result.Ok(true)
+		end
+		local ceiling = vehicles.Settings.PER_CHARACTER
+		vehicles.Settings.PER_CHARACTER = 3
+		local first, second
+		env.CreateThread(function() first = vehicles.Register('CIT-VCAP', 'Vehicle.v_standard2_archer_hella_player') end)
+		env.CreateThread(function() second = vehicles.Register('CIT-VCAP', 'Vehicle.v_standard2_archer_hella_player') end)
+		settle(control, function() return first ~= nil and second ~= nil end, 120)
+		vehicles.Settings.PER_CHARACTER = ceiling
+		Store.CountByOwner, Store.Insert = realCount, realInsert
+		local oks = (first and first.ok and 1 or 0) + (second and second.ok and 1 or 0)
+		check('exactly one of the two goes in', oks == 1 and rows == 3, ('%d ok, %d rows'):format(oks, rows))
+		local refused = (first and not first.ok) and first or second
+		check('and the other is told the ceiling, after counting again',
+			refused ~= nil and refused.error == 'vehicle.limit', refused and tostring(refused.error))
+		check('the wait has a sentence in both languages',
+			env.OPX.Locale.Text('vehicle.registering') ~= 'vehicle.registering')
+	end
+end
 section('vehicles: two spawns of one plate in one tick produce exactly one car')
 do
 	-- THE RACE, WHICH WAS REAL AND NOT SUSPECTED. `Store.FetchOne` is a database
