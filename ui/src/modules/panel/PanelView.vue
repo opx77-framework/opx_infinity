@@ -556,6 +556,22 @@ function measure(): void {
   gridHeight.value = gridEl.value?.clientHeight ?? 0
 }
 
+/* THE GRID IS MEASURED WHENEVER IT CHANGES SIZE, not only on open and on a window
+   resize. It is the flexible box in a full-height column, so the dial, the readout,
+   the summary and the status line arriving with the first items all take height from
+   it -- and a window sized at open, before any of them existed, held more rows than
+   now fit: the last ones were cut through by the grid's own overflow, the cursor's
+   among them. Content cannot feed back into this: the grid's height is the column's
+   remainder, never its rows'. */
+let sizer: ResizeObserver | null = null
+
+watch(gridEl, (element, previous) => {
+  if (typeof ResizeObserver === 'undefined') return
+  if (sizer === null) sizer = new ResizeObserver(() => measure())
+  if (previous) sizer.unobserve(previous)
+  if (element) sizer.observe(element)
+}, { flush: 'post' })
+
 function clearHoverTimers(): void {
   if (hoverTimer !== undefined) clearTimeout(hoverTimer)
   if (leaveTimer !== undefined) clearTimeout(leaveTimer)
@@ -633,6 +649,7 @@ useBridge('opx:panel:open', (payload: Payload) => {
   guard('panel:open', () => {
     if (!isHandle(payload.handle)) return
     release?.()
+    cancelWipe()
     blank()
     handle.value = payload.handle
     apply(payload)
@@ -713,13 +730,33 @@ useBridge('opx:panel:confirm', (payload: Payload) => {
   }, undefined)
 })
 
+/* A CLOSED PANEL KEEPS WHAT IT WAS SHOWING UNTIL THE FADE HAS RUN. `blank()` in the
+   same tick as the close emptied the view under a 150ms fade: the fitting room's rail
+   lost its sliders and the items column -- an empty bay -- faded out in its place, and
+   any other panel collapsed to its frame. The hover timers, the dialog and the focus
+   still go at once; the rest follows when nothing can see it. */
+const WIPE_MS = 240
+let wipe: ReturnType<typeof setTimeout> | undefined
+
+function cancelWipe(): void {
+  if (wipe !== undefined) clearTimeout(wipe)
+  wipe = undefined
+}
+
 useBridge('opx:panel:close', (payload: Payload) => {
   guard('panel:close', () => {
     if (payload.handle !== undefined && !mine(payload)) return
     handle.value = null
-    blank()
+    open.value = false
+    clearHoverTimers()
+    closeDialog()
     release?.()
     release = undefined
+    cancelWipe()
+    wipe = setTimeout(() => {
+      wipe = undefined
+      if (!open.value) blank()
+    }, WIPE_MS)
   }, undefined)
 })
 
@@ -729,6 +766,9 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  sizer?.disconnect()
+  sizer = null
+  cancelWipe()
   window.removeEventListener('resize', measure)
   clearHoverTimers()
   releaseDialog?.()
@@ -1346,7 +1386,13 @@ function filter(value: string): void {
               <span class="tile-name op-eyebrow">{{ box.label }}</span>
             </button>
 
-            <p v-if="moreToLoad" class="tile-more op-copy">
+            <!-- Also while the category's FIRST window is on its way: the old grid goes
+                 at once on a tab change, and with only "Nothing" left in it the category
+                 read as empty until the boxes landed. -->
+            <p
+              v-if="moreToLoad || (openSlider.count > 0 && tiles.slot !== openSlider.id)"
+              class="tile-more op-copy"
+            >
               {{ label('loading') }}
             </p>
           </div>
@@ -1857,11 +1903,16 @@ function filter(value: string): void {
   transition: color var(--op-dur-fast) linear;
 }
 
-.tile:hover:not(:disabled),
-.tile:focus-visible {
-  --aug-border-bg: var(--op-red);
-  --aug-border-all: 2px;
+/* HOVER IS THE MENU'S HOVER: denser, not lit. It was the chosen tile's exact frame,
+   so a pointer resting on a jacket made it read as the one being worn. */
+.tile:hover:not(:disabled):not(.is-on),
+.tile:focus-visible:not(.is-on) {
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.5px;
   color: var(--op-text);
+}
+
+.tile:focus-visible {
   outline: none;
 }
 
@@ -1997,7 +2048,9 @@ function filter(value: string): void {
    second, worse slider sitting beside the real one, and on this surface they
    are also the one piece of chrome nothing in the theme can style. */
 .slot-number {
-  width: 3ch;
+  /* Three digits AND their tracking: the box carries `.op-eyebrow`'s letter-spacing,
+     and at a bare 3ch the third digit of a 677-record category scrolled out of it. */
+  width: calc(3ch + 3 * var(--op-track-micro));
   margin: 0;
   padding: 0;
   border: 0;
@@ -2218,6 +2271,13 @@ function filter(value: string): void {
   gap: var(--op-space-3);
   padding: var(--op-space-2) var(--op-space-3);
   padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+}
+
+/* The frame answers the keyboard, as `.slot-step` does: the entry has no outline and no
+   box of its own, so without this the caret was the only sign the search had focus. */
+.field:focus-within {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 .field-label {
