@@ -428,7 +428,8 @@ local function registerEvents()
 		CreateThread(function()
 			local named = M.SetName(src, payload.firstName, payload.lastName)
 			if not named.ok then
-				OPX.Refuse(src, named.error, operation)
+				-- The bounds ride along: the length sentence names them.
+				OPX.Refuse(src, named.error, operation, nil, select(2, M.NameRefusal(nil)))
 				return
 			end
 			OPX.NotifyLocale(src, 'character.named', {

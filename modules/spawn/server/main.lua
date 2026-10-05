@@ -147,12 +147,12 @@ local function settle(source, token, point, reason)
 	-- list while their body is moved underneath it. Sent whatever placement then
 	-- does, because a choice that has been spent is spent: a menu left up because a
 	-- kill was refused has nothing behind it, and the player has to be able to move.
-	send(M.Event.CLOSE, source, {
-		reason = reason,
-		-- The label only, for the sentence the client shows. The coordinates are
-		-- not the client's business in either direction.
-		place = point ~= nil and point.label or nil,
-	})
+	--
+	-- AND IT CARRIES NO SENTENCE. "Spawned at X." went up here, before the body
+	-- had moved, and stayed up when the placement was then refused (down, mid
+	-- transition, a refused kill): told they were somewhere they were not. The
+	-- sentence follows the placement, on the same name, as `result`.
+	send(M.Event.CLOSE, source, { reason = reason })
 
 	if reason == 'timeout' then
 		-- Not 'the default spawn': a player who picked nothing is placed by the
@@ -166,7 +166,17 @@ local function settle(source, token, point, reason)
 	-- life state with `Wait` -- and the routeway this is reached from is a net
 	-- handler, which is not a coroutine. Yielding from one is a raise, and a raise
 	-- here would be a character left where the pristine save dropped them.
-	CreateThread(function() place(source, held, point) end)
+	CreateThread(function()
+		local placed = place(source, held, point)
+		send(M.Event.CLOSE, source, {
+			reason = reason,
+			result = true,
+			placed = placed == true,
+			-- The label only, for the sentence the client shows. The coordinates
+			-- are not the client's business in either direction.
+			place = point ~= nil and point.label or nil,
+		})
+	end)
 	return true
 end
 

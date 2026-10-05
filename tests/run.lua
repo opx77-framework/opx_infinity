@@ -1252,13 +1252,28 @@ do
 		local closed = control.clientEvents[#control.clientEvents]
 		check('and takes the menu down', closed ~= nil and closed.name == spawn.Event.CLOSE,
 			closed and closed.name)
-		check('naming the reason and the place',
+		-- THE MENU COMES DOWN SAYING NOTHING. "Spawned at X." used to ride on
+		-- this, before the body had moved, and stayed when placement was refused.
+		check('naming the reason, and no place yet: the body has not moved',
 			closed ~= nil and closed[1] ~= nil and closed[1].reason == 'chosen'
-				and closed[1].place == 'King Stoop forecourt',
+				and closed[1].place == nil and closed[1].result ~= true,
 			closed and closed[1] and tostring(closed[1].place))
+		env.source = nil
+		control.Pump(40)
+		local result
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == spawn.Event.CLOSE and event.source == picker
+				and type(event[1]) == 'table' and event[1].result == true then result = event end
+		end
+		check('the placement is then reported, with the place it was for',
+			result ~= nil and result[1].reason == 'chosen'
+				and result[1].place == 'King Stoop forecourt' and type(result[1].placed) == 'boolean',
+			result and tostring(result[1].place))
 		-- The page is told a LABEL. The coordinates are nobody's but the server's.
 		check('and never the coordinates',
-			closed ~= nil and closed[1] ~= nil and closed[1].x == nil)
+			closed ~= nil and closed[1] ~= nil and closed[1].x == nil
+				and (result == nil or result[1].x == nil))
 
 		-- ── the deadline ─────────────────────────────────────────────────────────
 		-- The only exit a choice nobody makes ever gets. Shortened here, because the
@@ -1500,9 +1515,50 @@ do
 		check('and the menu is still up, waiting for the answer',
 			drew('opx:spawn:close') == nil)
 
-		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', place = 'King Stoop forecourt' })
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen' })
 		check('the answer takes the menu down', drew('opx:spawn:close') ~= nil)
 		check('and gives the focus back', OPX.UI.FocusOwner() == nil)
+
+		-- The sentence follows the placement: success says where, a refusal
+		-- says the player did not move -- and neither takes a screen down.
+		local said = {}
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...) said[#said + 1] = key; return realLocaleToast(key, ...) end
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', result = true, placed = true,
+			place = 'King Stoop forecourt' })
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', result = true, placed = false })
+		OPX.Toast.Locale = realLocaleToast
+		check('a placement that took says where, and one refused says so',
+			said[1] == 'spawn.placed' and said[2] == 'spawn.placeFailed', table.concat(said, ', '))
+	end
+end
+
+-- ── a name refused for its length says so ───────────────────────────────────
+-- "J" was answered "Use letters only (spaces, hyphens and apostrophes
+-- allowed).": wrong for a name of letters, and nothing said how short was too
+-- short. Length and spelling are two sentences now, and the length one names
+-- the bounds in both languages.
+section('character: a name refused for its length is not told it is spelt wrong')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the name sentences', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local short = character.NameRefusal(character.ValidateName('J'))
+		local spelt = character.NameRefusal(character.ValidateName('J4ck'))
+		check('a name too short is answered with the length sentence',
+			short == 'character.nameLength', short)
+		check('and a name with a digit in it is still answered with the spelling one',
+			spelt == 'character.badName', spelt)
+		local _, bounds = character.NameRefusal(nil)
+		local said = OPX.Locale.Text('character.nameLength', bounds)
+		check('the length sentence names the configured bounds',
+			said:find(tostring(bounds.min), 1, true) ~= nil and said:find(tostring(bounds.max), 1, true) ~= nil
+				and said:find('{', 1, true) == nil, said)
+		OPX.Locale.Set('fr')
+		check('in French too', OPX.Locale.Exists('character.nameLength'))
+		OPX.Locale.Set('en')
 	end
 end
 
@@ -2003,6 +2059,36 @@ do
 			states[#states] == 'false/idle', table.concat(states, ', '))
 		check('and the spawn menu opens, late rather than never',
 			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- THE NAME FORM DOES NOT SPEND THE WINDOW. It holds the keyboard, so the
+	-- room answers `input_captured` while the player types, and a new player
+	-- who took over a minute on a name lost the clothes step without a word.
+	do
+		local env, control = joinClient('first', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		env.Open77.character = env.Open77.character or {}
+		env.Open77.character.state = function() return { attached = true, alive = true } end
+		local realCaptured = OPX.Lib.Input.IsCaptured
+		OPX.Lib.Input.IsCaptured = function() return true end
+		local entry = OPX.Api.Get('entry')
+		local realState = entry.State
+		local typing = true
+		entry.State = function() return OPX.Result.Ok({ naming = typing }) end
+
+		arrive(env, control, 'citizen-slow-typist')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-slow-typist' })
+		control.Pump(12)
+		check('a room owed while the name form holds the keyboard is still owed past its window',
+			appearance.Wardrobe.Owed() == true)
+		typing = false
+		control.Pump(12)
+		check('and once the form is gone the window runs again',
+			appearance.Wardrobe.Owed() == false)
+		entry.State = realState
+		OPX.Lib.Input.IsCaptured = realCaptured
 	end
 
 	-- 'never': nobody is handed one, and -- the part that matters -- NOTHING IS

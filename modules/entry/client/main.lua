@@ -411,7 +411,11 @@ end
 -- @return string
 function M.Refusal(code)
 	local key = type(code) == 'string' and code or 'error.unavailable'
-	if OPX.Locale.Exists(key) then return locale(key) end
+	if OPX.Locale.Exists(key) then
+		-- The name's bounds, for the one sentence that names them.
+		local minimum, maximum = nameBounds()
+		return locale(key, { min = minimum, max = maximum })
+	end
 	-- THE CODE GOES TO THE LOG AND NOT ON SCREEN. This sentence used to end in
 	-- `({code})`, which put `name_taken_v2` or whatever the server invented in
 	-- front of a player who can do nothing with it; the operator who can is the

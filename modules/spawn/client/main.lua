@@ -186,10 +186,22 @@ local function takeDown()
 end
 
 --- What the server said about the choice that has just ended.
+--
+-- TWO OF THEM PER CHOICE. The first takes the menu down before the body moves
+-- and says nothing; the second, `result`, says where the body went once it has
+-- -- or that it could not be moved. The second never takes a screen down: the
+-- respawn may already have brought the next offer.
 local function onClosed(payload)
 	if type(payload) ~= 'table' then return end
 	local reason = payload.reason
-	takeDown()
+	if payload.result ~= true then
+		takeDown()
+		return
+	end
+	if payload.placed ~= true then
+		OPX.Toast.Locale('spawn.placeFailed', nil, 'error')
+		return
+	end
 
 	if reason == 'chosen' then
 		OPX.Toast.Locale('spawn.placed', { place = payload.place or '' }, 'success')

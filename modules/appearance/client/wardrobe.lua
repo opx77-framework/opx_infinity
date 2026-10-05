@@ -359,6 +359,16 @@ local TURN_DEGREES = 45
 -- Shipped WARDROBE.CREATION_WAIT_MS, for a configuration that lost it.
 local CREATION_WAIT_MS = 60000
 
+--- Whether the join's name form is up, read off the entry contract.
+-- Without the contract nobody is being asked for a name.
+local function joinIsNaming()
+	local entry = OPX.Api.Get('entry')
+	if entry == nil or type(entry.State) ~= 'function' then return false end
+	local read, answer = pcall(entry.State)
+	return read and type(answer) == 'table' and answer.ok == true
+		and type(answer.value) == 'table' and answer.value.naming == true
+end
+
 -- Refusals that mean 'not yet' while a created character settles.
 local RETRYABLE = {
 	clothing_not_ready = true,
@@ -1969,6 +1979,14 @@ runRetry = function(live)
 		-- gives the player 45s and this window is 60s, so without this a room
 		-- could be withdrawn for a delay that was somebody else's by design.
 		if reason == 'spawn_up' then live.deadline = Runtime.NowMs() + creationWaitMs() end
+		-- NOR WHILE THE NAME FORM IS. It holds the keyboard, so the room answers
+		-- `input_captured` for as long as the player is typing, and a new player
+		-- who took more than a minute over a name (the window starts before the
+		-- form appears, so loading spends from it too) lost the clothes step with
+		-- no word: name form, then straight to the spawn menu.
+		if reason == 'input_captured' and joinIsNaming() then
+			live.deadline = Runtime.NowMs() + creationWaitMs()
+		end
 
 		if ok or reason == 'wardrobe_busy' then
 			if not ok then

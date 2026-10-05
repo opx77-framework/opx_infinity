@@ -37,9 +37,9 @@ end
 -- @return boolean, string|nil
 function M.SetName(firstName, lastName)
 	local first = M.ValidateName(firstName)
-	if not first.ok then return false, 'character.badName' end
+	if not first.ok then return false, (M.NameRefusal(first)) end
 	local last = M.ValidateName(lastName)
-	if not last.ok then return false, 'character.badName' end
+	if not last.ok then return false, (M.NameRefusal(last)) end
 
 	TriggerServerEvent(M.Event.NAME, { firstName = first.value, lastName = last.value })
 	return true
