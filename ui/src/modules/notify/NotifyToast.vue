@@ -104,7 +104,10 @@ const barScale = computed(() => `scaleX(${Math.max(0, Math.min(1, props.progress
     </span>
 
     <div class="body">
-      <span class="tag">{{ tag }}</span>
+      <!-- The mono micro-label, as every eyebrow on the surface is. Its own rule was
+           lost in the move to the design system and it had been drawing at body size,
+           as loud as the message under it. -->
+      <span class="tag op-eyebrow">{{ tag }}</span>
       <!-- A toast with no title is common (`inventory.change` sends none), and the
            tag standing in as the header line is why this order is tag-then-title. -->
       <span v-if="title" class="title">{{ title }}</span>
