@@ -192,7 +192,10 @@ anything to do means every handler stays silent. A player who rebinds one of the
 another key takes it out of the contest. `OPX.Spots.Key.Owns` is the rule. A door being
 lockpicked holds E against any nearer spot, the key strip draws only the row whose press
 would act (`OPX.Spots.Key.Shows`, filed once a scan), and the hotbar peek on **Y** stays
-silent while a call rings (Y answers it).
+silent while a call rings (Y answers it). **Escape** closes the newest open layer only
+(menu, form, panel, door panel, chat, call hologram) and leaves the ones under it.
+Toasts read their kind off the refusal: too fast and busy warn, too far and not allowed
+are errors (`OPX.Result.Kind`).
 
 ### The garage key: out, and away
 
