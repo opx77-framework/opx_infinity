@@ -17078,6 +17078,19 @@ do
 		end
 		check('the notes are in a slot that can be handed over', slot ~= nil)
 
+		-- NO PRESENCE PROBE. The target's gate and bag were asked before the
+		-- distance, so any id answered whether it was connected, joining or
+		-- loaded. Out of reach is `too_far`, whoever the id names.
+		do
+			control.Admit(4403, 'account-4403')
+			control.Stand(4403, 900.0, 900.0, 0.0)
+			local _, ghostWhy = Actions.Give(ALICE, 4404, slot, 1)
+			local _, unloadedWhy = Actions.Give(ALICE, 4403, slot, 1)
+			check('an id nobody holds and a connected slot with no character answer alike',
+				ghostWhy == 'too_far' and unloadedWhy == 'too_far',
+				('%s / %s'):format(tostring(ghostWhy), tostring(unloadedWhy)))
+		end
+
 		local gave, giveWhy = Actions.Give(ALICE, BOB, slot, 120)
 		check('a stack of eddies hands over like any other item', gave == true,
 			tostring(giveWhy))
