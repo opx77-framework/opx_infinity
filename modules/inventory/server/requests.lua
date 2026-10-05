@@ -294,14 +294,19 @@ function Requests.Wire()
 		requestId = Common.Integer(requestId, 1, MAX_REQUEST_ID)
 		if not requestId then return end
 
-		local handler = type(action) == 'string' and handlers[action] or nil
-		if not handler then return answer(player, requestId, false, 'bad_request') end
-
+		-- THE WINDOW FIRST, then the verb. An unknown action was answered
+		-- `bad_request` BEFORE the window was counted, so a client sending
+		-- nothing but made-up verbs got one answer per packet, for ever, and
+		-- never spent a request doing it -- the one shape of request the floor
+		-- did not see. Every request now costs one, whatever it asks for.
 		local allowed, tell = within(player)
 		if not allowed then
 			if tell then answer(player, requestId, false, 'too_fast') end
 			return
 		end
+
+		local handler = type(action) == 'string' and handlers[action] or nil
+		if not handler then return answer(player, requestId, false, 'bad_request') end
 
 		CreateThread(function()
 			local ok, code, data = handler(player, payload)
