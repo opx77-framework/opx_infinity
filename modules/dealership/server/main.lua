@@ -684,10 +684,16 @@ end
 --- Pays a sale into a company's account, answering what actually landed.
 -- @author XEROX710
 --
--- THE DEPOSIT IS ONE STATEMENT AND THE ARITHMETIC IS THE DATABASE'S -- see
--- `Store.Deposit`. A deposit that fails is NOT a failed sale: the buyer owns the
--- vehicle and the seller has been paid, and undoing either from here would be
--- two more writes that can fail in turn.
+-- EVERY DEPOSIT GOES THROUGH THE LEDGER, UNDER ITS OWN TOKEN. It used to be a
+-- plain `balance = balance + amount`, and a deposit whose answer was lost after
+-- it committed was then ALSO written to the ledger as owed -- and the sweep paid
+-- it a second time. Now the debt is written first (`INSERT IGNORE` on the token,
+-- so writing it twice is one row) and settled at once by `Store.SettleOwed`,
+-- which deposits only a row that is still there and strikes it off in the same
+-- transaction: a settlement retried, or raced by the sweep, pays nothing twice.
+-- The arithmetic is still the database's. A deposit that fails is NOT a failed
+-- sale: the buyer owns the vehicle and the seller has been paid, and undoing
+-- either from here would be two more writes that can fail in turn.
 --
 -- IT IS OWED, NOT FORGOTTEN. This used to log "settle this by hand" and stop
 -- there, so the company's money depended on somebody reading the journal. It
@@ -703,12 +709,13 @@ end
 -- @return boolean
 local function bank(kind, group, amount, plate)
 	if amount <= 0 then return true end
-	local put = Store.Deposit(kind, group, amount)
+	local token = M.PendingToken(kind, group)
+	local owed = { token = token, kind = kind, group = group, amount = amount,
+		plate = plate ~= nil and tostring(plate) or nil }
+	local pended = Store.Pend(token, kind, group, amount, owed.plate)
+	local put = pended
+	if pended ~= nil and pended.ok then put = Store.SettleOwed('token', token) end
 	if put == nil or not put.ok then
-		local token = M.PendingToken(kind, group)
-		local owed = { token = token, kind = kind, group = group, amount = amount,
-			plate = plate ~= nil and tostring(plate) or nil }
-		local pended = Store.Pend(token, kind, group, amount, owed.plate)
 		if pended == nil or not pended.ok then
 			unsaved[token] = owed
 			Open77.log.error(('[dealership] %d %s from the sale of %s did NOT reach the %s account ' ..
@@ -756,7 +763,7 @@ function M.SettlePending()
 			local row = rows.value[index]
 			local amount = math.tointeger(tonumber(row.amount))
 			if amount ~= nil and amount > 0 then
-				local paid = Store.SettlePending(row.id, row.kind, row.group_key, amount)
+				local paid = Store.SettleOwed('id', row.id)
 				if paid ~= nil and paid.ok then
 					settled = settled + 1
 					Open77.log.info(('[dealership] paid %d owed from the sale of %s into the %s ' ..

@@ -8037,13 +8037,27 @@ do
 			-- THE LEDGER OF OWED DEPOSITS, settled the way the real one is: the
 			-- deposit and the strike-off commit together or not at all.
 			-- `ledger.down` is a database that refuses the company account.
+			--
+			-- AND ONLY A ROW STILL OWED IS PAID: the deposit is an INSERT ... SELECT
+			-- of the ledger row named by id or token, so a settlement of a row that
+			-- is gone pays nothing. `ledger.settled` counts the ones that paid.
 			transaction = function(statements)
 				if ledger.down then return false, 'down' end
-				local deposit, strike = statements[1], statements[2]
-				local key = tostring(deposit.values[1]) .. ':' .. tostring(deposit.values[2])
-				accounts[key] = (accounts[key] or 0) + (tonumber(deposit.values[3]) or 0)
+				local strike = statements[#statements]
+				local byToken = strike.query:find('token = ?', 1, true) ~= nil
+				local named = strike.values[1]
 				for index = #ledger.rows, 1, -1 do
-					if ledger.rows[index].id == strike.values[1] then table.remove(ledger.rows, index) end
+					local row = ledger.rows[index]
+					if (byToken and row.token == named) or (not byToken and row.id == named) then
+						local key = tostring(row.kind) .. ':' .. tostring(row.group_key)
+						accounts[key] = (accounts[key] or 0) + (tonumber(row.amount) or 0)
+						table.remove(ledger.rows, index)
+						ledger.settled = (ledger.settled or 0) + 1
+					end
+				end
+				if ledger.loseAnswer then
+					ledger.loseAnswer = nil
+					return false, 'connection reset'
 				end
 				return true
 			end,
@@ -8071,6 +8085,11 @@ do
 				if sql:find('opx77_company_accounts', 1, true) then
 					local key = tostring(params.kind) .. ':' .. tostring(params.group)
 					accounts[key] = (accounts[key] or 0) + (tonumber(params.amount) or 0)
+					-- Committed, and the answer lost on the way back.
+					if ledger.loseAnswer then
+						ledger.loseAnswer = nil
+						error('connection reset', 0)
+					end
 					return 1
 				end
 				if sql:find('opx77_dealership_previews', 1, true) then
@@ -9124,6 +9143,27 @@ do
 		settle(control, function() return swept ~= nil end, 60)
 		check('and a second sweep finds nothing to pay again',
 			swept == 0 and accounts['job:fixer'] == fixerBefore + banked)
+
+		-- A DEPOSIT THAT COMMITTED AND WHOSE ANSWER WAS LOST. It used to be
+		-- written to the ledger as owed as well, and the sweep paid it again.
+		local lostBefore = accounts['job:fixer'] or 0
+		ledger.loseAnswer = true
+		contract.Offer(seller, buyer, 'hella')
+		local lostAsked = lastEvent(dealership.Event.OFFERED)
+		local lostSettled
+		env.CreateThread(function()
+			lostSettled = contract.Accept(buyer, lostAsked[1].token, true)
+		end)
+		settle(control, function() return lostSettled ~= nil end, 60)
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('a deposit whose answer was lost after it committed is paid in once, not twice',
+			lostSettled ~= nil and lostSettled.ok == true
+				and accounts['job:fixer'] == lostBefore + banked and #ledger.rows == 0,
+			('%s now, %s before, %s banked'):format(tostring(accounts['job:fixer']),
+				tostring(lostBefore), tostring(banked)))
+		ledger.loseAnswer = nil
 
 		-- AND WHEN THE LEDGER CANNOT BE WRITTEN EITHER, it is held in memory and
 		-- written by the sweep once it can be: owed, still, and paid once.
@@ -11737,6 +11777,43 @@ do
 			kept ~= nil and kept.ok == true and kept.value == false and #none == 0)
 		check('a name that is not a bare identifier is refused before any SQL',
 			env.OPX.Storage.EnsureIndex('t; DROP TABLE x', 'i', { 'c' }).ok == false)
+
+		-- THE COLUMN'S TWIN: crafting's placement token reaches a table that
+		-- predates it the same way.
+		local function columnWith(present)
+			local altered = {}
+			local probe = Host.Database({
+				scalar = function(sql)
+					if sql:find('information_schema.COLUMNS', 1, true) then return present end
+					return 1
+				end,
+				update = function(sql)
+					if sql:find('ALTER TABLE', 1, true) then altered[#altered + 1] = sql end
+					return 0
+				end,
+			})
+			local saved = env.MySQL
+			env.MySQL = probe
+			local answer
+			env.CreateThread(function()
+				answer = env.OPX.Storage.EnsureColumn('opx77_crafting_orders', 'token',
+					'VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL')
+			end)
+			settle(control, function() return answer ~= nil end, 20)
+			env.MySQL = saved
+			return answer, altered
+		end
+		local column, columnAlters = columnWith(0)
+		check('a table without a column the code writes is given it',
+			column ~= nil and column.ok == true and column.value == true and #columnAlters == 1
+				and columnAlters[1]:find('ADD COLUMN token VARCHAR(40)', 1, true) ~= nil,
+			columnAlters[1])
+		local had, noAlter = columnWith(1)
+		check('and one that has it is left alone',
+			had ~= nil and had.ok == true and had.value == false and #noAlter == 0)
+		check('a definition carrying anything but a plain type is refused before any SQL',
+			env.OPX.Storage.EnsureColumn('t', 'c', "INT; DROP TABLE x").ok == false
+				and env.OPX.Storage.EnsureColumn('t', 'c', "VARCHAR(4) DEFAULT 'x'").ok == false)
 
 		-- ── the staff half ───────────────────────────────────────────────────
 		-- WHAT THE ADMIN MODULE ADDS: who is connected, and who may ask. It adds no
@@ -19955,6 +20032,54 @@ do
 			purse == 100, purse)
 		check('the materials go back to the bag of the character, not to whoever holds the connection',
 			#inventoryTargets > 0 and inventoryTargets[1] == 'ABC12345', tostring(inventoryTargets[1]))
+
+		-- AN ANSWER LOST AFTER THE INSERT COMMITTED. It looks exactly like an
+		-- insert that never ran, and refunding it paid back the materials and
+		-- the price of an order that was cooking all the same.
+		local realPlaced = crafting.Storage.Placed
+		local tokens = {}
+		crafting.Storage.Place = function(_, _, _, _, _, token)
+			tokens[#tokens + 1] = token
+			return OPX.Result.Err('transaction-raised', 'connection reset')
+		end
+		crafting.Storage.Placed = function(_, token)
+			return OPX.Result.Ok(token == tokens[#tokens] and 77 or nil)
+		end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('a placement whose answer was lost but which went in stands as placed',
+			answer ~= nil and answer.ok == true and answer.value.id == 77,
+			answer and tostring(answer.error))
+		check('and nothing is refunded for it', bag.scrap_metal == 0 and purse == 75,
+			('%d / %d'):format(bag.scrap_metal, purse))
+
+		-- And one that really did not go in is refunded, as before.
+		crafting.Storage.Placed = function() return OPX.Result.Ok(nil) end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('a placement that is not there after all is refunded in full',
+			answer ~= nil and answer.ok == false and bag.scrap_metal == 2 and purse == 100,
+			('%d / %d'):format(bag.scrap_metal, purse))
+		check('and every placement carries its own token', #tokens == 2 and tokens[1] ~= tokens[2]
+			and type(tokens[1]) == 'string')
+
+		-- And when the database can say neither, nothing is refunded and the
+		-- journal says what to settle by hand.
+		crafting.Storage.Placed = function() return OPX.Result.Err('no-database', 'down') end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		local loud = #control.log.error
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 60)
+		check('a placement nobody can confirm either way refunds nothing and says so',
+			answer ~= nil and answer.ok == false and purse == 75 and #control.log.error > loud
+				and control.log.error[#control.log.error]:find('NOTHING WAS REFUNDED', 1, true) ~= nil,
+			('%d / %d'):format(bag.scrap_metal, purse))
+		crafting.Storage.Placed = realPlaced
 
 		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
 		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
