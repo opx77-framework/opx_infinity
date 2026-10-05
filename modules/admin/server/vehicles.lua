@@ -70,6 +70,20 @@ local function ownedBy(owner)
 	return total
 end
 
+--- Lets a departing player's spawns count against nobody.
+-- THE CAP IS KEYED BY PLAYER ID, AND A PLAYER ID IS A SLOT the host hands to the
+-- next connection: a staff car left standing when its operator logged off kept
+-- counting against whoever was given that id next, who was refused a spawn
+-- (`vehicle_cap`) for a car they had never seen, and whose `remove mine` removed
+-- it. The car stays where it is -- somebody may be driving it -- and `cleanup`
+-- still finds it.
+-- @param player integer
+function Vehicles.Forget(player)
+	for _, entry in pairs(spawned) do
+		if entry.owner == player then entry.owner = false end
+	end
+end
+
 -- The vehicle the operator sits in, else the nearest in range in their bucket.
 local function nearest(source)
 	if source <= 0 then return nil, 'console_has_no_player' end

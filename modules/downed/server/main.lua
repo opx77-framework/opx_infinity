@@ -268,6 +268,13 @@ end
 local function restore(playerId, citizenId)
 	local row = M.Storage.Read(citizenId)
 	if row == nil then return end
+	-- ASKED AGAIN AFTER THE READ, WHICH YIELDS. The character that owned this
+	-- slot may have logged out, or the player left and the id went to somebody
+	-- else, while the row was on its way: killing the slot then put one
+	-- character's stored death on another's body, and the `restoring` mark left
+	-- behind silenced the down-row check for whoever held the slot next.
+	local still, current = inWorld(playerId)
+	if still ~= true or current ~= citizenId then return end
 	restoring[playerId] = { citizenId = citizenId, downForMs = row.downForMs, waiting = row.waiting }
 
 	local ok, reason = Open77.players.kill(playerId, { cause = 'script', weapon = 'opx:downed:restore' })

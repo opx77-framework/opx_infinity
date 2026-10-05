@@ -15034,6 +15034,40 @@ do
 	end
 end
 
+-- ── a staff car outlives its operator, and its cap does not ─────────────────
+section('admin: a staff car left behind counts against nobody who inherits the slot')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src = 23
+		local function staff(account)
+			control.Admit(src, account)
+			OPX.EnsureSession(src)
+			control.Allow(src, 'command.' .. admin.Command.VEHICLE_SPAWN)
+		end
+		local function spawn()
+			local before = #control.vehicleCreates
+			control.commands[admin.Command.VEHICLE_SPAWN].run(src, { 'hella' })
+			control.Pump(4)
+			return #control.vehicleCreates > before
+		end
+		staff('account-first-operator')
+		local cap = math.floor(OPX.Tune.Number('ADMIN_VEHICLE_PER_OWNER', 1))
+		for _ = 1, cap do spawn() end
+		check('an operator at the cap is refused one more', not spawn())
+
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, src)
+		control.Pump(2)
+		control.Admit(src, nil)
+		staff('account-next-operator')
+		check('the next operator given the same id spawns at once: the cars left behind belong to nobody',
+			spawn())
+	end
+end
+
 -- ── a world announcement, and the clips around it ───────────────────────────
 -- THE SENTENCE GOES OUT AS THIS MODULE'S OWN EVENT, not through the platform's
 -- notification package, and that is what makes the stingers possible at all: only
@@ -16501,6 +16535,41 @@ do
 			control2.Pump(250)
 			check('but it is counted once the grace has run out',
 				contract2.IsDown(PLAYER).value.down == true)
+		end
+
+		-- A ROW STILL ON ITS WAY when the slot changes hands: the read yields,
+		-- and the character it was read for is not the one there when it lands.
+		local env3, control3, why3 = boot('server')
+		if why3 == nil then
+			local OPX3 = env3.OPX
+			control3.Admit(PLAYER, 'user-swapped')
+			OPX3.BootError = nil
+			env3.Open77.ready.isReady = function() return true end
+			local phase3 = 'alive'
+			env3.Open77.players.getLifeState = function()
+				return { phase = phase3, position = { x = 0, y = 0, z = 0, bucket = 0 } }
+			end
+			env3.Open77.players.isDead = function() return phase3 == 'dead' end
+			local killed = 0
+			env3.Open77.players.kill = function() killed = killed + 1 phase3 = 'dead' return true end
+			local holder = { MaySample = true, PlayerData = { citizenId = 'CIT-REST-3' } }
+			local character3 = OPX3.Api.Get('character')
+			if character3 ~= nil then character3.GetPlayer = function() return holder end end
+			local storage3 = OPX3.Modules.Get('downed').Storage
+			local asked = 0
+			storage3.Read = function()
+				asked = asked + 1
+				-- The slot is somebody else by the time the row lands.
+				holder = { MaySample = true, PlayerData = { citizenId = 'CIT-REST-4' } }
+				coroutine.yield()
+				return { downForMs = 50000, waiting = true }
+			end
+			storage3.Write = function() end
+			storage3.Clear = function() end
+			settle(control3, function() return asked >= 1 end, 120)
+			control3.Pump(20)
+			check('a down row read for one character is never put on the next one in the slot',
+				asked >= 1 and killed == 0, ('%d read(s), %d kill(s)'):format(asked, killed))
 		end
 
 		storage.Read, storage.Write, storage.Clear = read, write, clear
@@ -18166,6 +18235,43 @@ do
 			last ~= nil and last[3] == false and last[4] == 'player_in_vehicle',
 			last and tostring(last[4]))
 		trips.refuse = nil
+
+		-- ── a trip that outlives its player ───────────────────────────────────
+		-- The move awaits for seconds. A player who leaves meanwhile is forgotten,
+		-- the slot goes to somebody else, and THEIR trip takes the lock: the old
+		-- thread finishing must not release it, nor answer them.
+		local realTeleport = env.Open77.players.teleport
+		local gates = {}
+		env.Open77.players.teleport = function(...)
+			local promise, why = realTeleport(...)
+			if promise == nil then return nil, why end
+			local gate = { open = false }
+			gates[#gates + 1] = gate
+			return { status = promise.status, await = function()
+				while not gate.open do coroutine.yield() end
+				return promise.await(promise)
+			end }
+		end
+		use(19, 'roof', 'out')
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, 19)
+		use(19, 'roof', 'out')
+		check('the next player on a departed slot travels while the old trip is still settling',
+			#gates == 2, #gates)
+		local mark = #control.clientEvents
+		gates[1].open = true
+		control.Pump(8)
+		local stray = false
+		for index = mark + 1, #control.clientEvents do
+			if control.clientEvents[index].name == M.Event.ANSWER then stray = true end
+		end
+		check('a departed player trip says nothing to whoever has the slot now', not stray)
+		use(19, 'roof', 'out')
+		last = answer()
+		check('and leaves the lock of the new trip where it is',
+			last ~= nil and last[3] == false and last[4] == 'in_flight', last and tostring(last[4]))
+		gates[2].open = true
+		control.Pump(8)
+		env.Open77.players.teleport = realTeleport
 
 		-- ── the gate, re-derived at the moment of the press ──────────────────
 		-- The contract table is the one the server half reaches through
@@ -26860,6 +26966,17 @@ do
 			check('a staff view reaches a container from across the city',
 				staffed ~= nil and staffed.ok == true, staffed and tostring(staffed.code))
 			Containers.CloseSecondary(PLAYER, false)
+
+			-- A STAFF VIEW ON A CONNECTION WITH NO CHARACTER BOUND -- a search
+			-- opened by whoever asked, or a character re-bound elsewhere -- is let
+			-- go when that connection leaves. The next player on the id would
+			-- otherwise inherit a view reach never checks.
+			local GHOST = PLAYER + 40
+			Containers.View(GHOST, stash, true)
+			control.Fire(OPX.Host.PLAYER_DISCONNECTED, GHOST)
+			control.Pump(4)
+			check('a departing connection with no character bound gives its staff view back',
+				Containers.Viewing(GHOST) == nil)
 			control.Stand(PLAYER, 10.0, 20.0, 30.0)
 			-- ── the rate limit ───────────────────────────────────────────────
 			-- "A refused request IS answered, so the client settles what it is

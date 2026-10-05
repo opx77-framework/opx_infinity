@@ -355,11 +355,22 @@ local function serve(player, key, leg)
 	end
 
 	local entrance = verdict.entrance
-	inFlight[player] = { atMs = OPX.Now(), key = entrance.key }
+	local flight = { atMs = OPX.Now(), key = entrance.key }
+	inFlight[player] = flight
 	local ok, outcome = move(player, entrance)
-	inFlight[player] = nil
+
+	-- THE LOCK IS LET GO ONLY IF IT IS STILL THIS TRIP'S. The move awaits for up
+	-- to seven seconds; a player who left meanwhile was forgotten, and the slot
+	-- may already belong to somebody whose own trip holds the lock now. Clearing
+	-- it blind released THEIR lock, and the answer below landed on THEIR screen.
+	local ours = inFlight[player] == flight
+	if ours then inFlight[player] = nil end
 
 	local row = tally(entrance.key)
+	if not ours then
+		if ok then row.taken = row.taken + 1 else row.lost = row.lost + 1 end
+		return
+	end
 	if ok then
 		row.taken = row.taken + 1
 		TriggerClientEvent(M.Event.ANSWER, player, entrance.key, entrance.leg, true, nil,

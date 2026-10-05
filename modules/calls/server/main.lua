@@ -944,7 +944,7 @@ local function departed(rawPlayerId)
 	for _, offered in pairs(contactOffers) do offered[playerId] = nil end
 	-- The platform clears a lease on disconnect by itself; the local record is
 	-- cleared so a recycled slot does not inherit a lease nobody holds.
-	eyesHeld[playerId] = nil
+	eyesHeld[playerId], eyesRenewedAt[playerId] = nil, nil
 	-- The cooldown windows are NOT cleared here. `core/server/answer.lua` owns
 	-- them and purges them from its own handler on the same event, and the
 	-- comment there says why it must be the one place: a window left behind
@@ -1020,7 +1020,7 @@ local function scan()
 				if on == false then
 					Open77.log.warn(('[calls] the eye-glow lease for %d was dropped; re-taking it')
 						:format(id))
-					eyesHeld[id] = nil
+					eyesHeld[id], eyesRenewedAt[id] = nil, nil
 				end
 			end
 			-- RENEWED EVERY RENEW_MS, NOT EVERY PASS. `EYES.RENEW_MS` was in the
