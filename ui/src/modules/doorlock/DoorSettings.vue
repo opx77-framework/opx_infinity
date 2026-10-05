@@ -177,7 +177,7 @@ const ready = computed(() => hasLeaves(props.draft))
               :placeholder="draft.hasPasscode ? t('doorlock.ui.passcodeKept') : ''" />
             <button v-if="draft.hasPasscode" class="mini" :class="{ on: draft.clearPasscode }" :disabled="!editable"
               @click.prevent="draft.clearPasscode = !draft.clearPasscode">
-              <span class="box" :class="{ ticked: draft.clearPasscode }"></span>
+              <span class="box" :class="{ ticked: draft.clearPasscode }"><svg viewBox="0 0 13 13" aria-hidden="true"><path d="M2.6 6.8 5 9.2 10 3.6" /></svg></span>
               <span class="op-eyebrow">{{ t('doorlock.ui.passcodeClear') }}</span>
             </button>
           </label>
@@ -261,7 +261,7 @@ const ready = computed(() => hasLeaves(props.draft))
           <input v-model="row.metadata" class="input op-copy" type="text" maxlength="48"
             :placeholder="t('doorlock.ui.metadata')" :disabled="!editable" />
           <button class="mini" :class="{ on: row.remove }" :disabled="!editable" @click="row.remove = !row.remove">
-            <span class="box" :class="{ ticked: row.remove }"></span>
+            <span class="box" :class="{ ticked: row.remove }"><svg viewBox="0 0 13 13" aria-hidden="true"><path d="M2.6 6.8 5 9.2 10 3.6" /></svg></span>
             <span class="op-eyebrow">{{ t('doorlock.ui.remove') }}</span>
           </button>
           <button class="icon danger" :title="t('doorlock.ui.deleteRow')" :disabled="!editable"
@@ -421,6 +421,14 @@ svg {
   flex-direction: column;
   gap: var(--op-space-3);
   padding-right: var(--op-space-1);
+  /* Scrolled by the wheel, like every list on the surface: no OS scrollbar. */
+  scrollbar-width: none;
+}
+
+.fields::-webkit-scrollbar,
+.rows::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .rows {

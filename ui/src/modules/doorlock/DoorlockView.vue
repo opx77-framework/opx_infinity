@@ -58,6 +58,9 @@ const handle = ref<Handle | null>(null)
 const open = ref(false)
 const visible = ref(true)
 const view = ref<'list' | 'settings'>('list')
+/** One per open, and the list's key: the list is kept alive while the player is in a
+    door's settings (see the template), and a NEW panel starts a new list. */
+const session = ref(0)
 const tab = ref<Tab>('general')
 const mode = ref('')
 
@@ -174,7 +177,9 @@ function blank(): void {
 useBridge('opx:doorlock:open', (payload: Payload) => {
   guard('doorlock:open', () => {
     if (!isHandle(payload.handle)) return
+    cancelWipe()
     blank()
+    session.value += 1
     handle.value = payload.handle
     access.value = readAccess(payload.access)
     defaults.value = readDefaults(payload.defaults)
@@ -261,9 +266,22 @@ const DONE: Record<string, string> = {
   key: 'doorlock.staff.key_given'
 }
 
+/** The door a write was about, by name. A save names the DRAFT -- that is the door
+    being written, and its new name is the one to say. Anything else is answered for
+    the id Lua echoes back, and the draft is only the last door OPENED: a delete from
+    the list was told as "Front Gate deleted." for the Back Room the player removed. */
+function doorNamed(verb: string, id: number): string {
+  if (verb !== 'save' && id > 0) {
+    const row = rows.value.find((entry) => entry.id === id)
+    if (row) return row.name || `#${id}`
+    return `#${id}`
+  }
+  return draft.name || `#${draft.id ?? ''}`
+}
+
 /** The server's word on a write, in the player's language. */
-function describe(verb: string, ok: boolean, code: string, detail: string): string {
-  if (ok) return t(own(DONE, verb) ?? 'doorlock.answer.done', { door: draft.name || `#${draft.id ?? ''}` })
+function describe(verb: string, ok: boolean, code: string, detail: string, id = 0): string {
+  if (ok) return t(own(DONE, verb) ?? 'doorlock.answer.done', { door: doorNamed(verb, id) })
   const key = `doorlock.error.${code}`
   const said = t(key, { detail, door: draft.name })
   return said === key ? t('doorlock.error.invalid') : said
@@ -280,7 +298,7 @@ useBridge('opx:doorlock:result', (payload: Payload) => {
       waitingFor.value = null
       view.value = 'list'
     }
-    notice.value = { ok, text: describe(verb, ok, text(payload.code), text(payload.detail)) }
+    notice.value = { ok, text: describe(verb, ok, text(payload.code), text(payload.detail), num(payload.id)) }
     if (ok && returnsToList(verb) && view.value === 'settings') view.value = 'list'
   }, undefined)
 })
@@ -293,16 +311,37 @@ useBridge('opx:doorlock:visible', (payload: Payload) => {
   }, undefined)
 })
 
+/* A CLOSED PANEL KEEPS ITS TABLE UNTIL THE FADE HAS RUN. Blanked in the same tick,
+   the list lost its rows and its `loaded` flag, and the panel faded out reading
+   "Loading..." over an empty table. The confirm goes at once -- it is a question,
+   and nobody can answer it any more -- and the rest follows when nothing can see it. */
+const WIPE_MS = 240
+let wipe: ReturnType<typeof setTimeout> | undefined
+
+function cancelWipe(): void {
+  if (wipe !== undefined) clearTimeout(wipe)
+  wipe = undefined
+}
+
 useBridge('opx:doorlock:close', (payload: Payload) => {
   guard('doorlock:close', () => {
     if (payload.handle !== undefined && !mine(payload)) return
     handle.value = null
-    blank()
+    open.value = false
+    confirm.value = null
     holdFocus(false)
+    cancelWipe()
+    wipe = setTimeout(() => {
+      wipe = undefined
+      if (!open.value) blank()
+    }, WIPE_MS)
   }, undefined)
 })
 
-onUnmounted(() => holdFocus(false))
+onUnmounted(() => {
+  cancelWipe()
+  holdFocus(false)
+})
 
 // ── the intents ────────────────────────────────────────────────────────────
 
@@ -398,8 +437,14 @@ function giveKey(): void {
           </button>
         </header>
 
+        <!-- KEPT MOUNTED ACROSS A DOOR'S SETTINGS, hidden rather than unmounted. The search,
+             the page and the sort are the list's own, and an Edit and a Back used to
+             cost all three: the staff member who found a door on page 3 of a search
+             came back to page 1 of everything. A new open is a new key, so the next
+             panel starts clean. -->
         <DoorList
-          v-if="view === 'list'"
+          v-show="view === 'list'"
+          :key="session"
           :rows="rows"
           :loaded="loaded"
           :access="access"
@@ -412,7 +457,7 @@ function giveKey(): void {
         />
 
         <DoorSettings
-          v-else
+          v-if="view !== 'list'"
           v-model:tab="tab"
           :draft="draft"
           :defaults="defaults"

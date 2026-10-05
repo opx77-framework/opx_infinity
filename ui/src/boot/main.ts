@@ -44,7 +44,9 @@ import SurfaceRoot from './SurfaceRoot.vue'
 // `modules/loading` says a load is up they are taken off screen and kept mounted, and
 // each comes back exactly as its own module last left it.
 registerModule({ id: 'hud', surface: 'overlay', component: HudRoot, hideWhileLoading: true })
-registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot, hideWhileLoading: true })
+// Toasts on a layer of their own ABOVE the modal one: most of them answer something the
+// player just did on a modal view, and under it they were dimmed by that view's scrim.
+registerModule({ id: 'notify', surface: 'notice', component: NotifyRoot, hideWhileLoading: true })
 registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot, hideWhileLoading: true })
 registerModule({ id: 'progress', surface: 'overlay', component: ProgressRoot, hideWhileLoading: true })
 
@@ -102,7 +104,7 @@ registerModule({ id: 'spawn', surface: 'modal', component: SpawnView })
 // registered there would draw perfectly and refuse every press.
 registerModule({ id: 'downed', surface: 'modal', component: DownedView })
 
-// THE LOADING COVER, on a layer of its own above the other two: it is drawn over the
+// THE LOADING COVER, on a layer of its own above all the others: it is drawn over the
 // game's own loading screen during a load in play, and over everything this page has.
 // Never a pointer -- a load is nothing the player drives.
 registerModule({ id: 'loading', surface: 'cover', component: LoadingCover })

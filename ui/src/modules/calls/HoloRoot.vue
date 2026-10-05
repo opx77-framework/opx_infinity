@@ -210,6 +210,14 @@ function hangUp(): void {
     delete asks first, as every destroying row in this resource does. */
 const confirming = ref<string | null>(null)
 
+/* THE ARMED DELETE DOES NOT OUTLIVE WHAT THE PLAYER WAS LOOKING AT. Left armed across
+   a close or a tab switch, the row came back reading "SURE?" and the next single
+   press deleted the contact -- the confirmation had been given minutes earlier, for
+   a screen that was no longer up. */
+watch([open, tab], () => {
+  confirming.value = null
+})
+
 function forgetRow(row: Row): void {
   if (row.ref === '') return
   if (confirming.value !== row.ref) {
@@ -340,10 +348,13 @@ const shown = computed<Row[]>(() => contacts.value)
         <!-- THE NAME ONCE. Dialling out with no call, the line above already
              says who: "Calling {name}..." under it printed it twice. The
              named line is for the one case it adds something -- on a call,
-             asking a third, where the line above lists the people on it. -->
+             asking a third, where the line above lists the people on it.
+             A contact offer the same: the line above is the caller -- already
+             whatever Lua lets this player know them as, a stranger included --
+             so the offer under it is said without a name. -->
         <p class="passive-what op-eyebrow">
           {{ ringing
-            ? (inviteIsContact ? t('calls.holo.sharing', { name: callerName })
+            ? (inviteIsContact ? t('calls.holo.contactOffer')
               : t('calls.holo.incoming'))
             : onCall
               ? (dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.inCall'))
@@ -683,6 +694,9 @@ const shown = computed<Row[]>(() => contacts.value)
   margin-bottom: 14%;
   padding: var(--op-space-3);
   overflow: auto;
+  /* Scrolls like every other list on the surface: by the wheel, with no OS
+     scrollbar drawn across the projection. */
+  scrollbar-width: none;
   /* THE ONLY ELEMENT ON THIS SURFACE THAT TAKES THE POINTER. A click beside it
      goes to the world. */
   pointer-events: auto;
@@ -696,6 +710,11 @@ const shown = computed<Row[]>(() => contacts.value)
     rgba(var(--op-red-rgb), 0.05) 0 1px,
     transparent 1px 3px
   );
+}
+
+.panel::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .panel.is-ringing {
@@ -859,6 +878,11 @@ const shown = computed<Row[]>(() => contacts.value)
   cursor: pointer;
 }
 
+.tab:hover:not(.on) {
+  color: var(--op-red-text);
+  border-bottom-color: rgba(var(--op-red-rgb), 0.4);
+}
+
 .tab.on {
   border-bottom-color: var(--op-red);
   color: var(--op-red);
@@ -904,8 +928,24 @@ const shown = computed<Row[]>(() => contacts.value)
   min-width: 0;
 }
 
+/* A REASON IS A SENTENCE, and in French a long one ("Votre liste de contacts est
+   pleine..."). It may wrap -- cutting it would hide why the row is dark -- but it
+   takes at most a little over half the row, so the name keeps the rest, and its
+   lines get a leading of their own: the eyebrow's line-height of 1 set the wrapped
+   lines touching. */
 .why {
+  flex: 0 1 auto;
+  max-width: 55%;
+  line-height: 1.3;
+  text-align: right;
   color: var(--op-text-faint);
+}
+
+/* A button label never wraps: "SÛR ?" broke at its space and stood two lines tall. */
+.pill,
+.act {
+  flex: none;
+  white-space: nowrap;
 }
 
 .pill {
