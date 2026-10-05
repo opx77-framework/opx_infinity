@@ -43,6 +43,9 @@ local EVENT_ENTRY = OPX.Event(LOCAL, 'entry', 'state')
 -- dropped open would otherwise cost them the choice.
 local UPKEEP_MS = 250
 
+-- How often a join busy ahead of the menu tells the server it still is.
+local WAITING_MS = 30000
+
 -- Milliseconds a second click inside is swallowed. The click is a click: two in a
 -- flick are one intent, and without this the second one reaches the server after
 -- the first has settled and draws a refusal about a choice that went through.
@@ -84,6 +87,15 @@ local function strings()
 	}
 end
 
+--- A place's words in the player's language: `spawn.place.<id><suffix>` when
+--- the catalogue has it, the config's own text otherwise. The config is written
+--- in one language, and a French player read "King Stoop forecourt".
+local function placeLabel(id, fallback, suffix)
+	local key = ('spawn.place.%s%s'):format(tostring(id), suffix or '')
+	if OPX.Locale.Exists(key) then return locale(key) end
+	return fallback
+end
+
 --- Every location, as the page needs it.
 -- Label and district only: the coordinates never leave the server's copy of the
 -- catalogue in either direction, so there is nothing here for a page to be
@@ -100,7 +112,8 @@ local function places()
 	local catalogue = M.Catalogue()
 	for index = 1, #catalogue do
 		local point = catalogue[index]
-		rows[#rows + 1] = { id = point.id, label = point.label, district = point.district }
+		rows[#rows + 1] = { id = point.id, label = placeLabel(point.id, point.label),
+			district = placeLabel(point.id, point.district, '.district') }
 	end
 	return rows
 end
@@ -204,7 +217,8 @@ local function onClosed(payload)
 	end
 
 	if reason == 'chosen' then
-		OPX.Toast.Locale('spawn.placed', { place = payload.place or '' }, 'success')
+		OPX.Toast.Locale('spawn.placed',
+			{ place = placeLabel(payload.placeId, payload.place or '') }, 'success')
 	elseif reason == 'resumed' then
 		OPX.Toast.Locale('spawn.resumed', nil, 'success')
 	elseif reason == 'timeout' then
@@ -313,8 +327,21 @@ function M.Start()
 		if not entryWaiting then tryOpen() end
 	end)
 
+	-- WHILE THE JOIN IS BUSY AHEAD OF THE MENU, THE SERVER IS TOLD SO, so its
+	-- hold on the choice does not run out under the name form or the fitting
+	-- room (see `M.Waiting` on the server). Every half minute is far inside the
+	-- shortest hold the server allows. On the upkeep job rather than a job of
+	-- its own: one comparison does not earn a slot in the scheduler's rotation.
+	local waitedAtMs = nil
 	OPX.Scheduler.Every('spawn:upkeep', UPKEEP_MS, function()
 		if pendingOpen then draw() end
+		if offer ~= nil and not open and entryWaiting then
+			local now = OPX.Now()
+			if waitedAtMs == nil or now - waitedAtMs >= WAITING_MS then
+				waitedAtMs = now
+				TriggerServerEvent(M.Event.WAITING)
+			end
+		end
 	end)
 end
 

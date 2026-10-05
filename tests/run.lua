@@ -1380,6 +1380,117 @@ end
 -- asking this module nothing. The choice still open for the first stayed open:
 -- its menu up and holding the keyboard until the hold ran out, and a second
 -- offer on the slot refused behind it.
+-- ── spawn: the hold waits for a join that is busy ahead of the menu ─────────
+-- The hold is counted from the offer, which comes before the name form and the
+-- fitting room: a new player who took their time there was placed by the
+-- server for a menu they had never seen. A join that reports itself busy
+-- stretches the hold, up to a cap; once the menu is up, its own window rules.
+section('spawn: the hold waits for a join that is busy ahead of the menu')
+do
+	local env, control, why = boot('server', nil, nil, function(sandbox, file)
+		if file == 'config/spawn.lua' then
+			sandbox.OPX.Config.MODULES.spawn.HOLD_MAX_SECONDS = 60
+			sandbox.OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		end
+	end)
+	check('the server boots with a one-minute hold', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local src = 77
+		control.Admit(src, 'account-hold')
+		OPX.EnsureSession(src)
+		check('a choice is offered', spawn.Offer(src, 'citizen-hold') == true)
+		check('the client can report the join busy', type(control.netEvents[spawn.Event.WAITING]) == 'function')
+		-- Fifty seconds in, the name form is still up.
+		control.Pump(500)
+		env.source = src
+		control.netEvents[spawn.Event.WAITING]()
+		env.source = nil
+		control.Pump(200)
+		check('seventy seconds in, a busy join still holds its choice', spawn.IsPending(src) == true)
+		-- Reported no more: the stretched hold runs out like any other.
+		control.Pump(500)
+		check('and a hold nobody stretches again still runs out', spawn.IsPending(src) == false)
+	end
+end
+
+-- The client tells the server, while the entry module says the join is busy
+-- and the offer is waiting behind it.
+section('spawn: the client reports a busy join while an offer waits')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local function waits()
+			local n = 0
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == spawn.Event.WAITING then n = n + 1 end
+			end
+			return n
+		end
+		env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = true, phase = 'name' })
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 45000 })
+		control.Pump(320)
+		check('an offer waiting behind the name form is reported busy', waits() >= 1, waits())
+		env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false, phase = 'idle' })
+		local after = waits()
+		control.Pump(320)
+		check('and nothing is reported once the join is through', waits() == after, waits() - after)
+	end
+end
+
+-- ── job, grade and spawn-place names are in the player's language ───────────
+-- The HUD drew the config's English ("Unemployed / Freelancer") and the spawn
+-- menu its English place names to every player. Each shipped job, grade and
+-- place has a line in both languages now; one an operator adds without a line
+-- keeps the config's own text.
+section('labels: every shipped job, grade and spawn place has words in both languages')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the labels', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Config.MODULES.character.JOBS or {}
+		local places = OPX.Config.MODULES.spawn.LOCATIONS or {}
+		local missing, counted = {}, 0
+		for _, code in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(code)
+			for name, job in pairs(jobs) do
+				counted = counted + 1
+				if not OPX.Locale.Exists('character.job.' .. name) then
+					missing[#missing + 1] = code .. ':job.' .. name
+				end
+				for level in pairs(job.grades or {}) do
+					if not OPX.Locale.Exists(('character.grade.%s.%s'):format(name, tostring(level))) then
+						missing[#missing + 1] = ('%s:grade.%s.%s'):format(code, name, tostring(level))
+					end
+				end
+			end
+			for _, place in ipairs(places) do
+				for _, suffix in ipairs({ '', '.district' }) do
+					if not OPX.Locale.Exists('spawn.place.' .. place.id .. suffix) then
+						missing[#missing + 1] = code .. ':place.' .. place.id .. suffix
+					end
+				end
+			end
+		end
+		table.sort(missing)
+		check('each one has a line in English and French', counted > 0 and #places > 0 and #missing == 0,
+			table.concat(missing, ', '))
+		OPX.Locale.Set('fr')
+		check('and French reads French',
+			OPX.Locale.Text('character.job.unemployed') ~= 'Unemployed'
+				and OPX.Locale.Text('spawn.place.stoop') ~= 'King Stoop forecourt')
+		OPX.Locale.Set('en')
+		check('the English lines say what the config says, so nothing moves for English players',
+			OPX.Locale.Text('character.job.unemployed') == jobs.unemployed.label
+				and OPX.Locale.Text('character.grade.unemployed.0') == jobs.unemployed.grades[0].name)
+	end
+end
+
 section('spawn: a choice left by a character that left the slot')
 do
 	local env, control, why = boot('server')
