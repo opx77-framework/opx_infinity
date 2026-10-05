@@ -237,9 +237,11 @@ function blank(): void {
   aside.value = false
   waiting.value = false
   notice.value = ''
-  fellAt.value = 0
-  // Stops `useCountdown`'s interval: it watches this and only runs above zero.
-  unlockAt.value = 0
+  // THE TWO CLOCKS STOP WHERE THEY ARE, and are not zeroed. Zeroed, the fade-out
+  // drew the DOWN FOR readout as `now - 0` -- tens of millions of minutes -- and the
+  // give-up row flipped from its lock to "available" on the way out. `show` writes
+  // both afresh, and a new deadline restarts the countdown on its own.
+  lock.stop()
   stopPress(false)
   if (ticker !== undefined) clearInterval(ticker)
   ticker = undefined
@@ -682,6 +684,9 @@ onUnmounted(() => {
 
 .choice-hint {
   color: var(--op-text-dim);
+  /* It carries the give-up lock's mm:ss, re-drawn every second in a proportional
+     face: the clock's width changed with its digits and the line shivered. */
+  font-variant-numeric: tabular-nums;
 }
 
 .choice.is-off .choice-hint {
