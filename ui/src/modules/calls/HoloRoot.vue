@@ -348,10 +348,13 @@ const shown = computed<Row[]>(() => contacts.value)
         <!-- THE NAME ONCE. Dialling out with no call, the line above already
              says who: "Calling {name}..." under it printed it twice. The
              named line is for the one case it adds something -- on a call,
-             asking a third, where the line above lists the people on it. -->
+             asking a third, where the line above lists the people on it.
+             A contact offer the same: the line above is the caller -- already
+             whatever Lua lets this player know them as, a stranger included --
+             so the offer under it is said without a name. -->
         <p class="passive-what op-eyebrow">
           {{ ringing
-            ? (inviteIsContact ? t('calls.holo.sharing', { name: callerName })
+            ? (inviteIsContact ? t('calls.holo.contactOffer')
               : t('calls.holo.incoming'))
             : onCall
               ? (dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.inCall'))
