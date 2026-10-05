@@ -28488,6 +28488,26 @@ do
 			control.Pump(4)
 			check('once a character is loaded the message is theirs',
 				lastAuthor() == 'Vincent Kowalski', tostring(lastAuthor()))
+
+			-- A SECOND LINE INSIDE RATE_MS IS DROPPED, AND SAID. The box has
+			-- already cleared on the client, so the line simply vanished.
+			local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+			local function slowDowns(from)
+				local count = 0
+				for index = from + 1, #control.clientEvents do
+					local sent = control.clientEvents[index]
+					if sent.name == NOTIFY and sent.source == 32 and type(sent[1]) == 'table'
+						and sent[1].code == 'chat.tooFast' then count = count + 1 end
+				end
+				return count
+			end
+			local mark = #control.clientEvents
+			env.source = 32
+			control.netEvents[said]('too quick')
+			control.netEvents[said]('and again')
+			env.source = nil
+			check('a line inside the rate floor is refused aloud, once a burst',
+				slowDowns(mark) == 1, slowDowns(mark))
 			character.Players[32] = nil
 		end
 	end
