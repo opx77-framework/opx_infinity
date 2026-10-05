@@ -14575,6 +14575,14 @@ do
 		check('a no tells the asker and starts nothing', #platform.requests == before
 			and lastTo(Event.NOTICE, 4)[2] == 'declined')
 
+		-- ── withdrawn by the invited player ──
+		Duo.Request(4, { actor = 'dance', target = 'dance' })
+		invite = lastTo(Event.INVITE, 5)
+		Duo.Cancel(5, 'stopped')
+		check('an invited player who stops their emote has the invitation taken off their screen',
+			(lastTo(Event.UNINVITE, 5) or {})[1] == invite[1])
+		check('and the asker is told no', lastTo(Event.NOTICE, 4)[2] == 'declined')
+
 		-- ── expired ──
 		Duo.Request(4, { actor = 'dance', target = 'dance' })
 		invite = lastTo(Event.INVITE, 5)

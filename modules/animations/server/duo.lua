@@ -429,6 +429,12 @@ function Duo.Cancel(player, reason)
 			TriggerClientEvent(M.Event.UNINVITE, invite.target, invite.id)
 		else
 			notify(invite.actor, 'info', 'declined')
+			-- AND THE INVITED SCREEN IS TAKEN DOWN TOO, unless the connection is
+			-- gone: an emote stop drops the invitation, and the Accept / Decline
+			-- menu stayed up over a dead one until closed by hand.
+			if reason ~= 'disconnected' then
+				TriggerClientEvent(M.Event.UNINVITE, invite.target, invite.id)
+			end
 		end
 	end
 	local id = runningOf[player]
