@@ -89,8 +89,16 @@ function paths(name: string): string[] {
 }
 
 function distance(row: Row): string {
-  return row.distance < 0 ? t('doorlock.ui.elsewhere') : t('doorlock.ui.metres', { n: row.distance.toFixed(1) })
+  return row.distance < 0 ? t('doorlock.ui.elsewhere') : t('doorlock.ui.metres', { n: row.distance.toFixed(1).replace('.', t('doorlock.ui.decimal')) })
 }
+
+/** "1 door", "0 porte": zero and one are keys of their own, because English and French
+    part on zero and the page does not know which language it is speaking. */
+const countLabel = computed(() => {
+  const n = filtered.value.length
+  const key = n === 0 ? 'doorlock.ui.countZero' : n === 1 ? 'doorlock.ui.countOne' : 'doorlock.ui.count'
+  return t(key, { n })
+})
 
 function mark(column: Column): string {
   if (sortBy.value !== column) return ''
@@ -115,7 +123,7 @@ function mark(column: Column): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path v-for="(d, at) in paths('search')" :key="at" :d="d" /></svg>
         <input v-model="search" class="op-copy" type="text" :placeholder="t('doorlock.ui.search')" maxlength="64" />
       </label>
-      <span class="count op-value">{{ t('doorlock.ui.count', { n: filtered.length }) }}</span>
+      <span class="count op-value">{{ countLabel }}</span>
     </div>
 
     <div class="table">
