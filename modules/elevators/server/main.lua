@@ -420,7 +420,8 @@ local function request(player, key, index)
 	local px, py = coordinate(position.x), coordinate(position.y)
 	if px == nil or py == nil then return { ok = false, error = 'no_position' } end
 	local reach = Access.FlatDistanceSquared(key, px, py)
-	if reach == nil or reach > Access.USE_RADIUS_SQ then
+	-- With the server's slack, as every place: see `REACH_SLACK`.
+	if reach == nil or reach > OPX.Spots.ServerReachSq(Access.USE_RADIUS) then
 		return { ok = false, error = 'too_far' }
 	end
 

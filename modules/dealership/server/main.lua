@@ -265,7 +265,8 @@ local function dealerAt(at, dealerKey)
 		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
 		-- a dealer on the same spot that sorted first won the search and was then
 		-- refused as `wrongBucket` to somebody standing on a dealer in theirs.
-		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
+		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y,
+			OPX.Spots.ServerReachSq(Access.USE_RADIUS))
 	else
 		dealer = Access.Spot(spots, dealerKey)
 	end
@@ -273,7 +274,8 @@ local function dealerAt(at, dealerKey)
 	if dealer.bucket ~= at.bucket then return nil, Result.Err('dealership.wrongBucket') end
 
 	local flat = Access.FlatDistanceSquared(dealer, at.x, at.y)
-	if flat == nil or flat > Access.USE_RADIUS_SQ then
+	-- With the server's slack, as garages: see `REACH_SLACK`.
+	if flat == nil or flat > OPX.Spots.ServerReachSq(Access.USE_RADIUS) then
 		return nil, Result.Err('dealership.tooFar', dealer.key)
 	end
 	return dealer, nil

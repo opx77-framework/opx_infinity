@@ -795,10 +795,24 @@ local function pickerPressed()
 end
 
 -- Stops the local player's animation from the stop key. Nothing in progress is
--- not a refusal.
+-- not a refusal, and is not a request either.
+--
+-- NOTHING PLAYING SAYS NOTHING AND SENDS NOTHING. X is shared -- the progress
+-- cancel, a call's decline and hang-up, the crate drop -- and every one of those
+-- presses also sent a stop to the server, spending the player's request window,
+-- and answered "the animation is locked" over the progress bar's own animation
+-- the same press had just cancelled.
 local function stopPressed()
+	if not Runtime.Playing() then return end
 	local result = Runtime.Stop('key')
 	if not result.ok then Runtime.Refuse(result.error) end
+end
+
+-- The stop key's claim on a shared X: the player's own emote, below a bar, a
+-- ringing call and a carried crate, above a call merely going on.
+local function stopWants()
+	if Runtime.Playing() then return OPX.Spots.Key.Rank('EMOTE') end
+	return nil
 end
 
 --- Clears the screen stack.
@@ -813,7 +827,7 @@ end
 -- @author dop42
 function Picker.Start()
 	Keys.Register(KEY_PICKER, 'animations.key.picker', Opt.KEY_PICKER, pickerPressed)
-	Keys.Register(KEY_STOP, 'animations.key.stop', Opt.KEY_STOP, stopPressed)
+	Keys.Register(KEY_STOP, 'animations.key.stop', Opt.KEY_STOP, stopPressed, stopWants)
 
 	RegisterNetEvent(M.Event.PICKER, function(category)
 		if type(category) ~= 'string' or category == '' then category = nil end

@@ -200,9 +200,10 @@ OPX.Spots.Key = {}
 --- took it.
 -- @author dop42
 --
--- THE SILENT PRESS. E is shared -- garages, dealership, clothing, teleports and
--- the elevator door all declare it -- so a press while another surface holds the
--- keyboard does nothing at all, and the module's own handler decides what a
+-- THE SILENT PRESS. E is shared -- garages, dealership, clothing, teleports,
+-- doors and the elevator door all declare it -- so a press while another surface
+-- holds the keyboard does nothing at all, a press another of them owns is not
+-- this one's (`wants`, below), and the module's own handler decides what a
 -- press away from its spots says (each of them: nothing). The handler runs under
 -- pcall, so a raise is a log line and not a dead key.
 --
@@ -215,6 +216,8 @@ OPX.Spots.Key = {}
 --   tag      string   the module name, for the log lines
 --   declared table    { ID, NAME, DEFAULT } as the module's KEY block reads
 --   onPress  function (origin) called with 'key'
+--   wants    function|nil (x, y, z) -> rank|nil, distance|nil: enters the
+--            mapping into the contest for its key, see `OPX.Spots.Key.Owns`
 -- @return boolean registered
 function OPX.Spots.Key.Register(options)
 	local tag = tostring(options.tag or 'spots')
@@ -224,6 +227,7 @@ function OPX.Spots.Key.Register(options)
 	local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
 		declared.DEFAULT, function()
 			if OPX.Spots.Captured() then return end
+			if not OPX.Spots.Key.Owns(declared.ID) then return end
 			local ran, failure = pcall(onPress, 'key')
 			if not ran then
 				Open77.log.error(('[%s] key %s: %s'):format(tag, declared.ID, tostring(failure)))
@@ -239,6 +243,10 @@ function OPX.Spots.Key.Register(options)
 			:format(tag, declared.ID, tostring(declared.DEFAULT), tostring(called and answer or ok)))
 		return false
 	end
+	if type(options.wants) == 'function' then
+		OPX.Spots.Key.Contend({ tag = tag, id = declared.ID, default = declared.DEFAULT,
+			wants = options.wants })
+	end
 	return true
 end
 
@@ -251,4 +259,158 @@ end
 function OPX.Spots.Key.Label(registered, declared)
 	if not registered or type(declared) ~= 'table' then return nil end
 	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
+end
+
+-- ── one press, one owner ────────────────────────────────────────────────────
+--
+-- THE HOST FIRES EVERY MAPPING BOUND TO A KEY FROM ONE PRESS, in an order nobody
+-- chose. E is declared by six modules and X by four, so "each handler is silent
+-- away from its own context" was the whole rule -- and it held only until two
+-- contexts overlapped: a garage spot beside a managed door turned the door AND
+-- asked for the car; X to put a crate down during a call also hung the call up.
+--
+-- A contested press goes to ONE mapping. Each contender says whether it has
+-- something to do right now and at which rank (`OPX.Config.CLIENT.KEY_PRIORITY`),
+-- the highest acts, and at equal rank the nearer one does. The first handler of a
+-- press decides for all of them, BEFORE any of them has acted -- the second
+-- handler to run would otherwise see the world the first one just changed (a bar
+-- already cancelled, an emote already stopped) -- and the decision is kept until
+-- every other contender on that key has asked once.
+--
+-- When nobody wants the press, every handler runs as it always did, each silent
+-- away from its own context: a contest decides between features that have
+-- something to do, it never invents one.
+
+--- A decision older than this is a stale press, never the current one. The host
+--- calls every mapping of one press a frame apart at most.
+OPX.Spots.Key.PRESS_MS = 500
+
+--- The ranks when the config names none, highest first in effect.
+OPX.Spots.Key.RANK_DEFAULTS = {
+	PROGRESS = 100, PICK = 95, OPEN = 90, RINGING = 80, OUTGOING = 70,
+	CARRY = 60, EMOTE = 50, SPOT = 20, CALL = 10,
+}
+
+-- id -> { id, default, wants, tag }
+local contenders = {}
+-- physical key -> { winner, pending = { id = true }, atMs }
+local decisions = {}
+
+--- The rank one context name stands at.
+-- @author dop42
+-- @param name string one of `RANK_DEFAULTS`'s names
+-- @return number
+function OPX.Spots.Key.Rank(name)
+	local client = OPX.Config and OPX.Config.CLIENT
+	local ranks = type(client) == 'table' and client.KEY_PRIORITY or nil
+	local value = type(ranks) == 'table' and ranks[name] or nil
+	if type(value) == 'number' and value == value then return value end
+	return OPX.Spots.Key.RANK_DEFAULTS[name] or 0
+end
+
+-- The physical key a contender is bound to now, rebinds included, upper-cased so
+-- 'e' and 'E' are the same key.
+local function boundTo(contender)
+	local key = OPX.Lib.Input.KeyFor(contender.id) or contender.default
+	return type(key) == 'string' and key:upper() or nil
+end
+
+--- Enters one mapping into the contest for the key it is bound to. A mapping that
+--- never contends is never held back.
+-- @author dop42
+-- @param options table
+--   id      string    the mapping id, as declared
+--   default string    the declared default key
+--   wants   function  (x, y, z) -> rank|nil, distance|nil; nil when this press
+--                     is nothing to it. Runs under pcall, and must not act.
+--   tag     string|nil the module, for the one log line a raise gets
+function OPX.Spots.Key.Contend(options)
+	if type(options) ~= 'table' or type(options.id) ~= 'string' or type(options.wants) ~= 'function' then
+		return
+	end
+	contenders[options.id] = { id = options.id, default = options.default, wants = options.wants,
+		tag = tostring(options.tag or 'spots') }
+	decisions = {}
+end
+
+-- The player's position, read once a press, or nils before there is a world.
+local function position()
+	local character = Open77.character
+	if type(character) ~= 'table' or type(character.position) ~= 'function' then return nil end
+	local read, x, y, z = pcall(character.position)
+	if not read or type(x) ~= 'number' or type(y) ~= 'number' then return nil end
+	return x, y, type(z) == 'number' and z or 0.0
+end
+
+-- Decides a fresh press among the contenders bound to one key: the winner's id,
+-- or nil when nobody wants it.
+local function decide(rivals)
+	local x, y, z = position()
+	local winner, bestRank, bestDistance = nil, nil, nil
+	for index = 1, #rivals do
+		local contender = rivals[index]
+		local id = contender.id
+		local ran, rank, distance = pcall(contender.wants, x, y, z)
+		if not ran then
+			Open77.log.error(('[%s] key %s: %s'):format(contender.tag, id, tostring(rank)))
+		elseif type(rank) == 'number' then
+			distance = type(distance) == 'number' and distance or math.huge
+			if winner == nil or rank > bestRank or (rank == bestRank and (distance < bestDistance
+				or (distance == bestDistance and id < winner))) then
+				winner, bestRank, bestDistance = id, rank, distance
+			end
+		end
+	end
+	return winner
+end
+
+--- Whether this press of a mapping's key is this mapping's to act on.
+-- @author dop42
+--
+-- True for a mapping that does not contend, and for every contender when none of
+-- them wants the press. Otherwise true for exactly one of the mappings bound to
+-- that key, whichever order the host calls them in.
+-- @param id string the mapping id
+-- @return boolean
+function OPX.Spots.Key.Owns(id)
+	local me = contenders[id]
+	if me == nil then return true end
+	local physical = boundTo(me)
+	if physical == nil then return true end
+	local now = OPX.Now()
+	local decision = decisions[physical]
+	if decision ~= nil and decision.pending[id] and now - decision.atMs <= OPX.Spots.Key.PRESS_MS then
+		decision.pending[id] = nil
+		if next(decision.pending) == nil then decisions[physical] = nil end
+		return decision.winner == nil or decision.winner == id
+	end
+
+	-- One key read per contender per press: the rivals are listed once and both
+	-- the decision and the pending set are made from that list.
+	local rivals, pending = { me }, {}
+	for other, contender in pairs(contenders) do
+		if other ~= id and boundTo(contender) == physical then
+			rivals[#rivals + 1] = contender
+			pending[other] = true
+		end
+	end
+	local winner = decide(rivals)
+	decisions[physical] = next(pending) ~= nil and { winner = winner, pending = pending, atMs = now } or nil
+	return winner == nil or winner == id
+end
+
+--- The flat distance from a position to a spot, for a contender's `wants`; nil
+--- when either cannot be read, which ranks the spot behind any that can.
+-- @author dop42
+-- @param spot table|nil anything with numeric `x` and `y`
+-- @param x number|nil
+-- @param y number|nil
+-- @return number|nil
+function OPX.Spots.Key.Reach(spot, x, y)
+	if type(spot) ~= 'table' or type(spot.x) ~= 'number' or type(spot.y) ~= 'number'
+		or type(x) ~= 'number' or type(y) ~= 'number' then
+		return nil
+	end
+	local dx, dy = x - spot.x, y - spot.y
+	return math.sqrt(dx * dx + dy * dy)
 end

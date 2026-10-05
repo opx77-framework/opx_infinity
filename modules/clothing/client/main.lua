@@ -256,6 +256,10 @@ function Runtime.Start()
 		tag = 'clothing',
 		declared = keySettings(),
 		onPress = Runtime.Open,
+		wants = function(x, y)
+			if nearest == nil then return nil end
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+		end,
 	})
 
 	-- The strip redraws a rebound key itself; this only re-reads whether the row

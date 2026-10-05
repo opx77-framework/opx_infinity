@@ -291,6 +291,20 @@ local function remember(action, origin, owner)
 	return serial
 end
 
+--- Whether the local player has something for the stop key to end: a playback
+--- of their own on the mirror, or a play this client asked for and the server
+--- has not answered yet.
+-- @author dop42
+-- @return boolean
+function Runtime.Playing()
+	local own = Presenter.State()
+	if type(own) == 'table' and own.active == true then return true end
+	for _, request in pairs(pending) do
+		if request.action == 'play' then return true end
+	end
+	return false
+end
+
 --- Whether the local player's playback may not be stopped by the player.
 -- @author dop42
 -- @return boolean

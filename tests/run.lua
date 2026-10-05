@@ -6968,6 +6968,24 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
 
+		-- THE ROW AND THE SERVER AGREE AT THE EDGE. The client draws the row out to
+		-- USE_RADIUS from where IT stands; the server measures where it last saw
+		-- the player, a moment behind, and allows REACH_SLACK for it. Half a metre
+		-- past the drawn edge used to be refused as too far.
+		local edge = garages.Access.USE_RADIUS + 0.5
+		place('edge_dock', {
+			KIND = 'garage', LABEL = 'EDGE',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = edge, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.netEvents[garages.Event.REQUEST]('edge_dock')
+		control.Pump(8)
+		check('half a metre past the drawn edge is not refused as too far',
+			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] ~= 'garages.tooFar',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
 		place('other_bucket', {
 			KIND = 'garage', LABEL = 'ELSEWHERE',
 			LOCATIONS = { { BUCKET = 7,
@@ -12729,6 +12747,31 @@ do
 end
 
 
+-- ── every refusal the lift's server answers a player with has its sentence ──
+-- The server refuses a downed rider with `downed`; the panel's map had no such
+-- code, so the player read the generic "the lift refused" while
+-- `elevators.downed` sat in both catalogues, reached only by the client's own
+-- `player_down`. This reads the codes `request` can answer and the panel's map.
+section('elevators: every code the server refuses a ride with has a sentence')
+do
+	local handle = io.open('modules/elevators/server/main.lua', 'r')
+	local server = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local body = server:match('local function request%(player, key, index%)(.-)\nend\n') or ''
+	handle = io.open('modules/elevators/client/panel.lua', 'r')
+	local panel = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local map = panel:match('local REFUSAL = {(.-)\n}') or ''
+	local codes, missing = 0, {}
+	for code in body:gmatch("error = '([%w_]+)'") do
+		codes = codes + 1
+		if not map:find('\n%s*' .. code .. ' = ') then missing[#missing + 1] = code end
+	end
+	check('the ride request answers refusal codes', codes >= 6, codes)
+	check('and the panel has a sentence for every one of them', #missing == 0, table.concat(missing, ', '))
+end
+
+
 -- ── every key a menu names is written, in both languages ────────────────────
 -- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
 -- never passes through that spelling: the staff menu hands a row helper its
@@ -17629,6 +17672,12 @@ do
 			(Access.AtEntrance(at, 100.0, 200.0, 10.0, 0)) == true)
 		check('a body across the street is not',
 			select(2, Access.AtEntrance(at, 140.0, 200.0, 10.0, 0)) == 'too_far')
+		-- The server measures a moment behind the client that drew the row, and
+		-- allows REACH_SLACK for it: the edge of the drawn row is still a press.
+		check('half a metre past the drawn radius is still standing on it, for the server',
+			(Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 0.5, 200.0, 10.0, 0)) == true)
+		check('and a metre and a half past it is not',
+			select(2, Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 1.5, 200.0, 10.0, 0)) == 'too_far')
 		check('nor is one in another routing bucket standing in the same spot',
 			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0, 7)) == 'wrong_bucket')
 		-- THE VERTICAL BAND, which is the measurement the elevators deliberately
@@ -21105,8 +21154,9 @@ do
 		control.netEvents[M.Event.RUN]({ id = '555', step = 'load', durationMs = 3000 })
 		drop.pressed()
 		check('and X while the load bar runs does nothing either', drops() == before)
-		control.Fire(OPX.Modules.Get('progress').Event.ON_DONE, { owner = 'hauling', finished = false,
-			ending = 'cancelled' })
+		-- The bar really ends -- through the progress module, not a forged ON_DONE
+		-- -- because X is contested now, and a bar still up holds the press.
+		OPX.Api.Get('progress').Stop('hauling')
 		drop.pressed()
 		local sent = control.serverEvents[#control.serverEvents]
 		check('X while carrying asks the server, with the way the player faces',
@@ -35242,8 +35292,18 @@ do
 		check('no lockpick in the bag, no attempt', answer ~= nil and answer.code == 'no_lockpick',
 			answer and tostring(answer.code))
 
+		-- THE PICK SPENDS THE TURN'S WINDOW AT THE TURN'S RATE. It had a 600 of
+		-- its own on the same window, so an operator who raised REQUEST_MS raised
+		-- it for turning a door and not for picking one.
 		fakes.counts[60] = { lockpick = 3 }
+		dl.Settings.REQUEST_MS = 5000
 		control.Pump(8)
+		pick()
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick inside REQUEST_MS of the last request is too fast, at the configured floor',
+			answer ~= nil and answer.code == 'too_fast', answer and tostring(answer.code))
+		dl.Settings.REQUEST_MS = 600
+		control.Pump(52)
 		pick()
 		local go = doorlockLast(control, dl.Event.PICK_GO, 60)
 		check('with one, the server sends the door\'s own steps: easy then hard',
@@ -35521,6 +35581,294 @@ do
 		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
 		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
 		check('getAllDoors lists them by id', contract.All().ok and #contract.All().value >= 4)
+	end
+end
+
+-- ── one press, one owner: the contest on a shared key ───────────────────────
+-- The host fires every mapping bound to a key from one press, in either order.
+-- `OPX.Spots.Key.Owns` gives a contested press to exactly one of them; these
+-- press the real mappings in overlapping contexts, both orders, and rebound.
+section('the shared keys: a contested press goes to exactly one mapping, in either order')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bare contest', why == nil, why)
+	if why == nil then
+		local Key = env.OPX.Spots.Key
+		local acted = {}
+		local want = {}
+		local function contender(id, distance)
+			Key.Contend({ tag = 'test', id = id, default = 'K', wants = function()
+				if want[id] == nil then return nil end
+				return want[id], distance
+			end })
+		end
+		contender('a', 3.0)
+		contender('b', 1.0)
+		local function press(order)
+			acted = {}
+			for index = 1, #order do
+				if Key.Owns(order[index]) then acted[#acted + 1] = order[index] end
+			end
+			control.Pump(1)
+			return table.concat(acted, ',')
+		end
+		check('nobody wanting the press lets every handler run its own silent path',
+			press({ 'a', 'b' }) == 'a,b', table.concat(acted, ','))
+		want.a = 50
+		check('one wanting it takes it alone, asked first', press({ 'a', 'b' }) == 'a', table.concat(acted, ','))
+		check('and asked second', press({ 'b', 'a' }) == 'a', table.concat(acted, ','))
+		want.b = 50
+		check('at equal rank the nearer one takes it', press({ 'a', 'b' }) == 'b'
+			and press({ 'b', 'a' }) == 'b', table.concat(acted, ','))
+		want.a = 90
+		check('and a higher rank beats a nearer one', press({ 'b', 'a' }) == 'a', table.concat(acted, ','))
+		-- The decision is taken BEFORE anybody acts: the first handler changing the
+		-- world it was decided on does not hand the press to the second.
+		acted = {}
+		if Key.Owns('a') then
+			acted[#acted + 1] = 'a'
+			want.a = nil
+		end
+		if Key.Owns('b') then acted[#acted + 1] = 'b' end
+		check('the second handler of a press reads the decision, not the world the first changed',
+			table.concat(acted, ',') == 'a', table.concat(acted, ','))
+		control.Pump(1)
+		check('and the next press is decided afresh', press({ 'a', 'b' }) == 'b', table.concat(acted, ','))
+		-- A rebind takes a mapping out of the other's contest.
+		control.input.keys.a = 'J'
+		want.a = 90
+		check('rebound apart, both act on their own keys', press({ 'a', 'b' }) == 'a,b',
+			table.concat(acted, ','))
+		control.input.keys.a = nil
+		-- A press whose other half never came (its mapping went away) does not
+		-- leave the decision standing for ever.
+		Key.Owns('b')
+		control.Pump(Key.PRESS_MS // 100 + 2)
+		want.a, want.b = nil, 50
+		check('a stale half-press is forgotten', press({ 'a', 'b' }) == 'b', table.concat(acted, ','))
+		check('a mapping that never contended is never held back', Key.Owns('opx.test.free') == true)
+	end
+end
+
+section('E: a garage spot beside a managed door turns one of them, the nearer')
+do
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return {} end,
+			setLocked = function() return true end,
+			setInteractionAllowed = function() return true end,
+			setAutomaticClose = function() return true end,
+			setOpen = function() return true end,
+			reset = function() return true end,
+			state = function() return nil end,
+			aimed = function() return nil end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots with garages and doorlock', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local garages, dl = OPX.Modules.Get('garages'), OPX.Modules.Get('doorlock')
+		local garageKey = control.keyMappings.byId['opx.garages.use']
+		local doorKey = control.keyMappings.byId['opx.doorlock.use']
+		check('both are on E out of the box', garageKey ~= nil and doorKey ~= nil
+			and garageKey.key == 'E' and doorKey.key == 'E')
+		local toasts = 0
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			toasts = toasts + 1
+			return realToast(definition)
+		end
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'g#1', label = 'G', kind = 'garage', garage = 'g', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {
+			{ id = 1, name = 'Front', ids = { DOORLOCK_IDS.front }, x = 1.6, y = 0.0, z = 0.0,
+				state = 1, reach = 2.0 },
+		} })
+		check('the player stands at both', settle(control, function()
+			return garages.Runtime.Report().nearest == 'g#1' and dl.Runtime.Report().nearest == 1
+		end), ('%s / %s'):format(tostring(garages.Runtime.Report().nearest),
+			tostring(dl.Runtime.Report().nearest)))
+
+		local function sent()
+			local list, door, garage = control.serverEvents, 0, 0
+			for index = 1, #list do
+				if list[index].name == dl.Event.SET_STATE then door = door + 1 end
+				if list[index].name == garages.Event.LIST then garage = garage + 1 end
+			end
+			return garage, door
+		end
+		local function press(first, second)
+			local g0, d0 = sent()
+			first.pressed()
+			second.pressed()
+			control.Pump(1)
+			local g1, d1 = sent()
+			return g1 - g0, d1 - d0
+		end
+		local g, d = press(garageKey, doorKey)
+		check('nearer the garage spot, E asks for the list and leaves the door alone',
+			g == 1 and d == 0, ('%d/%d'):format(g, d))
+		g, d = press(doorKey, garageKey)
+		check('whichever mapping the host calls first', g == 1 and d == 0, ('%d/%d'):format(g, d))
+
+		control.placement.x = 1.4
+		settle(control, function() return dl.Runtime.Report().nearest == 1
+			and garages.Runtime.Report().nearest == 'g#1' end)
+		g, d = press(garageKey, doorKey)
+		check('nearer the door, E turns the door and asks for no list', g == 0 and d == 1,
+			('%d/%d'):format(g, d))
+		g, d = press(doorKey, garageKey)
+		check('in either order', g == 0 and d == 1, ('%d/%d'):format(g, d))
+		check('and neither press said a word', toasts == 0, toasts)
+
+		-- Rebound apart, each key is its own again.
+		control.input.keys['opx.doorlock.use'] = 'F'
+		g, d = press(garageKey, doorKey)
+		check('with the door rebound to F, each press does its own job', g == 1 and d == 1,
+			('%d/%d'):format(g, d))
+		control.input.keys['opx.doorlock.use'] = 'E'
+	end
+end
+
+section('E: a press away from a lift or a teleport says nothing, down or busy')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the silent E', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local toasts = {}
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			toasts[#toasts + 1] = tostring(definition.id)
+			return realToast(definition)
+		end
+		local lift = control.keyMappings.byId['opx.elevators.use']
+		local teleport = control.keyMappings.byId['opx.teleports.use']
+		check('both keys are mapped', lift ~= nil and teleport ~= nil)
+		-- A bar up anywhere: teleports used to answer "you are busy" before it
+		-- looked for a teleport at all.
+		OPX.Api.Get('progress').Start('test', { label = 'Eating', durationMs = 5000 })
+		teleport.pressed()
+		lift.pressed()
+		control.Pump(2)
+		check('E during a progress bar, at no teleport, says nothing', #toasts == 0,
+			table.concat(toasts, ','))
+		OPX.Api.Get('progress').Stop('test')
+		-- Down: the lift used to answer "not while downed" before it looked for a
+		-- lift at all, so the panel is never even asked away from one.
+		local panel = OPX.Modules.Get('elevators').Panel
+		local opened = 0
+		local realOpen = panel.Open
+		panel.Open = function(...)
+			opened = opened + 1
+			return realOpen(...)
+		end
+		lift.pressed()
+		control.Pump(2)
+		check('E at no lift never reaches the panel, so the down check cannot speak',
+			opened == 0 and #toasts == 0, ('%d / %s'):format(opened, table.concat(toasts, ',')))
+		panel.Open = realOpen
+	end
+end
+
+section('X: a bar, a ring, a crate, an emote and a call each take the press in turn')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the contested X', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls, hauling = OPX.Modules.Get('calls'), OPX.Modules.Get('hauling')
+		local anim = OPX.Modules.Get('animations')
+		local keys = control.keyMappings.byId
+		local cancel, decline = keys['opx.progress.cancel'], keys['opx.calls.decline']
+		local drop, stop = keys['hauling_drop'], keys['opx.animations.stop']
+		check('all four are on X out of the box', cancel and decline and drop and stop
+			and cancel.key == 'X' and decline.key == 'X' and drop.key == 'X' and stop.key == 'X')
+		local function count(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		local function press()
+			local before = {
+				decline = count(calls.Event.DECLINE), hang = count(calls.Event.HANG_UP),
+				drop = count(hauling.Event.DROP), stop = count(anim.Event.STOP),
+			}
+			-- The host's order is nobody's: the stop first, the cancel last.
+			stop.pressed()
+			drop.pressed()
+			decline.pressed()
+			cancel.pressed()
+			control.Pump(1)
+			return {
+				decline = count(calls.Event.DECLINE) - before.decline,
+				hang = count(calls.Event.HANG_UP) - before.hang,
+				drop = count(hauling.Event.DROP) - before.drop,
+				stop = count(anim.Event.STOP) - before.stop,
+			}
+		end
+		local function says(got)
+			return ('decline %d hang %d drop %d stop %d'):format(got.decline, got.hang, got.drop, got.stop)
+		end
+		local deliver = control.netEvents[calls.Event.STATE]
+
+		local got = press()
+		check('X with nothing going on sends nothing at all, not even a stop',
+			got.decline + got.hang + got.drop + got.stop == 0, says(got))
+
+		-- On a call, with an emote playing: the emote stops, the call stays.
+		local realPlaying = anim.Runtime.Playing
+		local playing = true
+		anim.Runtime.Playing = function() return playing end
+		deliver({ call = { id = 'k1', members = {} } })
+		got = press()
+		check('on a call, X stops the emote and does not hang up', got.stop == 1 and got.hang == 0,
+			says(got))
+
+		-- A crate in the arms outranks the emote, and the call.
+		control.netEvents[hauling.Event.ANSWER](true, nil, '555')
+		control.Pump(math.ceil(hauling.LIFT_MS / 100) + 2)
+		got = press()
+		check('carrying a crate, X puts it down and neither stops nor hangs up',
+			got.drop == 1 and got.stop == 0 and got.hang == 0, says(got))
+
+		-- A call ringing outranks the crate: the projection is saying "X to refuse".
+		deliver({ call = { id = 'k1', members = {} }, invite = { id = 'r9', kind = 'call', from = 2,
+			fromName = 'Judy' } })
+		got = press()
+		check('a call ringing, X refuses it and the crate stays in the arms',
+			got.decline == 1 and got.drop == 0 and got.stop == 0 and got.hang == 0, says(got))
+
+		-- A cancelable bar outranks everything.
+		deliver({ call = { id = 'k1', members = {} } })
+		local progress = OPX.Api.Get('progress')
+		progress.Start('test', { label = 'Eating', durationMs = 5000, cancelable = true })
+		got = press()
+		check('a cancelable bar up, X cancels only the bar',
+			progress.State().value.open == false and got.decline + got.hang + got.drop + got.stop == 0,
+			says(got))
+
+		-- Down to the call alone: X hangs up, as it always did.
+		control.netEvents[hauling.Event.ANSWER](true, 'dropped', false)
+		playing = false
+		control.Pump(1)
+		got = press()
+		check('with only the call left, X hangs up', got.hang == 1 and got.stop == 0, says(got))
+		anim.Runtime.Playing = realPlaying
+
+		-- Typing in another surface is not a press, for the call keys too.
+		deliver({ invite = { id = 'r10', kind = 'call', from = 2, fromName = 'Judy' } })
+		control.input.captured = true
+		got = press()
+		control.input.captured = false
+		check('while another surface holds the keyboard, X refuses nothing', got.decline == 0, says(got))
 	end
 end
 

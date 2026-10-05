@@ -225,7 +225,7 @@ local function findNearest()
 			best, bestDistance = door, distance
 		end
 	end
-	return best
+	return best, best ~= nil and math.sqrt(bestDistance) or nil
 end
 
 -- Brings the strip in line with the door the player stands at: ox's
@@ -310,7 +310,7 @@ end
 function Runtime.Use(origin)
 	if M.Panel ~= nil and M.Panel.Picking() then return M.Panel.Confirm() end
 	local door = findNearest()
-	-- NOT A WORD AWAY FROM A DOOR. E belongs to five modules, and every one of
+	-- NOT A WORD AWAY FROM A DOOR. E belongs to six modules, and every one of
 	-- them is silent where it has nothing to do.
 	if door == nil then return false end
 	return Runtime.Toggle(door.id)
@@ -714,26 +714,23 @@ function Runtime.Start()
 	RegisterNetEvent(M.Event.PICK_GO, onPickGo)
 	AddEventHandler(PROGRESS_DONE, onProgressDone)
 
-	local declared = keySettings()
-	if declared.DEFAULT ~= false then
-		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
-			declared.DEFAULT, function()
-				if captured() then return end
-				local ran, failure = pcall(Runtime.Use, 'key')
-				if not ran then
-					Open77.log.error(('[doorlock] key %s: %s'):format(declared.ID, tostring(failure)))
-				end
-			end)
-		local effective = called and (
-			(type(ok) == 'string' and ok ~= '' and ok) or
-			(ok == true and type(answer) == 'string' and answer ~= '' and answer)) or nil
-		if not called or (ok ~= true and not effective) then
-			Open77.log.warn(('[doorlock] key mapping %s (%s) not registered: %s')
-				:format(declared.ID, tostring(declared.DEFAULT), tostring(called and answer or ok)))
-		else
-			keyRegistered = true
-		end
-	end
+	-- The key, the silent press and the contest on E, the way every spot module
+	-- declares it: see `OPX.Spots.Key.Register`. This was the sixth copy of that
+	-- registration, and the one that would have stayed out of the contest.
+	keyRegistered = OPX.Spots.Key.Register({
+		tag = 'doorlock',
+		declared = keySettings(),
+		onPress = Runtime.Use,
+		-- The panel's "Pick in world" step first: the player is aiming a door
+		-- for the panel, and E confirms it whatever else is near. Then the door
+		-- the player stands at, at the rank of every other spot.
+		wants = function()
+			if M.Panel ~= nil and M.Panel.Picking() then return OPX.Spots.Key.Rank('PICK') end
+			local door, distance = findNearest()
+			if door == nil then return nil end
+			return OPX.Spots.Key.Rank('SPOT'), distance
+		end,
+	})
 
 	registerRows()
 

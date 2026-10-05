@@ -395,6 +395,21 @@ function OPX.Spots.FlatDistanceSquared(spot, x, y)
 	return dx * dx + dy * dy
 end
 
+--- The squared reach the SERVER allows for a radius the client draws: the radius
+--- plus `OPX.Config.SHARED.REACH_SLACK`, for the latency between the press and
+--- the position the server last observed. See `config/shared.lua`.
+-- @author dop42
+-- @param radius number metres, as the module's own USE_RADIUS
+-- @return number squared metres
+function OPX.Spots.ServerReachSq(radius)
+	local shared = OPX.Config and OPX.Config.SHARED
+	local slack = type(shared) == 'table' and shared.REACH_SLACK or nil
+	if type(slack) ~= 'number' or slack ~= slack then slack = 1.0 end
+	if slack < 0 then slack = 0 elseif slack > 4 then slack = 4 end
+	local reach = (type(radius) == 'number' and radius == radius and radius or 0) + slack
+	return reach * reach
+end
+
 --- Answers the spot a point stands on, or nil.
 -- The nearest wins; at equal distance the key decides, so `pairs` order never
 -- chooses between two markers a metre apart.

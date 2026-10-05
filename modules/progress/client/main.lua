@@ -328,6 +328,10 @@ function M.Start()
 	if declared.DEFAULT ~= false then
 		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
 			declared.DEFAULT, function()
+				-- A key typed into another surface is not a key pressed in the
+				-- world, and a press another feature on the same key owns is not
+				-- this one's: see `OPX.Spots.Key.Owns`.
+				if OPX.Spots.Captured() or not OPX.Spots.Key.Owns(declared.ID) then return end
 				if live ~= nil and live.canCancel then
 					cancelledAtMs = OPX.Now()
 					finish(Ending.CANCELLED)
@@ -341,6 +345,14 @@ function M.Start()
 				:format(declared.ID, tostring(declared.DEFAULT), tostring(called and answer or ok)))
 		else
 			cancelKeyRegistered = true
+			-- X is shared with a call's decline, a crate's drop and the emote
+			-- stop. A cancelable bar outranks every one of them: it is the only
+			-- one with a timer running out on the player.
+			OPX.Spots.Key.Contend({ tag = 'progress', id = declared.ID, default = declared.DEFAULT,
+				wants = function()
+					if live ~= nil and live.canCancel then return OPX.Spots.Key.Rank('PROGRESS') end
+					return nil
+				end })
 		end
 	end
 
