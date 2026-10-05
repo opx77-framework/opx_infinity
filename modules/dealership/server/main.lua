@@ -495,6 +495,10 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 
 	local handOver = M.Settings.HAND_OVER ~= false
 	local spawned = false
+	-- Where the car went when it could not be handed over, said AFTER "You
+	-- bought X" by whoever tells the buyer (`toldBought`): said here, it came
+	-- first, and read as a car that had gone somewhere before it was bought.
+	local note = nil
 
 	if handOver and plate ~= nil then
 		-- AT THE DEALER, turned to the dealer's own heading, so a bought car
@@ -509,8 +513,7 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 		local handed
 		if spotX == nil then
 			handed = { ok = false, error = 'every spot beside the dealer is taken' }
-			OPX.NotifyLocale(source, 'dealership.handOverBlocked',
-				{ garage = dest ~= nil and dest.label or locale('dealership.defaultGarage') }, 'info')
+			note = 'dealership.handOverBlocked'
 		else
 			-- Guarded like the key above, and for the same reason.
 			local called
@@ -534,10 +537,7 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 			-- SAID, as a blocked spot already was. Any other refusal of the
 			-- spawn was a log line only, and the buyer read "You bought X" with
 			-- no car in front of them and no word of where it went.
-			if spotX ~= nil then
-				OPX.NotifyLocale(source, 'dealership.handOverFailed',
-					{ garage = dest ~= nil and dest.label or locale('dealership.defaultGarage') }, 'info')
-			end
+			if spotX ~= nil then note = 'dealership.handOverFailed' end
 		end
 	end
 
@@ -552,7 +552,24 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 		currency = currency,
 		spawned = spawned,
 		keyed = keyed,
+		handOver = note ~= nil and {
+			key = note,
+			garage = dest ~= nil and dest.label or locale('dealership.defaultGarage'),
+		} or nil,
 	})
+end
+
+--- Tells a buyer what they bought, and only then where the car is when it was
+--- not handed over at the counter.
+-- @param source Source
+-- @param value table a purchase's answer
+local function toldBought(source, value)
+	OPX.NotifyLocale(source, 'dealership.bought',
+		{ model = value.model, plate = value.plate }, 'success')
+	local note = type(value.handOver) == 'table' and value.handOver or nil
+	if note ~= nil then
+		OPX.NotifyLocale(source, note.key, { garage = note.garage }, 'info')
+	end
 end
 
 --- `purchaseOnce`, one at a time per character. See `buying`.
@@ -1299,8 +1316,7 @@ local function onRequested(dealerKey, entryKey, destKey)
 			return
 		end
 		local value = bought.value
-		OPX.NotifyLocale(src, 'dealership.bought',
-			{ model = value.model, plate = value.plate }, 'success')
+		toldBought(src, value)
 		TriggerClientEvent(M.Event.ANSWER, src, true, nil, entryKey, value)
 		Open77.log.info(('[dealership] player %d bought %s'):format(src, safe(value.plate)))
 	end)
@@ -1355,8 +1371,7 @@ local function onDecided(token, yes, destKey)
 			TriggerClientEvent(M.Event.ANSWER, src, false, settled.error)
 			return
 		end
-		OPX.NotifyLocale(src, 'dealership.bought',
-			{ model = settled.value.model, plate = settled.value.plate }, 'success')
+		toldBought(src, settled.value)
 		TriggerClientEvent(M.Event.ANSWER, src, true, nil, settled.value.entry, settled.value)
 	end)
 end
@@ -1456,8 +1471,7 @@ local function registerCommands()
 				return OPX.CommandResult(source, false, tostring(bought.error))
 			end
 			local value = bought.value
-			OPX.NotifyLocale(source, 'dealership.bought',
-				{ model = value.model, plate = value.plate }, 'success')
+			toldBought(source, value)
 			OPX.CommandResult(source, true, ('%s bought: %s%s'):format(value.model,
 				tostring(value.plate),
 				value.garage ~= nil and (' delivered to ' .. tostring(value.garage)) or ''))

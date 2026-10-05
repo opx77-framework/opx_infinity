@@ -469,8 +469,13 @@ local function announce(changes)
 	local lines = {}
 	for index = 1, #changes do
 		local change = changes[index]
-		lines[#lines + 1] = ('%s%d %s')
-			:format(change.delta > 0 and '+' or '', change.delta, Catalog.Label(change.name))
+		-- NOT THE NOTES. Every move of money as notes is told by the server, as
+		-- an amount ("You took 1,000 €$ out as notes."); a "+1000 Eddies" here
+		-- on top was the same withdraw on a second surface.
+		if change.name ~= Options.CURRENCY_ITEM then
+			lines[#lines + 1] = ('%s%d %s')
+				:format(change.delta > 0 and '+' or '', change.delta, Catalog.Label(change.name))
+		end
 	end
 	if #lines == 0 then return end
 	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers

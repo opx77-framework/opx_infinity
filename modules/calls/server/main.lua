@@ -78,6 +78,10 @@ local CONTACTS_KEY = 'callContacts'
 -- id: `contactOffers[from][to] = atMs`. See `onInvite`.
 local contactOffers = {}
 
+-- The references the last contact list each player was sent stands for, by
+-- player: `ref -> citizen id`. A delete names a reference, never a citizen.
+local rosterRefs = {}
+
 -- The floor between two contact offers from one player to the SAME player. A
 -- stranger may still ask to be added -- that is the only door to a call now --
 -- but asking the same person again and again is a doorbell, not a request.
@@ -464,13 +468,37 @@ local function remember(playerId, citizenId, name)
 			return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
 		end
 	end
-	-- BOUNDED, and the oldest row goes. The list is written into the character's
+	-- BOUNDED, and a full list REFUSES. The list is written into the character's
 	-- metadata blob and that blob is read on every load, so an unbounded one is
-	-- a row that grows for the life of a character and is paid for on every
-	-- connection they ever make.
-	if #held >= maxContacts then table.remove(held, 1) end
+	-- a row that grows for the life of a character. It used to make room by
+	-- dropping the oldest contact without a word; the lead's decision is that
+	-- the player deletes one themselves, so a full list answers `contactsFull`.
+	if #held >= maxContacts then return false, 'contactsFull' end
 	held[#held + 1] = { citizenId = citizenId, name = name }
 	return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
+end
+
+--- Whether a player's list has no room for this citizen (and does not hold it).
+local function contactsFull(playerId, citizenId)
+	local held = contactsOf(playerId)
+	if #held < maxContacts then return false end
+	for index = 1, #held do
+		if held[index].citizenId == citizenId then return false end
+	end
+	return true
+end
+
+--- Deletes one contact from a character's list. Answers whether one went.
+local function forget(playerId, citizenId)
+	if character == nil or type(character.SetMetadata) ~= 'function' then return false end
+	local held = contactsOf(playerId)
+	for index = 1, #held do
+		if held[index].citizenId == citizenId then
+			table.remove(held, index)
+			return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
+		end
+	end
+	return false
 end
 
 -- ── what happened to the calls that did not happen ───────────────────────────
@@ -649,6 +677,12 @@ local function onInvite(rawTarget, rawKind)
 		return refuse(playerId, 'notContact', M.Operation.INVITE)
 	end
 
+	-- A contact offer from a full list, refused before anybody is asked: the
+	-- exchange is both ways, and this half of it could not be written.
+	if kind == 'contact' and contactsFull(playerId, citizenOf(target)) then
+		return refuse(playerId, 'contactsFull', M.Operation.INVITE)
+	end
+
 	-- A contact offer to the same person, again, inside the floor.
 	if kind == 'contact' then
 		local mine = contactOffers[playerId]
@@ -674,10 +708,10 @@ local function onInvite(rawTarget, rawKind)
 		-- The offerer is told too, without the other's name: pressing the eye row
 		-- did nothing visible, and a stranger's name is not theirs to read yet.
 		tell(playerId, 'calls.contact.sent')
-	else
-		tell(target, 'calls.ringing', { name = labelFor(target, playerId) })
-		tell(playerId, 'calls.placed', { name = labelFor(playerId, target) })
 	end
+	-- NO "X IS CALLING YOU" / "CALLING X..." TOAST. The sphere pops on both
+	-- screens with exactly those words; the toast said them a second time.
+	-- The outcomes (answered, declined, rang out) are still toasts.
 end
 
 --- Says that an invite rang out, to both sides, and files it on both.
@@ -711,6 +745,12 @@ local function onAccept(rawInvite)
 	end
 
 	local pending = registry.IncomingOf(playerId)
+	-- A CONTACT OFFER ACCEPTED INTO A FULL LIST is refused, and the offer left
+	-- standing: the player can delete a contact and answer it again.
+	if pending ~= nil and pending.kind == 'contact' and contactsFull(playerId, citizenOf(pending.from)) then
+		push(playerId)
+		return refuse(playerId, 'contactsFull', M.Operation.ANSWER)
+	end
 	local outcome, reason = registry.Accept(playerId, rawInvite)
 	if outcome == nil then
 		-- The state goes back with the refusal: an invite refused because it
@@ -737,12 +777,16 @@ local function onAccept(rawInvite)
 		-- contact SHARED, with consent, not a number handed one way. Each write
 		-- is checked separately: a metadata write can fail on its own, and half
 		-- an exchange is worth a line in the journal.
-		local savedA = remember(a, citizenB, nameB)
-		local savedB = remember(b, citizenA, nameA)
+		local savedA, whyA = remember(a, citizenB, nameB)
+		local savedB, whyB = remember(b, citizenA, nameA)
 		audit('calls.contact', a, savedA and savedB,
 			('%s <-> %s'):format(tostring(citizenA), tostring(citizenB)))
-		tell(a, 'calls.contact.saved', { name = nameB })
-		tell(b, 'calls.contact.saved', { name = nameA })
+		-- A list that filled up between the offer and the answer is said to
+		-- its owner, never solved by dropping somebody else.
+		if whyA == 'contactsFull' then refuse(a, 'contactsFull', M.Operation.ANSWER)
+		else tell(a, 'calls.contact.saved', { name = nameB }) end
+		if whyB == 'contactsFull' then refuse(b, 'contactsFull', M.Operation.ANSWER)
+		else tell(b, 'calls.contact.saved', { name = nameA }) end
 		push(a)
 		push(b)
 		return
@@ -859,13 +903,19 @@ end
 -- would be a presence tracker; one that reported who was CALLABLE is the
 -- feature, and the difference is that an offline contact is simply absent
 -- rather than listed as unavailable.
-local function onRoster()
-	local playerId = tonumber(source) or 0
-	if playerId <= 0 then return end
-	if OPX.Cooling(playerId, 'calls:roster', 1000) then return end
-
+--- Sends one player their contact list and their recent calls.
+local function sendRoster(playerId)
+	-- EVERY CONTACT IS LISTED NOW, the ones not connected too, greyed as
+	-- `offline`: a contact can be deleted, and a row nobody can see is a row
+	-- nobody can delete. Each row carries a REFERENCE, minted for this answer
+	-- and kept here, rather than the citizen id it stands for: the page names a
+	-- row to delete, and the server alone knows whose it is.
+	local refs = {}
+	rosterRefs[playerId] = refs
 	local rows = {}
-	for _, contact in ipairs(contactsOf(playerId)) do
+	for index, contact in ipairs(contactsOf(playerId)) do
+		local ref = 'k' .. tostring(index)
+		refs[ref] = contact.citizenId
 		local loaded = character ~= nil and type(character.GetPlayerByCitizenId) == 'function'
 			and character.GetPlayerByCitizenId(contact.citizenId) or nil
 		local data = loaded and loaded.PlayerData or nil
@@ -874,6 +924,7 @@ local function onRoster()
 			local kind, reason = registry.Consider(playerId, id, nil)
 			rows[#rows + 1] = {
 				id = id,
+				ref = ref,
 				-- The name as it is NOW rather than as it was written into the
 				-- contact row: a character named after the hand-over would
 				-- otherwise be listed under whatever they were called then.
@@ -881,6 +932,8 @@ local function onRoster()
 				kind = kind,
 				refusal = reason,
 			}
+		else
+			rows[#rows + 1] = { id = 0, ref = ref, name = contact.name, refusal = 'offline' }
 		end
 	end
 	table.sort(rows, function(left, right)
@@ -908,6 +961,31 @@ local function onRoster()
 		recent = ordered,
 		onCall = registry.CallOf(playerId) ~= nil,
 	})
+end
+
+local function onRoster()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:roster', 1000) then return end
+	sendRoster(playerId)
+end
+
+-- Deletes the contact a row of this player's last list stands for, and answers
+-- with the list as it is now.
+local function onForget(ref)
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:forget', requestMs) then
+		return refuse(playerId, 'tooFast', M.Operation.FORGET)
+	end
+	local refs = rosterRefs[playerId]
+	local citizenId = type(ref) == 'string' and #ref <= 8 and refs ~= nil and refs[ref] or nil
+	if citizenId == nil or not forget(playerId, citizenId) then
+		return refuse(playerId, 'badRequest', M.Operation.FORGET)
+	end
+	audit('calls.forget', playerId, true, tostring(citizenId))
+	tell(playerId, 'calls.contact.forgotten')
+	sendRoster(playerId)
 end
 
 -- Pushes the caller their state again. The module starting and the page
@@ -942,6 +1020,7 @@ local function departed(rawPlayerId)
 	-- slot, which the next holder of the id must not inherit.
 	contactOffers[playerId] = nil
 	for _, offered in pairs(contactOffers) do offered[playerId] = nil end
+	rosterRefs[playerId] = nil
 	-- The platform clears a lease on disconnect by itself; the local record is
 	-- cleared so a recycled slot does not inherit a lease nobody holds.
 	eyesHeld[playerId], eyesRenewedAt[playerId] = nil, nil
@@ -1211,6 +1290,7 @@ function M.Start()
 	RegisterNetEvent(M.Event.DECLINE, onDecline)
 	RegisterNetEvent(M.Event.HANG_UP, onHangUp)
 	RegisterNetEvent(M.Event.WITHDRAW, onWithdraw)
+	RegisterNetEvent(M.Event.FORGET, onForget)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 
 	-- The fast path off a death, so a flatlined participant is off the call in

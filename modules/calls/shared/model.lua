@@ -121,6 +121,11 @@ Model.REASONS = {
 
 	-- a host read this module needs and did not get
 	unreadable = true,
+
+	-- the contact list: a contact not connected (a row status, not a refusal
+	-- of anything asked), and a list with no room for one more
+	offline = true,
+	contactsFull = true,
 }
 
 --- The invite kinds, as a closed set. `call` opens one, `join` adds to one,

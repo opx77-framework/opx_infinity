@@ -476,6 +476,17 @@ local detached = false
 -- wants to be told when one is pressed, and could not name an outfit if it tried.
 local groupsBy, groupRows = {}, {}
 
+-- WHAT THE ROOM COSTS SO FAR, asked of whoever prices it: `{ owner, fn }`, where
+-- `fn(slots, draft)` answers the sentence the status line shows (or nil for
+-- none). The room showed no price anywhere, so the first amount a player saw
+-- was "Paid X". Dropped with the room, like the strip.
+local pricer = nil
+local priceLine
+
+-- When the server was last told the room is still up, and how often it is.
+local ROOM_ALIVE_MS = 120000
+local roomAliveAtMs = -math.huge
+
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
@@ -721,6 +732,20 @@ local function changed()
 	if outfitCleared then return true end
 	return #changedSlots() > 0
 end
+
+--- The status line's price, from the room's pricer, or nil.
+-- Asked on every state the room publishes, which is a change, not a frame.
+priceLine = function()
+	if pricer == nil or draft == nil then return nil end
+	local ran, text = pcall(pricer.fn, changedSlots(), draft)
+	if not ran then
+		Runtime.Note(('the %s pricer raised: %s'):format(pricer.owner, tostring(text)))
+		return nil
+	end
+	if type(text) ~= 'string' or text == '' then return nil end
+	return { text = OPX.Text.Bytes(text, 120), kind = 'info' }
+end
+
 
 --- States the nine slots on the puppet, turning a covering outfit off first.
 local function putOn(slots)
@@ -1050,6 +1075,25 @@ function Wardrobe.OfferGroups(owner, groups)
 	return true
 end
 
+--- Lets one module price the open room: its line is drawn as the room's status.
+-- @author dop42
+-- @param owner string
+-- @param fn function|nil `fn(slots, draft)` answering a sentence; nil removes it
+-- @return boolean, string|nil
+function Wardrobe.PriceWith(owner, fn)
+	if type(owner) ~= 'string' or owner == '' then return false, 'invalid_caller' end
+	if fn ~= nil and type(fn) ~= 'function' then return false, 'invalid_pricer' end
+	if fn == nil then
+		if pricer ~= nil and pricer.owner == owner then pricer = nil end
+	else
+		pricer = { owner = owner, fn = fn }
+	end
+	-- Drawn on the room's next state rather than republished here: a caller
+	-- prices the room as it opens, when the room is about to publish anyway,
+	-- and a second full state for one line is a resume's budget spent twice.
+	return true
+end
+
 -- How many boxes one window of the grid carries. It is `panel`'s own `MAX_TILES`
 -- and it has to be: that module refuses a longer window whole, and a room that
 -- sent 61 would have its grid silently refused rather than half drawn. Written
@@ -1186,7 +1230,7 @@ local function roomState()
 		-- arrives after the room has already drawn. A `groups` that rode only on
 		-- `roomSpec` would mean the categories appeared on the SECOND fitting.
 		groups = groupRows,
-		status = statusText and { text = statusText, kind = 'error' } or false,
+		status = statusText and { text = statusText, kind = 'error' } or priceLine() or false,
 	}
 end
 
@@ -1573,6 +1617,7 @@ local function release(keep, reason)
 	-- them into the next room would put a uniform category on a fitting the
 	-- player opened from their own appearance panel, miles from the shop.
 	groupsBy, groupRows = {}, {}
+	pricer = nil
 
 	publish('roomClosed', { reason = reason, kept = keep })
 	-- The registry reads pieces back as TweakDB ids: the names go with them so the
@@ -2202,6 +2247,20 @@ end
 --- Runs one pass over both views.
 -- @author dop42
 function M.Wardrobe.Check()
+	-- THE ROOM IS STILL UP, said to the server now and then. Its save grant is
+	-- ten minutes from the ask, and a long browse outlived it: the save that
+	-- left the room was refused "not saved" with the clothes still on. The
+	-- server keeps the grant alive while it hears this, to a hard cap.
+	if phase == 'open' then
+		local now = Runtime.NowMs()
+		if now - roomAliveAtMs >= ROOM_ALIVE_MS then
+			roomAliveAtMs = now
+			TriggerServerEvent(M.Event.ROOM_ALIVE)
+		end
+	else
+		roomAliveAtMs = -math.huge
+	end
+
 	local ok, failure = pcall(panelTick)
 	if not ok then Open77.log.error('[appearance] panel: ' .. tostring(failure)) end
 
