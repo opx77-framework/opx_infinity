@@ -22,6 +22,7 @@ local EN = {
 	['shops.cannotDress'] = 'Those clothes would not go on.',
 	['shops.cannotPay'] = 'You cannot afford that: {total} needed.',
 	['shops.paid'] = 'Paid {total} at {shop}.',
+	['shops.room.total'] = 'On Save: {total}',
 
 	['shops.noSuchLook'] = 'That look is not on offer.',
 	['shops.notForYou'] = 'Your job does not entitle you to that.',
@@ -90,6 +91,7 @@ local FR = {
 	['shops.cannotDress'] = "Impossible d'enfiler ces vêtements.",
 	['shops.cannotPay'] = 'Vous ne pouvez pas payer : {total} nécessaires.',
 	['shops.paid'] = 'Vous avez payé {total} chez {shop}.',
+	['shops.room.total'] = "À l'enregistrement : {total}",
 
 	['shops.noSuchLook'] = "Cette tenue n'est pas proposée.",
 	['shops.notForYou'] = 'Votre métier ne vous y donne pas droit.',

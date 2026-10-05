@@ -1651,6 +1651,19 @@ function M.Contract.OfferWardrobeGroups(owner, groups)
 	return Result.Ok(true)
 end
 
+--- Prices the open fitting room: `fn(slots, draft)` answers the sentence its
+--- status line shows -- what the room will cost on Save -- or nil for none.
+-- @author dop42
+-- @param owner string the caller's own name
+-- @param fn function|nil nil takes the caller's price down
+-- @return Result
+function M.Contract.PriceWardrobe(owner, fn)
+	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
+	local ok, reason = M.Wardrobe.PriceWith(owner, fn)
+	if not ok then return Result.Err(tostring(reason)) end
+	return Result.Ok(true)
+end
+
 --- Lays a saved look onto the open fitting room's draft.
 -- @author dop42
 --
@@ -1748,6 +1761,7 @@ function M.Api()
 		OpenWardrobe = M.Contract.OpenWardrobe,
 		CloseWardrobe = M.Contract.CloseWardrobe,
 		OfferWardrobeGroups = M.Contract.OfferWardrobeGroups,
+		PriceWardrobe = M.Contract.PriceWardrobe,
 		DressWardrobe = M.Contract.DressWardrobe,
 
 		BeginClothingPreview = M.Contract.BeginClothingPreview,

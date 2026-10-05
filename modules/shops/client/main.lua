@@ -32,6 +32,11 @@ local ON_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
 -- staff member -- is not a room at this shop.
 local serving = nil
 
+-- The open room's prices by slot, its currency, and the priced uniforms picked
+-- in it, for the line that says what Save will cost (see `bill`).
+local roomPrices, roomCurrency, picked = {}, nil, {}
+local priceRoom
+
 -- The ready-made looks the server said this player may take here.
 local offered = {}
 
@@ -297,6 +302,40 @@ local function offerGroups()
 		Open77.log.warn(('[shops] the fitting room refused the category strip: %s')
 			:format(tostring(told.error)))
 	end
+end
+
+--- What Save will cost, as the room's status line says it.
+--
+-- THE ROOM SHOWED NO PRICES. The first amount a player saw was "Paid X" after
+-- Save. This answers the room's pricer with the bill the server will make:
+-- every moved slot at this shop's price, except the slots wearing a uniform
+-- picked here, which are billed once at the uniform's own price. Display only:
+-- the server bills from its own tables and its own diff.
+local function bill(slots, draft)
+	local total, prepaid = 0, {}
+	for _, look in ipairs(picked) do
+		local worn = false
+		for slot, record in pairs(look.wear) do
+			if record ~= false and type(draft) == 'table' and draft[slot] == record then
+				prepaid[slot], worn = true, true
+			end
+		end
+		if worn then total = total + look.cost end
+	end
+	for _, slot in ipairs(slots) do
+		if not prepaid[slot] then
+			local price = tonumber(roomPrices[slot])
+			if price ~= nil and price > 0 then total = total + math.floor(price) end
+		end
+	end
+	if total <= 0 then return nil end
+	return locale('shops.room.total', { total = OPX.Locale.Money(total, roomCurrency) })
+end
+
+--- Hands the open room its pricer, once there is a room and a price list.
+priceRoom = function()
+	if not roomOpen or wardrobe == nil or type(wardrobe.PriceWardrobe) ~= 'function' then return end
+	pcall(wardrobe.PriceWardrobe, OWNER, bill)
 end
 
 --- Puts a look on, whichever of the two ways is the right one right now.
@@ -592,6 +631,7 @@ function M.Start()
 		-- this client first is not something either side promises.
 		if event == 'wardrobeOpened' and decision.ok ~= false then
 			roomOpen = true
+			priceRoom()
 			return offerGroups()
 		end
 
@@ -643,11 +683,18 @@ function M.Start()
 		end
 
 		serving, offered, saved = nil, {}, {}
+		roomPrices, picked = {}, {}
 	end)
 
 	RegisterNetEvent(M.Event.LOOKS, function(payload)
 		offered = type(payload) == 'table' and type(payload.looks) == 'table'
 			and payload.looks or {}
+		roomPrices = type(payload) == 'table' and type(payload.prices) == 'table' and payload.prices or {}
+		roomCurrency = type(payload) == 'table' and type(payload.currency) == 'string'
+			and payload.currency or nil
+		picked = {}
+		-- No pricer to hand here: it reads these tables when it is asked, and
+		-- `offerGroups` below republishes the room.
 		-- Offered again: this may have arrived after the room opened, and the
 		-- Uniforms category exists only when this list is not empty.
 		offerGroups()
@@ -655,6 +702,15 @@ function M.Start()
 
 	RegisterNetEvent(M.Event.PUT_ON, function(payload)
 		if type(payload) ~= 'table' then return end
+		-- A uniform picked in the room is billed at its own price on Save; the
+		-- room's line counts it so, for the slots that are wearing it.
+		if roomOpen and type(payload.wear) == 'table' then
+			for _, look in ipairs(offered) do
+				if look.id == payload.look and (tonumber(look.cost) or 0) > 0 then
+					picked[#picked + 1] = { wear = payload.wear, cost = tonumber(look.cost) }
+				end
+			end
+		end
 		dress(payload.wear)
 	end)
 

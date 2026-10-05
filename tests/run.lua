@@ -3655,6 +3655,13 @@ do
 
 		check('the fitting room carries a category strip', groups() ~= nil,
 			'no groups ever reached the page')
+		-- And while it is up it tells the server so, which keeps the room's save
+		-- grant alive through a long browse.
+		local pinged = false
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == env.OPX.Modules.Get('appearance').Event.ROOM_ALIVE then pinged = true end
+		end
+		check('an open room tells the server it is still up', pinged)
 		local ids = {}
 		for _, row in ipairs(groups() or {}) do ids[#ids + 1] = row.id end
 		check('and saved outfits, saving and codes are all reachable from it',
@@ -3678,6 +3685,23 @@ do
 			not hasGroup('looks'))
 		check('and the list lands inside a small budget',
 			listing < 4000, ('%d instructions'):format(listing))
+
+		-- THE ROOM SAYS WHAT SAVE WILL COST. It showed no price anywhere, and the
+		-- first amount a player saw was "Paid X". A shop's price list arrives with
+		-- its looks, and the status line is the bill of what moved.
+		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji', looks = {},
+			prices = { OuterChest = 500 }, currency = 'EDDIES' })
+		control.PageEmit(page, 'opx:panel:slide', { handle = handle, id = 'OuterChest', index = 4, commit = true })
+		local status
+		for index = 1, #page.sent do
+			local sentStatus = page.sent[index].payload.status
+			if sentStatus ~= nil then status = sentStatus end
+		end
+		local expected = env.OPX.Locale.Text('shops.room.total',
+			{ total = env.OPX.Locale.Money(500, 'EDDIES') })
+		check('a priced room shows what Save will cost, on its status line',
+			type(status) == 'table' and status.text == expected and status.kind ~= 'error',
+			type(status) == 'table' and tostring(status.text) or tostring(status))
 
 		-- ── a shared code, all the way onto the sliders ──────────────────────
 		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
@@ -24204,6 +24228,93 @@ do
 		refused = save(wearing({ OuterChest = 'Items.Uniform_01', Feet = 'Items.Shoes_03' }))
 		check('a look already paid for inside the room is not charged again by it',
 			refused == nil and billed[1] == 'Feet', tostring(billed[1]))
+
+		-- ── a look with a price is billed by the save that keeps it ──────────
+		-- THE LEAD'S DECISION: a uniform is billed on Save, not on the pick, and
+		-- a Cancel -- which saves nothing -- costs nothing.
+		load()
+		billed = {}
+		local looked, lookAnswer = 0, { true }
+		local lookUndone = 0
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return true
+		end })
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01',
+			Legs = 'Items.Uniform_Pants' }, bill = function()
+				looked = looked + 1
+				return lookAnswer[1], lookAnswer[2], function() lookUndone = lookUndone + 1 end
+			end })
+		check('a priced look costs nothing until a save keeps it', looked == 0)
+		lookAnswer = { false, 'clothing.unpaid' }
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01' }))
+		check('a priced look the wallet refuses is a save refused',
+			refused == 'clothing.unpaid' and looked == 1, tostring(refused))
+		load()
+		lookAnswer = { true }
+		writes = 0
+		-- The trousers did not fit this body: the old ones stayed on. The jacket
+		-- is the uniform's and billed at its price, once; the room bills nothing
+		-- for it, and nothing for the trousers that never moved.
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01' }))
+		check('the same look, paid, is written: billed once at its price and not again by the slot',
+			refused == nil and looked == 2 and #billed == 0 and writes == 1,
+			('%s, %d bill(s), %d slot charge(s)'):format(tostring(refused), looked, #billed))
+
+		-- The shop's own Uniforms row takes no money when it is picked.
+		do
+			local contract = OPX.Api.Get('appearance')
+			local granted
+			local realAllow = contract.AllowClothingSave
+			contract.AllowClothingSave = function(id, owner, options) granted = options; return true end
+			local money = OPX.Api.Get('character')
+			local realRemove = money.RemoveMoney
+			local taken = 0
+			money.RemoveMoney = function() taken = taken + 1; return true end
+			control.Admit(PLAYER, 'account-shopper')
+			control.Stand(PLAYER, -1180.0, 1550.0, 25.0)
+			env.source = PLAYER
+			control.netEvents[shops.Event.WEAR]({ shop = 'thrift_watson', look = 'corpo_black' })
+			env.source = nil
+			control.Pump(5)
+			check('picking a priced uniform takes no money', taken == 0, taken)
+			check('it hands appearance the bill for the save instead',
+				type(granted) == 'table' and type(granted.bill) == 'function')
+			if type(granted) == 'table' and type(granted.bill) == 'function' then
+				local ok, _, undo = granted.bill(PLAYER)
+				check('and that bill is the price of the look, with an undo',
+					ok == true and taken == 1 and type(undo) == 'function', tostring(ok))
+			end
+			money.RemoveMoney = realRemove
+			contract.AllowClothingSave = realAllow
+		end
+
+		-- ── a room still open keeps its grant, to a cap ──────────────────────
+		-- A long browse outlived the ten-minute grant and the save that left the
+		-- room was refused "not saved". The client pings while the room is up.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load()
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function() return true end })
+		local function alive()
+			env.source = PLAYER
+			control.netEvents[appearance.Event.ROOM_ALIVE]()
+			env.source = nil
+		end
+		for _ = 1, 6 do
+			control.Pump(1200)
+			alive()
+		end
+		load()
+		check('a room kept alive is still saved twelve minutes in',
+			save(wearing({ Head = 'Items.Hat_Alive' })) == nil)
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function() return true end })
+		for _ = 1, 17 do
+			control.Pump(1200)
+			alive()
+		end
+		load()
+		check('and not past the half-hour cap, however long it is kept alive',
+			save(wearing({ Head = 'Items.Hat_Late' })) == 'clothing.noFittingRoom')
 
 		-- ── the shop's own door hands out a priced room ──────────────────────
 		local contract = OPX.Api.Get('appearance')
