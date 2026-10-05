@@ -36453,6 +36453,97 @@ do
 	end
 end
 
+-- ── two staff members on the same doors at the same moment ──────────────────
+-- A write reads `doors`, yields on the database and then installs what it read.
+-- These overlap two of them with the database parked between the read and the
+-- install, which is exactly where a second member's click lands on a live server.
+section('doorlock: two writes at once are taken in turn, never interleaved')
+do
+	local state = {}
+	local env, control, why = boot('server', doorlockBridge(state), nil, doorlockConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local contract = OPX.Api.Get('doorlock')
+		doorlockFakes(OPX)
+		local db = control.database
+		local function parkEdits()
+			db.park = function(method, sql)
+				return method == 'update' and sql:find('UPDATE opx77_doorlocks SET name', 1, true) ~= nil
+			end
+		end
+		local function release()
+			db.park = nil
+			for _ = 1, 10 do
+				db.Resume()
+				control.Pump(5)
+			end
+		end
+
+		-- An edit in flight, and a delete of the same door behind it.
+		local front = contract.Get('front').value.id
+		local edited, removed = nil, nil
+		parkEdits()
+		env.CreateThread(function() edited = contract.Edit(front, { name = 'Front Desk' }, 'staff:a') end)
+		control.Pump(3)
+		env.CreateThread(function() removed = contract.Remove(front, 'staff:b') end)
+		control.Pump(10)
+		check('a delete that arrives while an edit of the same door is saving waits for it',
+			removed == nil and contract.Get(front).ok)
+		release()
+		check('then both land, in turn', edited ~= nil and edited.ok and removed ~= nil and removed.ok,
+			removed and tostring(removed.error))
+		check('and the deleted door stays deleted: not reinstalled by the edit that was in flight',
+			not contract.Get(front).ok and state.rows[front].removed == 1)
+
+		-- Two doors edited onto the same native leaf at once.
+		local vault, den = contract.Get('vault').value.id, contract.Get('den').value.id
+		local first, second = nil, nil
+		parkEdits()
+		env.CreateThread(function()
+			first = contract.Edit(vault, { native = DOORLOCK_IDS.hall }, 'staff:a')
+		end)
+		control.Pump(3)
+		env.CreateThread(function()
+			second = contract.Edit(den, { native = DOORLOCK_IDS.hall }, 'staff:b')
+		end)
+		control.Pump(10)
+		release()
+		check('two doors edited onto one leaf at once: the first takes it',
+			first ~= nil and first.ok, first and tostring(first.error))
+		check('and the second is told the leaf is taken, rather than both holding it',
+			second ~= nil and second.ok == false and second.error == 'doorlock.error.door_taken',
+			second and tostring(second.error))
+		local holders = 0
+		for _, row in pairs(state.rows) do
+			if row.removed == 0 and tostring(row.data):find(DOORLOCK_IDS.hall:sub(3), 1, true) then
+				holders = holders + 1
+			end
+		end
+		check('so the table names that leaf once', holders == 1, holders)
+
+		-- A writer the host dropped mid-yield does not shut the panel for good.
+		parkEdits()
+		local abandoned = coroutine.create(function() contract.Edit(vault, { name = 'Strong Room' }, 'staff:a') end)
+		coroutine.resume(abandoned)
+		local busy = nil
+		env.CreateThread(function() busy = contract.Edit(den, { name = 'Lair' }, 'staff:b') end)
+		for _ = 1, 80 do control.Pump(1) end
+		check('a write queued behind a stuck one gives up with a sentence, not for ever',
+			busy ~= nil and busy.ok == false and busy.error == 'doorlock.error.busy'
+				and OPX.Locale.Text(busy.error) ~= busy.error, busy and tostring(busy.error))
+		db.park = nil
+		db.Resume()
+		local unstuck = nil
+		for _ = 1, 300 do control.Pump(1) end
+		env.CreateThread(function() unstuck = contract.Edit(den, { name = 'Lair' }, 'staff:b') end)
+		control.Pump(10)
+		check('and once the stuck turn is stale, the next write goes through',
+			unstuck ~= nil and unstuck.ok, unstuck and tostring(unstuck.error))
+	end
+end
+
 -- ── one press, one owner: the contest on a shared key ───────────────────────
 -- The host fires every mapping bound to a key from one press, in either order.
 -- `OPX.Spots.Key.Owns` gives a contested press to exactly one of them; these
