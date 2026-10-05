@@ -1896,10 +1896,10 @@ try {
 
 /* =============================================================================
    THE SLOT CARD AND THE SPLIT STEP -- floating, outside the pair, so neither
-   takes the fit or the tilt. The split step is not enclosed; the rows inside it
-   are the frames. THE CARD IS, because it is now carrying read-off text as well
-   as controls, and text with no ground of its own over live gameplay is text
-   that disappears on a bright street.
+   takes the fit or the tilt. Neither is a frame -- the rows inside are the frames
+   -- but BOTH have a ground, because each carries read-off text as well as
+   controls, and text with no ground of its own over live gameplay (or over a grid
+   of item pictures) is text that disappears.
    ========================================================================== */
 .menu-layer {
   position: absolute;
@@ -1944,6 +1944,15 @@ try {
   top: 50%;
   width: 300px;
   transform: translate(-50%, -50%);
+  /* THE CARD'S GROUND, for the card's reason. It opens dead centre, which is over the
+     inner columns of both grids, and with no ground of its own its title, its 26px
+     count and its range were drawn straight across item pictures. Same plate, same
+     leading rule and same padding as the slot card, so the two boxes this screen pops
+     are one family. */
+  padding: var(--op-space-3);
+  background: var(--op-plate);
+  border-left: var(--op-rule) solid var(--op-red);
+  animation: card-in var(--op-dur-fast) steps(2, end) backwards;
 }
 
 /* A CARD ROW IS NOT A FOOTER BUTTON. Same frame, same ground, same
