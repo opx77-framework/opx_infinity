@@ -31033,6 +31033,141 @@ end
 -- two bodies are standing. A call reaches across the city; that is the feature.
 -- Handing somebody your number is something you do in front of them, and it is
 -- the one thing a client could otherwise claim to have done from anywhere.
+-- ── calls: a full contact list refuses, a contact can be deleted ────────────
+-- The lead's decisions: a full list used to make room by dropping the oldest
+-- contact without a word -- it now refuses, saying so -- and a contact can be
+-- deleted from the list. And the ring itself is no toast: the sphere says it.
+section('calls: a full contact list refuses, a contact can be deleted, a ring is no toast')
+do
+	local env, control, why = boot('server', nil, nil, function(sandbox, file)
+		if file == 'config/calls.lua' then sandbox.OPX.Config.MODULES.calls.MAX_CONTACTS = 1 end
+	end)
+	check('the server boots with a one-contact list', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C = 841, 842, 843
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Ripper', lastName = tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'fa')
+		incarnate(B, 'fb')
+		incarnate(C, 'fc')
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function refusalFor(mark, playerId)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId and type(sent[1]) == 'table' and sent[1].kind == 'error' then
+					return sent[1].code
+				end
+			end
+			return nil
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+		local function contactsOf(playerId)
+			local answer = calls.Contacts(playerId)
+			return answer.ok and answer.value.contacts or {}
+		end
+
+		-- A and B exchange contacts: each list is now full.
+		ask(A, module.Event.INVITE, B, 'contact')
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('two players exchange contacts', #contactsOf(A) == 1 and #contactsOf(B) == 1)
+
+		-- A full list refuses an offer before anybody is asked.
+		local mark = ask(A, module.Event.INVITE, C, 'contact')
+		check('a full list refuses to offer another contact, saying so',
+			refusalFor(mark, A) == 'calls.error.contactsFull', refusalFor(mark, A))
+		check('and nothing is put to the other side', inviteOn(C) == nil)
+
+		-- An offer INTO a full list is refused at the answer, and nobody is dropped.
+		ask(C, module.Event.INVITE, B, 'contact')
+		mark = ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('accepting into a full list is refused, saying so',
+			refusalFor(mark, B) == 'calls.error.contactsFull', refusalFor(mark, B))
+		check('and nobody was dropped to make room',
+			#contactsOf(B) == 1 and contactsOf(B)[1].citizenId == 'citizen-fa' and #contactsOf(C) == 0)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- A deletes B, by the reference the list carried.
+		control.Pump(20)
+		env.source = A
+		control.netEvents[module.Event.ASK_ROSTER]()
+		env.source = nil
+		local roster
+		for index = #control.clientEvents, 1, -1 do
+			local sent = control.clientEvents[index]
+			if sent.name == module.Event.ROSTER and sent.source == A then roster = sent[1] break end
+		end
+		local row = roster and roster.rows[1] or nil
+		check('the list carries a reference for each contact, and no citizen id',
+			row ~= nil and type(row.ref) == 'string' and row.citizenId == nil)
+		check('a stranger\'s reference deletes nothing',
+			(function()
+				ask(C, module.Event.FORGET, row and row.ref)
+				return #contactsOf(A) == 1
+			end)())
+		local noticeMark = #control.notices
+		ask(A, module.Event.FORGET, row and row.ref)
+		check('the reference deletes that contact', #contactsOf(A) == 0, #contactsOf(A))
+		local said = false
+		for index = noticeMark + 1, #control.notices do
+			if control.notices[index].playerId == A
+				and control.notices[index].message == OPX.Locale.Text('calls.contact.forgotten') then said = true end
+		end
+		check('and says so', said)
+
+		-- A ring is the sphere's, not a toast's.
+		noticeMark = #control.notices
+		ask(B, module.Event.INVITE, A)
+		check('B, who still has A, can ring A', inviteOn(A) ~= nil)
+		local toasts = 0
+		for index = noticeMark + 1, #control.notices do
+			local id = control.notices[index].playerId
+			if id == A or id == B then toasts = toasts + 1 end
+		end
+		check('and neither side gets a toast repeating the sphere', toasts == 0, toasts)
+	end
+end
+
 section('calls: a refusal is an answer, and a contact needs two people and a consent')
 do
 	local env, control, why = boot('server')
@@ -31117,12 +31252,11 @@ do
 			refused ~= nil and refused.code == 'calls.error.notContact',
 			refused and tostring(refused.code))
 		check('and nothing rings on their side', inviteOn(B) == nil)
-		local placedText = OPX.Locale.Text('calls.placed', { name = 'Fixer cb' })
 		local leaked = false
 		for _, notice in ipairs(control.notices) do
 			if notice.playerId == A and tostring(notice.message):find('cb', 1, true) then leaked = true end
 		end
-		check('and the caller is not told who is behind the id', not leaked, placedText)
+		check('and the caller is not told who is behind the id', not leaked)
 		control.Life(B, 'dead')
 		mark = ask(A, module.Event.INVITE, B)
 		refused = refusalFor(mark)
@@ -31369,17 +31503,23 @@ do
 		ask(B, module.Event.HANG_UP)
 		control.Pump(20)
 
-		-- ── a contact who is not connected is simply absent ──────────────────
-		-- Not listed as unavailable. A list that reported who was OFFLINE would
-		-- be a presence tracker; one that lists who is CALLABLE is the feature.
+		-- ── a contact who is not connected is listed, and cannot be called ───
+		-- IT USED TO BE ABSENT. The lead's decision that a contact can be deleted
+		-- needs every contact on the list -- a row nobody can see is a row nobody
+		-- can delete -- so one not connected is greyed `offline`. It says no more
+		-- than its absence said (the list always showed who was callable), and
+		-- it carries no server id: there is nobody to call, nothing to point at.
 		control.Fire('onPlayerDisconnected', B)
 		control.Admit(B, nil)
 		character.Players[B] = nil
 		character.Registry.byCitizenId['citizen-cb'] = nil
 		control.Pump(10)
 		roster = rosterFor(A)
-		check('a contact who is not connected is absent from the list, not greyed in it',
-			roster ~= nil and #roster.rows == 0, roster and #roster.rows)
+		local away = roster ~= nil and roster.rows[1] or nil
+		check('a contact who is not connected is greyed offline, with no id to call',
+			roster ~= nil and #roster.rows == 1 and away.refusal == 'offline' and away.id == 0
+				and type(away.ref) == 'string' and away.citizenId == nil,
+			roster and #roster.rows)
 		check('and the stored contact row itself is untouched -- they are away, not deleted',
 			#contactsOf(A) == 1, #contactsOf(A))
 

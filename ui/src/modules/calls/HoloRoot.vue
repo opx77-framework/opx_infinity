@@ -47,6 +47,8 @@ const { t } = useLocale()
 
 interface Row {
   id: number
+  /** The server's reference for this contact, for a delete. */
+  ref: string
   name: string
   refusal: string | null
 }
@@ -111,12 +113,16 @@ function rowsOf(value: unknown): Row[] {
   return records(value)
     .map((row) => ({
       id: num(row.id),
+      ref: text(row.ref),
       name: text(row.name, '?'),
       // `text()` answers '' for an absent field, and '' is not a refusal. The
       // absence has to survive as one, because it is what makes a row pressable.
       refusal: row.refusal === undefined || row.refusal === null ? null : text(row.refusal)
     }))
-    .filter((row) => row.id > 0)
+    // A contact who is not connected has no id and is still listed -- greyed
+    // `offline` -- because a contact can be deleted, and a row nobody can see
+    // is a row nobody can delete.
+    .filter((row) => row.id > 0 || row.ref !== '')
 }
 
 // THE HANDSHAKE. It lived on the incoming card on the left, which is gone; Lua
@@ -198,6 +204,20 @@ function decline(): void {
 
 function hangUp(): void {
   emit('opx:calls:hangUp', {})
+}
+
+/** The row whose DELETE was pressed once and waits for the second press. A
+    delete asks first, as every destroying row in this resource does. */
+const confirming = ref<string | null>(null)
+
+function forgetRow(row: Row): void {
+  if (row.ref === '') return
+  if (confirming.value !== row.ref) {
+    confirming.value = row.ref
+    return
+  }
+  confirming.value = null
+  emit('opx:calls:forget', { ref: row.ref })
 }
 
 function withdraw(): void {
@@ -422,7 +442,7 @@ const shown = computed<Row[]>(() => contacts.value)
         </nav>
 
         <ul v-if="tab !== 'recent'" class="rows">
-          <li v-for="row in shown" :key="row.id" class="row" :class="{ off: row.refusal !== null }">
+          <li v-for="row in shown" :key="row.ref || row.id" class="row" :class="{ off: row.refusal !== null }">
             <span class="dot" aria-hidden="true"></span>
             <span class="who op-copy op-truncate">{{ row.name }}</span>
             <!-- THE REASON IS SHOWN, NOT MERELY OBEYED. A row that is simply
@@ -436,6 +456,14 @@ const shown = computed<Row[]>(() => contacts.value)
                 {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
               </button>
             </template>
+            <button
+              v-if="row.ref !== ''"
+              class="pill op-eyebrow"
+              type="button"
+              @click="forgetRow(row)"
+            >
+              {{ confirming === row.ref ? t('calls.holo.forgetConfirm') : t('calls.holo.forget') }}
+            </button>
           </li>
           <li v-if="shown.length === 0" class="empty op-copy">
             {{ t('calls.holo.noContacts') }}

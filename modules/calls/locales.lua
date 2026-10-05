@@ -71,8 +71,6 @@ local EN = {
 	-- Caller id for somebody who is not in your contacts: never a name to a
 	-- stranger.
 	['calls.unknown'] = 'Unknown caller',
-	['calls.placed'] = 'Calling {name}...',
-	['calls.ringing'] = '{name} is calling you.',
 	['calls.answered'] = '{name} answered.',
 	['calls.declined'] = '{name} declined the call.',
 	['calls.joined'] = '{name} joined the call.',
@@ -108,6 +106,11 @@ local EN = {
 	['calls.error.notContact'] = 'You can only call people in your contacts.',
 	['calls.error.contactTooSoon'] = 'You already offered them your contact. Give them a moment.',
 	['calls.error.unreadable'] = 'The server could not place that call. Try again.',
+	['calls.error.offline'] = 'Not connected',
+	['calls.error.contactsFull'] = 'Your contact list is full. Delete a contact to make room.',
+	['calls.contact.forgotten'] = 'Contact deleted.',
+	['calls.holo.forget'] = 'DELETE',
+	['calls.holo.forgetConfirm'] = 'SURE?',
 }
 
 local FR = {
@@ -148,8 +151,6 @@ local FR = {
 	['calls.holo.outcome.refused'] = 'Vous avez refusé',
 
 	['calls.unknown'] = 'Correspondant inconnu',
-	['calls.placed'] = 'Appel vers {name}...',
-	['calls.ringing'] = '{name} vous appelle.',
 	['calls.answered'] = '{name} a répondu.',
 	['calls.declined'] = "{name} a refusé l'appel.",
 	['calls.joined'] = "{name} a rejoint l'appel.",
@@ -184,6 +185,11 @@ local FR = {
 	['calls.error.notContact'] = "Vous ne pouvez appeler que vos contacts.",
 	['calls.error.contactTooSoon'] = 'Vous lui avez déjà proposé votre contact. Laissez-lui un instant.',
 	['calls.error.unreadable'] = "Le serveur n'a pas pu placer cet appel. Réessayez.",
+	['calls.error.offline'] = 'Hors ligne',
+	['calls.error.contactsFull'] = 'Votre liste de contacts est pleine. Supprimez un contact pour faire de la place.',
+	['calls.contact.forgotten'] = 'Contact supprimé.',
+	['calls.holo.forget'] = 'SUPPRIMER',
+	['calls.holo.forgetConfirm'] = 'SÛR ?',
 }
 
 M.Catalogs = { en = EN, fr = FR }
