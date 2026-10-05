@@ -59,6 +59,8 @@ local stock = { garage = {}, avpad = {} }
 -- "is a row up" would leave "Browse vehicles" standing over an AV pad the player
 -- walked onto straight from a car dealer, without `nearest` ever passing nil.
 local nearest, shown, shownLabel = nil, false, nil
+-- The squared distance to `nearest` the last scan measured, for the key's claim.
+local nearestSq = nil
 
 -- Whether the key mapping answered.
 local keyRegistered = false
@@ -139,7 +141,10 @@ end
 -- of dealer that is: comparing only "is a row up" would keep a car dealer's
 -- label over an adjacent AV pad, because both want a row.
 local function syncPrompt()
-	local want = nearest ~= nil and keyLabel() ~= nil and not captured() and handle == nil
+	-- The claim on the shared key is filed every scan, row or no row, and the
+	-- row is drawn only when no other feature on that key would take the press.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	local want = nearest ~= nil and keyLabel() ~= nil and not captured() and handle == nil and wins
 	local label = want and promptLabel() or nil
 	if want == shown and label == shownLabel then return end
 
@@ -891,7 +896,7 @@ local function scan()
 		syncPrompt()
 		return
 	end
-	nearest = Access.Nearest(spots, x, y)
+	nearest, nearestSq = Access.Nearest(spots, x, y)
 
 	-- TWO RADII OVER ONE LIST. `nearest` is standing ON the marker, which is what
 	-- buys; `zone` is being IN THE ROOM, which is what sells. The wider read is a
@@ -940,7 +945,7 @@ function Runtime.Start()
 		wants = function(x, y)
 			if handle ~= nil then return OPX.Spots.Key.Rank('OPEN') end
 			if nearest == nil then return nil end
-			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y, nearestSq)
 		end,
 	})
 

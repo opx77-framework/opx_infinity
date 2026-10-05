@@ -52,6 +52,8 @@ local markers = OPX.Spots.Markers.New({
 -- that row carries: one key does three things across two kinds of point, so the
 -- row has several possible texts and a change between them is a redraw.
 local nearest, shown, shownLabel = nil, false, nil
+-- The squared distance to `nearest` the last scan measured, for the key's claim.
+local nearestSq = nil
 
 -- The open list's handle, and what it is listing.
 local handle, listing = nil, nil
@@ -135,7 +137,10 @@ end
 -- player sat in one would be naming the wrong job for the key under it. The row
 -- is down while the list is up, because the key then belongs to the list.
 syncPrompt = function()
-	local want = nearest ~= nil and handle == nil and keyLabel() ~= nil and not captured()
+	-- The claim on the shared key is filed every scan, row or no row, and the
+	-- row is drawn only when no other feature on that key would take the press.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	local want = nearest ~= nil and handle == nil and keyLabel() ~= nil and not captured() and wins
 	local label = want and promptLabel() or nil
 	if want == shown and label == shownLabel then return end
 
@@ -421,7 +426,7 @@ local function scan()
 		syncPrompt()
 		return
 	end
-	nearest = Access.Nearest(spots, x, y)
+	nearest, nearestSq = Access.Nearest(spots, x, y)
 	syncPrompt()
 	markers.Reconcile(spots, x, y)
 end
@@ -452,7 +457,7 @@ function Runtime.Start()
 		wants = function(x, y)
 			if handle ~= nil then return OPX.Spots.Key.Rank('OPEN') end
 			if nearest == nil then return nil end
-			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y, nearestSq)
 		end,
 	})
 

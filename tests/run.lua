@@ -24222,12 +24222,20 @@ do
 		local prompts = OPX.Api.Get('prompts')
 		local page = control.pages[1]
 		-- Owner, prompt group and key action of each row under test.
+		-- EACH ON A KEY OF ITS OWN. Four spots underfoot on one shared E are a
+		-- contest only one of them wins, and the losers' rows step aside; this
+		-- section is about the rebind, so the four start apart and move apart.
 		local rows = {
-			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use' },
-			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use' },
-			{ owner = 'garages', group = 'spot', action = 'opx.garages.use' },
-			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use' },
+			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use', key = 'F', rebound = 'H' },
+			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use', key = 'G',
+				rebound = 'K' },
+			{ owner = 'garages', group = 'spot', action = 'opx.garages.use', key = 'J', rebound = 'L' },
+			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use', key = 'U',
+				rebound = 'O' },
 		}
+		for index = 1, #rows do control.input.keys[rows[index].action] = rows[index].key end
+		-- As the host does after any rebind: one event, no payload.
+		env.TriggerEvent('open77:keybinds:changed')
 		local function counts()
 			local seen = {}
 			for index = 1, #rows do
@@ -24275,9 +24283,9 @@ do
 			check('each module posts its row while the player stands on its spot', all(1),
 				table.concat(counts(), ','))
 
-			-- THE KEY ON THE STRIP. The player moves every row's key to H in the
-			-- pause menu and the host raises its one event, with no payload.
-			for index = 1, #rows do control.input.keys[rows[index].action] = 'H' end
+			-- THE KEY ON THE STRIP. The player moves every row's key in the pause
+			-- menu and the host raises its one event, with no payload.
+			for index = 1, #rows do control.input.keys[rows[index].action] = rows[index].rebound end
 			env.TriggerEvent('open77:keybinds:changed')
 			local drew = nil
 			for index = #page.sent, 1, -1 do
@@ -24292,7 +24300,8 @@ do
 				for _, group in ipairs(drew and drew.payload.groups or {}) do
 					if group.key == row.owner .. '/' .. row.group then cap = group.rows[1].caps[1] end
 				end
-				check(('the %s row draws the rebound key'):format(row.owner), cap == 'H', tostring(cap))
+				check(('the %s row draws the rebound key'):format(row.owner), cap == row.rebound,
+					tostring(cap))
 			end
 
 			-- THE MODULES HEAR IT TOO, and not only the strip: each re-reads whether
@@ -35696,6 +35705,137 @@ do
 		got = press()
 		control.input.captured = false
 		check('while another surface holds the keyboard, X refuses nothing', got.decline == 0, says(got))
+	end
+end
+
+section('E: only the row whose press would act is on the strip, and a picked door holds the key')
+do
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return {} end,
+			setLocked = function() return true end,
+			setInteractionAllowed = function() return true end,
+			setAutomaticClose = function() return true end,
+			setOpen = function() return true end,
+			reset = function() return true end,
+			state = function() return nil end,
+			aimed = function() return nil end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots with garages and doorlock', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local garages, dl = OPX.Modules.Get('garages'), OPX.Modules.Get('doorlock')
+		local prompts = OPX.Api.Get('prompts')
+		local garageKey = control.keyMappings.byId['opx.garages.use']
+		local doorKey = control.keyMappings.byId['opx.doorlock.use']
+		local function rows()
+			local g, d = prompts.List('garages'), prompts.List('doorlock')
+			return (g.ok and g.value.count or -1), (d.ok and d.value.count or -1)
+		end
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'g#1', label = 'G', kind = 'garage', garage = 'g', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {
+			{ id = 1, name = 'Front', ids = { DOORLOCK_IDS.front }, x = 1.6, y = 0.0, z = 0.0,
+				state = 1, reach = 2.0 },
+		} })
+		-- Both modules have seen the player, and both have scanned since.
+		settle(control, function()
+			return garages.Runtime.Report().nearest == 'g#1' and dl.Runtime.Report().nearest == 1
+		end)
+		control.Pump(12)
+		local g, d = rows()
+		check('nearer the garage spot, only the garage row is drawn', g == 1 and d == 0,
+			('%d/%d'):format(g, d))
+
+		-- A row follows its own module's scan, so the two settle a pass apart.
+		control.placement.x = 1.4
+		settle(control, function()
+			local gg, dd = rows()
+			return gg == 0 and dd == 1
+		end)
+		g, d = rows()
+		check('nearer the door, only the door row is drawn', g == 0 and d == 1, ('%d/%d'):format(g, d))
+
+		-- Rebound apart, both rows are true and both are drawn.
+		control.input.keys['opx.doorlock.use'] = 'F'
+		env.TriggerEvent('open77:keybinds:changed')
+		check('with the door rebound to F, both rows are drawn', settle(control, function()
+			local g, d = rows()
+			return g == 1 and d == 1
+		end), ('%d/%d'):format(rows()))
+		control.input.keys['opx.doorlock.use'] = 'E'
+		env.TriggerEvent('open77:keybinds:changed')
+
+		-- A LOCKPICK UNDER WAY HOLDS E, even standing nearer the garage spot: the
+		-- press neither asks for the list nor turns any door.
+		control.placement.x = 0.0
+		settle(control, function()
+			local g, d = rows()
+			return g == 1 and d == 0
+		end)
+		control.netEvents[dl.Event.PICK_GO]({ id = 1, name = 'Front', steps = { 5000 } })
+		control.Pump(1)
+		local function sent()
+			local list, door, garage = control.serverEvents, 0, 0
+			for index = 1, #list do
+				if list[index].name == dl.Event.SET_STATE then door = door + 1 end
+				if list[index].name == garages.Event.LIST then garage = garage + 1 end
+			end
+			return garage, door
+		end
+		local g0, d0 = sent()
+		garageKey.pressed()
+		doorKey.pressed()
+		control.Pump(1)
+		local g1, d1 = sent()
+		check('mid-pick, E asks for no list and turns no door', g1 == g0 and d1 == d0,
+			('%d/%d'):format(g1 - g0, d1 - d0))
+		check('and the garage row steps aside while the pick runs', settle(control, function()
+			local g = rows()
+			return g == 0
+		end), ('%d/%d'):format(rows()))
+	end
+end
+
+section('Y: the hotbar peek stays silent while a call rings')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the shared Y', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls, inventory = OPX.Modules.Get('calls'), OPX.Modules.Get('inventory')
+		local answer = control.keyMappings.byId['opx.calls.answer']
+		local peek = control.keyMappings.byId['opx.inventory.peek']
+		check('both are on Y out of the box', answer and peek and answer.key == 'Y' and peek.key == 'Y')
+		local peeks = 0
+		local realPeek = inventory.Slotbar.Peek
+		inventory.Slotbar.Peek = function() peeks = peeks + 1 end
+		local function accepts()
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == calls.Event.ACCEPT then n = n + 1 end
+			end
+			return n
+		end
+		peek.pressed()
+		answer.pressed()
+		control.Pump(1)
+		check('with nothing ringing, Y peeks the hotbar', peeks == 1, peeks)
+		control.netEvents[calls.Event.STATE]({ invite = { id = 'y1', kind = 'call', from = 2,
+			fromName = 'Judy' } })
+		local before = accepts()
+		answer.pressed()
+		peek.pressed()
+		control.Pump(1)
+		check('a call ringing, Y answers it', accepts() == before + 1, accepts() - before)
+		check('and the hotbar does not peek', peeks == 1, peeks)
+		inventory.Slotbar.Peek = realPeek
 	end
 end
 

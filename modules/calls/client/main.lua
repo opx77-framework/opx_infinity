@@ -740,7 +740,12 @@ function M.Start()
 	-- already answer false with no invite, so the guard is theirs and not a
 	-- second copy of the same question.
 	bind(M.Settings.ANSWER_KEY, 'opx.calls.answer', 'calls.key.answer',
-		function() M.Accept() end)
+		function() M.Accept() end,
+		-- Y is also the hotbar peek, which stays silent while a call rings.
+		function()
+			if state.invite ~= nil then return OPX.Spots.Key.Rank('RINGING') end
+			return nil
+		end)
 	-- THE SAME KEY HANGS UP. Refusing wins while something rings at you, then
 	-- withdrawing what you are ringing out, then leaving the call -- see
 	-- `M.DeclineOrHangUp` for why the middle one comes before the last.

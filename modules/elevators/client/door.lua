@@ -48,7 +48,9 @@ local captured = OPX.Spots.Captured
 -- Brings the strip in line with the lift the player is standing at.
 local function syncPrompt()
 	local key = nil
-	if keyRegistered and not captured() then key = Runtime.Nearest() end
+	-- The claim on the shared key is filed every pass, row or no row.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	if keyRegistered and not captured() and wins then key = Runtime.Nearest() end
 	if key == shown then return end
 
 	local api = OPX.Api.Get('prompts')

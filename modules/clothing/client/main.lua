@@ -37,6 +37,8 @@ local markers = OPX.Spots.Markers.New({
 
 -- The store the player is standing on, and whether its row is up.
 local nearest, shown = nil, false
+-- The squared distance to `nearest` the last scan measured, for the key's claim.
+local nearestSq = nil
 
 -- Whether the key mapping answered.
 local keyRegistered = false
@@ -71,7 +73,10 @@ end
 
 -- Brings the strip in line with where the player is standing.
 local function syncPrompt()
-	local want = nearest ~= nil and keyLabel() ~= nil and not captured()
+	-- The claim on the shared key is filed every scan, row or no row, and the
+	-- row is drawn only when no other feature on that key would take the press.
+	local wins = OPX.Spots.Key.Shows(keySettings().ID)
+	local want = nearest ~= nil and keyLabel() ~= nil and not captured() and wins
 	if want == shown then return end
 
 	local api = OPX.Api.Get('prompts')
@@ -231,7 +236,7 @@ local function scan()
 		syncPrompt()
 		return
 	end
-	nearest = Access.Nearest(spots, x, y)
+	nearest, nearestSq = Access.Nearest(spots, x, y)
 	syncPrompt()
 	markers.Reconcile(spots, x, y)
 end
@@ -258,7 +263,7 @@ function Runtime.Start()
 		onPress = Runtime.Open,
 		wants = function(x, y)
 			if nearest == nil then return nil end
-			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y, nearestSq)
 		end,
 	})
 

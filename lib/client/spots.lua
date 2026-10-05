@@ -295,6 +295,11 @@ OPX.Spots.Key.RANK_DEFAULTS = {
 local contenders = {}
 -- physical key -> { winner, pending = { id = true }, atMs }
 local decisions = {}
+-- mapping id -> { rank, distance, atMs }, filed by each module's scan: see `Shows`
+local claims = {}
+-- mapping id -> the physical key it is bound to, for the strip rows only. A
+-- press reads the host every time; a row reads this, which a rebind clears.
+local bindings = {}
 
 --- The rank one context name stands at.
 -- @author dop42
@@ -322,7 +327,9 @@ end
 --   id      string    the mapping id, as declared
 --   default string    the declared default key
 --   wants   function  (x, y, z) -> rank|nil, distance|nil; nil when this press
---                     is nothing to it. Runs under pcall, and must not act.
+--                     is nothing to it. Runs under pcall, and must not act. A
+--                     press hands it the position; a row's claim (`Shows`)
+--                     hands it none, and it answers from its last scan.
 --   tag     string|nil the module, for the one log line a raise gets
 function OPX.Spots.Key.Contend(options)
 	if type(options) ~= 'table' or type(options.id) ~= 'string' or type(options.wants) ~= 'function' then
@@ -330,7 +337,10 @@ function OPX.Spots.Key.Contend(options)
 	end
 	contenders[options.id] = { id = options.id, default = options.default, wants = options.wants,
 		tag = tostring(options.tag or 'spots') }
-	decisions = {}
+	decisions, claims = {}, {}
+	-- Read once here, at registration, rather than in the first scan that asks:
+	-- a row's claim then makes no host read at all until a rebind clears it.
+	bindings[options.id] = boundTo(contenders[options.id]) or false
 end
 
 -- The player's position, read once a press, or nils before there is a world.
@@ -399,14 +409,97 @@ function OPX.Spots.Key.Owns(id)
 	return winner == nil or winner == id
 end
 
+-- ── the row follows the contest ─────────────────────────────────────────────
+--
+-- TWO ROWS NAMING ONE KEY, ONE OF WHICH WILL DO NOTHING. A garage spot beside a
+-- door drew "E Garage" AND "E Unlock door", and the press went to one of them.
+-- A strip row now asks `Shows` before it is drawn: the row of a contender that
+-- would lose the press right now is not drawn.
+--
+-- EVERY MODULE CLAIMS FROM ITS OWN SCAN, AND READS THE OTHERS' CLAIMS. A row
+-- that ran the whole contest -- every rival's `wants` and key -- from inside a
+-- scan put a thousand instructions into the scheduler's shared resume. Each
+-- module asks `Shows` once a scan, which runs ITS OWN `wants` once and files the
+-- answer; the comparison is then a walk over at most six filed claims, with no
+-- host read but the one position. A claim not renewed within CLAIM_MS (a module
+-- that stopped scanning) is ignored. A press still decides from the live state
+-- (`Owns`): a row lags its scan by at most one pass, a key never does.
+
+--- How long a filed claim stands without being renewed by its module's scan.
+OPX.Spots.Key.CLAIM_MS = 1500
+
+-- The key a contender is bound to, read from the host once and then kept until
+-- a rebind: an answer that changes only when a player opens the pause menu.
+local function cachedBinding(contender)
+	local known = bindings[contender.id]
+	if known == nil then
+		known = boundTo(contender) or false
+		bindings[contender.id] = known
+	end
+	return known or nil
+end
+
+AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
+	bindings = {}
+end)
+
+-- Whether a filed claim takes the press from another: the higher rank, then
+-- the nearer, then the id -- the order `decide` uses.
+local function beats(claim, id, other, otherId)
+	if claim.rank ~= other.rank then return claim.rank > other.rank end
+	if claim.distance ~= other.distance then return claim.distance < other.distance end
+	return id < otherId
+end
+
+--- Files this mapping's claim from its module's scan, and answers whether its
+--- strip row should be drawn: true unless another mapping on the same key holds
+--- a claim that would take the press. Call it every scan, row or no row, so a
+--- claim that lapsed is withdrawn.
+-- @author dop42
+-- @param id string the mapping id
+-- @return boolean
+function OPX.Spots.Key.Shows(id)
+	local me = contenders[id]
+	if me == nil then return true end
+	local now = OPX.Now()
+	local ran, rank, distance = pcall(me.wants, nil, nil, nil)
+	if not ran then
+		Open77.log.error(('[%s] key %s: %s'):format(me.tag, id, tostring(rank)))
+		claims[id] = nil
+		return true
+	end
+	if type(rank) ~= 'number' then
+		claims[id] = nil
+		return true
+	end
+	local mine = { rank = rank, distance = type(distance) == 'number' and distance or math.huge, atMs = now }
+	claims[id] = mine
+	local physical = cachedBinding(me)
+	if physical == nil then return true end
+	for other, claim in pairs(claims) do
+		if other ~= id and now - claim.atMs <= OPX.Spots.Key.CLAIM_MS then
+			local contender = contenders[other]
+			if contender ~= nil and cachedBinding(contender) == physical and beats(claim, other, mine, id) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
 --- The flat distance from a position to a spot, for a contender's `wants`; nil
 --- when either cannot be read, which ranks the spot behind any that can.
 -- @author dop42
+--
+-- WITH NO POSITION -- a claim filed from a scan (`Shows`) -- it answers the
+-- distance that scan already measured, so a row costs no second host read.
 -- @param spot table|nil anything with numeric `x` and `y`
 -- @param x number|nil
 -- @param y number|nil
+-- @param measuredSq number|nil the squared distance the module's scan found
 -- @return number|nil
-function OPX.Spots.Key.Reach(spot, x, y)
+function OPX.Spots.Key.Reach(spot, x, y, measuredSq)
+	if x == nil and type(measuredSq) == 'number' then return math.sqrt(measuredSq) end
 	if type(spot) ~= 'table' or type(spot.x) ~= 'number' or type(spot.y) ~= 'number'
 		or type(x) ~= 'number' or type(y) ~= 'number' then
 		return nil

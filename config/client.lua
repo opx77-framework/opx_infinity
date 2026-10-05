@@ -56,7 +56,9 @@ OPX.Config.CLIENT = {
 	-- Higher wins. Reorder freely; a missing name keeps its default below.
 	KEY_PRIORITY = {
 		PROGRESS = 100, -- a cancelable progress bar is up (X cancels it)
-		PICK = 95, -- staff "Pick in world" on the door panel (E confirms)
+		-- the door the player is working on: a lockpick under way, or staff
+		-- "Pick in world" on the door panel (E confirms). Beats a nearer spot.
+		PICK = 95,
 		OPEN = 90, -- the key closes a list it opened: garages, dealership (E)
 		RINGING = 80, -- a call is ringing at the player (X declines)
 		OUTGOING = 70, -- the player is ringing someone (X withdraws)

@@ -189,7 +189,10 @@ nearer spot does (a garage marker beside a managed door: whichever you stand clo
 to). On X a cancelable bar beats a ringing call, which beats a carried crate, which
 beats an emote, which beats hanging up a call that is merely going on. Nobody with
 anything to do means every handler stays silent. A player who rebinds one of them to
-another key takes it out of the contest. `OPX.Spots.Key.Owns` is the rule.
+another key takes it out of the contest. `OPX.Spots.Key.Owns` is the rule. A door being
+lockpicked holds E against any nearer spot, the key strip draws only the row whose press
+would act (`OPX.Spots.Key.Shows`, filed once a scan), and the hotbar peek on **Y** stays
+silent while a call rings (Y answers it).
 
 ### The garage key: out, and away
 
