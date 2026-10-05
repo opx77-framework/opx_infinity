@@ -220,6 +220,16 @@ local function refuse(source, key, data)
 	OPX.NotifyLocale(source, key, data, 'error')
 end
 
+--- The sentence for a charge the wallet refused.
+-- `RemoveMoney` always answers a reason, and for a short wallet it is the
+-- character module's `money.insufficient` -- "You do not have enough money." --
+-- so the shop's own sentence, the one that names the price, could never be
+-- shown, in a room that shows no prices anywhere else.
+local function unpaidKey(reason)
+	if reason == nil or reason == 'money.insufficient' then return 'shops.cannotPay' end
+	return reason
+end
+
 -- ── the fitting room ────────────────────────────────────────────────────────
 
 --- The looks this shop carries that THIS player may take.
@@ -266,7 +276,7 @@ local function chargeFor(shop)
 		local reason = ('clothing at %s'):format(shop.label)
 		local paid, refused = character.RemoveMoney(source, tuning.currency, total, reason)
 		if not paid then
-			refuse(source, refused or 'shops.cannotPay',
+			refuse(source, unpaidKey(refused),
 				{ total = OPX.Locale.Money(total, tuning.currency) })
 			return false, 'clothing.unpaid'
 		end
@@ -361,8 +371,12 @@ local function onWear(source, payload)
 	if tuning.charge and look.cost > 0 then
 		local paid, reason = character.RemoveMoney(source, tuning.currency, look.cost,
 			('%s at %s'):format(look.label, shop.label))
-		if not paid then return refuse(source, reason or 'shops.cannotPay',
+		if not paid then return refuse(source, unpaidKey(reason),
 			{ total = OPX.Locale.Money(look.cost, tuning.currency) }) end
+		-- SAID, as a fitting-room charge already is. The money left without a
+		-- word, and the uniform only lands on the room's draft.
+		OPX.NotifyLocale(source, 'shops.paid',
+			{ total = OPX.Locale.Money(look.cost, tuning.currency), shop = shop.label }, 'success')
 	end
 
 	dressIn(source, look.key, look.wear)

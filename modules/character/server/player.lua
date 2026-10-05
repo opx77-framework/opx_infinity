@@ -865,9 +865,9 @@ function M.SetName(identifier, firstName, lastName)
 	if not player then return Result.Err('error.notLoggedIn', tostring(identifier)) end
 
 	local first = M.ValidateName(firstName)
-	if not first.ok then return Result.Err('character.badName', 'firstName') end
+	if not first.ok then return Result.Err((M.NameRefusal(first)), 'firstName') end
 	local last = M.ValidateName(lastName)
-	if not last.ok then return Result.Err('character.badName', 'lastName') end
+	if not last.ok then return Result.Err((M.NameRefusal(last)), 'lastName') end
 
 	local charInfo = player.PlayerData.charInfo
 	if charInfo.firstName ~= nil or charInfo.lastName ~= nil then

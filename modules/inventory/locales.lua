@@ -73,7 +73,6 @@ OPX.Locale.Register('en', {
 	['inventory.context.glovebox'] = 'Open the glovebox',
 
 	['inventory.notify.gave'] = 'You handed over {count}x {item}.',
-	['inventory.notify.received'] = 'You were handed {count}x {item}.',
 	['inventory.notify.taken'] = '{count}x {item} was taken from your bag.',
 	['inventory.notify.cleared'] = 'Your bag was emptied.',
 
@@ -117,8 +116,8 @@ OPX.Locale.Register('en', {
 	['inventory.error.no_drop'] = 'That cannot be left on the ground.',
 	['inventory.error.not_enough_money'] = 'You do not have that much on you.',
 
-	['inventory.notify.withdrew'] = 'You drew {count}x {item}.',
-	['inventory.notify.deposited'] = 'You banked {count}x {item}.',
+	['inventory.notify.withdrew'] = 'You took {amount} out as notes.',
+	['inventory.notify.deposited'] = 'You put {amount} in notes back in your wallet.',
 
 	['inventory.command.lines'] = '{lines}',
 	['inventory.command.help.give'] = "Give items to a character's bag.",
@@ -136,7 +135,7 @@ OPX.Locale.Register('en', {
 	['inventory.command.done.cleared'] = 'Emptied the bag of {citizenId}: {stacks} stack(s).',
 	['inventory.command.done.opened'] = 'Searching the bag of {citizenId}.',
 	['inventory.command.done.holders'] = '{item}: {count} container(s) hold it, largest first.',
-	['inventory.command.done.withdrew'] = 'Drew {count}x {item}. Use the stack to bank it again.',
+	['inventory.command.done.withdrew'] = 'You took {amount} out as notes. Use the stack to put it back.',
 	['inventory.command.holder'] = '  {kind} {owner}  slot {slot}  x{count}',
 	['inventory.command.error.failed'] = 'That did not work.',
 	['inventory.command.error.unknown_item'] = 'No item called {item} in the catalogue.',
@@ -444,7 +443,6 @@ OPX.Locale.Register('fr', {
 	['inventory.context.glovebox'] = 'Ouvrir la boîte à gants',
 
 	['inventory.notify.gave'] = 'Vous avez donné {count}x {item}.',
-	['inventory.notify.received'] = 'On vous a donné {count}x {item}.',
 	['inventory.notify.taken'] = '{count}x {item} a été retiré de votre sac.',
 	['inventory.notify.cleared'] = 'Votre sac a été vidé.',
 
@@ -488,8 +486,8 @@ OPX.Locale.Register('fr', {
 	['inventory.error.no_drop'] = 'Ça ne se pose pas au sol.',
 	['inventory.error.not_enough_money'] = "Vous n'avez pas autant sur vous.",
 
-	['inventory.notify.withdrew'] = 'Vous avez retiré {count}x {item}.',
-	['inventory.notify.deposited'] = 'Vous avez déposé {count}x {item}.',
+	['inventory.notify.withdrew'] = 'Vous avez retiré {amount} en billets.',
+	['inventory.notify.deposited'] = 'Vous avez remis {amount} en billets dans votre portefeuille.',
 
 	['inventory.command.lines'] = '{lines}',
 	['inventory.command.help.give'] = "Donner des objets au sac d'un personnage.",
@@ -507,7 +505,7 @@ OPX.Locale.Register('fr', {
 	['inventory.command.done.cleared'] = 'Sac de {citizenId} vidé : {stacks} pile(s).',
 	['inventory.command.done.opened'] = 'Fouille du sac de {citizenId}.',
 	['inventory.command.done.holders'] = "{item} : {count} contenant(s) le détiennent, les plus grosses piles d'abord.",
-	['inventory.command.done.withdrew'] = 'Retiré {count}x {item}. Utilisez la pile pour la redéposer.',
+	['inventory.command.done.withdrew'] = 'Vous avez retiré {amount} en billets. Utilisez la pile pour les remettre.',
 	['inventory.command.holder'] = '  {kind} {owner}  emplacement {slot}  x{count}',
 	['inventory.command.error.failed'] = "Ça n'a pas marché.",
 	['inventory.command.error.unknown_item'] = 'Aucun objet nommé {item} dans le catalogue.',

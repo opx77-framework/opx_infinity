@@ -333,6 +333,9 @@ end
 --- The key actually bound to the drop, as the host answered it.
 local dropKey = nil
 
+--- The crate the drop hint was last timed for, so it is timed once a carry.
+local liftedFor = nil
+
 -- Whether X may put the crate down now: only once the lift has played out, and
 -- never while a bar (the load into a vehicle) is running.
 local dropReady = false
@@ -460,16 +463,28 @@ function M.Start()
 	end)
 
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
-		local was = carrying
 		carrying = propId(held) or nil
 		blockHands(carrying ~= nil)
 		-- AFTER THE LIFT, NOT AT THE PICKUP. The owner: "la notification qui dit X
 		-- pour drop faut qu'elle soit apres le load du carry de l'objet". The key
 		-- goes live at the same moment, so the hint never offers a press that the
 		-- lift would swallow.
+		-- AND AFTER THE LIFT MEANS AFTER THE CRATE IS CARRIED. `held` comes back
+		-- from the BEGIN of a pickup too -- the claim is theirs for the length of
+		-- the kneel -- so timing the hint from the first id it named put "Press
+		-- X to put the crate down" up two and a half seconds into a four-second
+		-- bar, for a crate still on the floor and one a cancel would never give
+		-- them. The server announces the crate CARRIED before it answers the
+		-- finish, so the list already says so when this runs.
+		local lifted = carrying ~= nil and crates[carrying] ~= nil
+			and crates[carrying].where == Where.CARRIED
 		if carrying == nil then
 			dropReady = false
-		elseif was == nil then
+			liftedFor = nil
+		elseif not lifted then
+			dropReady = false
+		elseif liftedFor ~= carrying then
+			liftedFor = carrying
 			dropReady = false
 			local held = carrying
 			CreateThread(function()

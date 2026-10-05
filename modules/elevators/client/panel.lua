@@ -122,6 +122,14 @@ end
 -- @param key string|nil
 -- @return table
 function Panel.Open(key)
+	-- WHERE FIRST, THEN WHETHER. The lift key is E, shared by every place in the
+	-- city, and the door keeps "no lift here" silent for a key press. Asked after
+	-- the down and menu checks, a press anywhere on the map while one of those
+	-- failed answered `player_down` or `menu_not_running` -- a toast about lifts
+	-- to a player standing nowhere near one.
+	local listing = Runtime.Floors(key)
+	if not listing.ok then return listing end
+
 	-- The down screen is the answer; a panel over it could not be worked anyway.
 	if isDown() then return { ok = false, error = 'player_down' } end
 
@@ -129,9 +137,6 @@ function Panel.Open(key)
 	if api == nil or type(api.Open) ~= 'function' then
 		return { ok = false, error = 'menu_not_running' }
 	end
-
-	local listing = Runtime.Floors(key)
-	if not listing.ok then return listing end
 	local elevator = Access.Elevator(listing.elevator)
 	if #listing.floors == 0 then
 		return { ok = false, error = 'no_floors_available', elevator = listing.elevator }

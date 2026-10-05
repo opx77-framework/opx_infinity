@@ -1252,13 +1252,28 @@ do
 		local closed = control.clientEvents[#control.clientEvents]
 		check('and takes the menu down', closed ~= nil and closed.name == spawn.Event.CLOSE,
 			closed and closed.name)
-		check('naming the reason and the place',
+		-- THE MENU COMES DOWN SAYING NOTHING. "Spawned at X." used to ride on
+		-- this, before the body had moved, and stayed when placement was refused.
+		check('naming the reason, and no place yet: the body has not moved',
 			closed ~= nil and closed[1] ~= nil and closed[1].reason == 'chosen'
-				and closed[1].place == 'King Stoop forecourt',
+				and closed[1].place == nil and closed[1].result ~= true,
 			closed and closed[1] and tostring(closed[1].place))
+		env.source = nil
+		control.Pump(40)
+		local result
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == spawn.Event.CLOSE and event.source == picker
+				and type(event[1]) == 'table' and event[1].result == true then result = event end
+		end
+		check('the placement is then reported, with the place it was for',
+			result ~= nil and result[1].reason == 'chosen'
+				and result[1].place == 'King Stoop forecourt' and type(result[1].placed) == 'boolean',
+			result and tostring(result[1].place))
 		-- The page is told a LABEL. The coordinates are nobody's but the server's.
 		check('and never the coordinates',
-			closed ~= nil and closed[1] ~= nil and closed[1].x == nil)
+			closed ~= nil and closed[1] ~= nil and closed[1].x == nil
+				and (result == nil or result[1].x == nil))
 
 		-- ── the deadline ─────────────────────────────────────────────────────────
 		-- The only exit a choice nobody makes ever gets. Shortened here, because the
@@ -1500,9 +1515,50 @@ do
 		check('and the menu is still up, waiting for the answer',
 			drew('opx:spawn:close') == nil)
 
-		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', place = 'King Stoop forecourt' })
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen' })
 		check('the answer takes the menu down', drew('opx:spawn:close') ~= nil)
 		check('and gives the focus back', OPX.UI.FocusOwner() == nil)
+
+		-- The sentence follows the placement: success says where, a refusal
+		-- says the player did not move -- and neither takes a screen down.
+		local said = {}
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...) said[#said + 1] = key; return realLocaleToast(key, ...) end
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', result = true, placed = true,
+			place = 'King Stoop forecourt' })
+		control.netEvents[spawn.Event.CLOSE]({ reason = 'chosen', result = true, placed = false })
+		OPX.Toast.Locale = realLocaleToast
+		check('a placement that took says where, and one refused says so',
+			said[1] == 'spawn.placed' and said[2] == 'spawn.placeFailed', table.concat(said, ', '))
+	end
+end
+
+-- ── a name refused for its length says so ───────────────────────────────────
+-- "J" was answered "Use letters only (spaces, hyphens and apostrophes
+-- allowed).": wrong for a name of letters, and nothing said how short was too
+-- short. Length and spelling are two sentences now, and the length one names
+-- the bounds in both languages.
+section('character: a name refused for its length is not told it is spelt wrong')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the name sentences', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local short = character.NameRefusal(character.ValidateName('J'))
+		local spelt = character.NameRefusal(character.ValidateName('J4ck'))
+		check('a name too short is answered with the length sentence',
+			short == 'character.nameLength', short)
+		check('and a name with a digit in it is still answered with the spelling one',
+			spelt == 'character.badName', spelt)
+		local _, bounds = character.NameRefusal(nil)
+		local said = OPX.Locale.Text('character.nameLength', bounds)
+		check('the length sentence names the configured bounds',
+			said:find(tostring(bounds.min), 1, true) ~= nil and said:find(tostring(bounds.max), 1, true) ~= nil
+				and said:find('{', 1, true) == nil, said)
+		OPX.Locale.Set('fr')
+		check('in French too', OPX.Locale.Exists('character.nameLength'))
+		OPX.Locale.Set('en')
 	end
 end
 
@@ -2003,6 +2059,36 @@ do
 			states[#states] == 'false/idle', table.concat(states, ', '))
 		check('and the spawn menu opens, late rather than never',
 			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- THE NAME FORM DOES NOT SPEND THE WINDOW. It holds the keyboard, so the
+	-- room answers `input_captured` while the player types, and a new player
+	-- who took over a minute on a name lost the clothes step without a word.
+	do
+		local env, control = joinClient('first', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		env.Open77.character = env.Open77.character or {}
+		env.Open77.character.state = function() return { attached = true, alive = true } end
+		local realCaptured = OPX.Lib.Input.IsCaptured
+		OPX.Lib.Input.IsCaptured = function() return true end
+		local entry = OPX.Api.Get('entry')
+		local realState = entry.State
+		local typing = true
+		entry.State = function() return OPX.Result.Ok({ naming = typing }) end
+
+		arrive(env, control, 'citizen-slow-typist')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-slow-typist' })
+		control.Pump(12)
+		check('a room owed while the name form holds the keyboard is still owed past its window',
+			appearance.Wardrobe.Owed() == true)
+		typing = false
+		control.Pump(12)
+		check('and once the form is gone the window runs again',
+			appearance.Wardrobe.Owed() == false)
+		entry.State = realState
+		OPX.Lib.Input.IsCaptured = realCaptured
 	end
 
 	-- 'never': nobody is handed one, and -- the part that matters -- NOTHING IS
@@ -6886,6 +6972,19 @@ do
 		check('and the refusal has a sentence in both languages',
 			OPX.Locale.Exists('garages.passengers'))
 
+		-- SEATED IN SOMEBODY ELSE'S CAR. The row says "put your vehicle away";
+		-- the key used to fall through to the bring-out half and park one of the
+		-- player's own cars beside them instead.
+		control.Seat(src, { vehicleId = 'not-theirs-777', seat = 'driver' })
+		local createsBefore = #control.vehicleCreates
+		local foreign = contract.Use(src, 'garage_dock')
+		check('in a car that is not theirs, the key brings nothing out',
+			foreign.ok == false and foreign.error == 'garages.notYours'
+				and #control.vehicleCreates == createsBefore,
+			tostring(foreign.error))
+		check('and says why, in both languages', OPX.Locale.Exists('garages.notYours'))
+		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
+
 		created = #control.vehicleCreates
 		removals = #control.vehicleRemoves
 		local wroteVehicles = #vehicleWrites
@@ -9230,6 +9329,26 @@ do
 			seeded ~= nil and seeded.dealer == 'garage1' and seeded.entry == 'hella',
 			seeded and seeded.dealer)
 		Access.PREVIEW_POINTS['from_config'] = nil
+
+		-- ── a refused offer is one toast to the seller ─────────────────────
+		-- The door refused through `OPX.Refuse` AND sent SETTLED, whose handler
+		-- on the seller's client toasts the same refusal: two of everything.
+		control.Pump(40)
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		local offerMark = #control.clientEvents
+		env.source = seller
+		control.netEvents[dealership.Event.OFFER](9999, 'hella')
+		env.source = nil
+		control.Pump(10)
+		local refusedToasts, settled = 0, 0
+		for index = offerMark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.source == seller and event.name == NOTIFY then refusedToasts = refusedToasts + 1 end
+			if event.source == seller and event.name == dealership.Event.SETTLED
+				and type(event[1]) == 'table' and event[1].ok == false then settled = settled + 1 end
+		end
+		check('an offer to nobody is settled as refused for the seller', settled == 1, settled)
+		check('and the server raises no second toast beside it', refusedToasts == 0, refusedToasts)
 	end
 end
 
@@ -13932,6 +14051,47 @@ do
 			held ~= nil and held.total == 2,
 			held and tostring(held.total) or 'the menu refused to open')
 		if appearance ~= nil then control.Fire(ON_DECISION, { event = 'wardrobeClosed' }) end
+
+		-- ── the queued save, when nothing was changed ─────────────────────
+		-- "It will be saved as {name} when you finish here", then Save with
+		-- nothing changed: the room closes `kept = false` because keeping what
+		-- was never changed writes nothing, and the queued save was dropped in
+		-- silence. A cancel still drops it, and now says so.
+		local formApi = OPX.Api.Get('form')
+		local realFormOpen = formApi.Open
+		local lastSpec
+		formApi.Open = function(spec) lastSpec = spec; return OPX.Result.Ok({ handle = 'f1' }) end
+		local function queue(name)
+			control.Fire(ON_DECISION, { ok = true, event = 'wardrobeOpened' })
+			control.Fire(ON_DECISION, { ok = true, event = 'wardrobeGroup', owner = 'shops', group = 'save' })
+			if lastSpec ~= nil then lastSpec.on({ action = 'submit', values = { name = name } }) end
+		end
+		local function savesSent(from)
+			local n = 0
+			for index = from + 1, #control.serverEvents do
+				if control.serverEvents[index].name == shops.Event.SAVE then n = n + 1 end
+			end
+			return n
+		end
+		local markSave = #control.serverEvents
+		queue('Street')
+		check('a save asked for inside the room is held, not sent', savesSent(markSave) == 0)
+		control.Fire(ON_DECISION, { ok = true, event = 'wardrobeClosed', kept = false, asked = true })
+		check('and leaving by Save with nothing changed sends it', savesSent(markSave) == 1,
+			savesSent(markSave))
+		markSave = #control.serverEvents
+		local dropped = 0
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...)
+			if key == 'shops.save.dropped' then dropped = dropped + 1 end
+			return realLocaleToast(key, ...)
+		end
+		queue('Night')
+		control.Fire(ON_DECISION, { ok = true, event = 'wardrobeClosed', kept = false, asked = false })
+		OPX.Toast.Locale = realLocaleToast
+		check('while a cancelled room sends nothing', savesSent(markSave) == 0, savesSent(markSave))
+		check('and says the save was dropped', dropped == 1, dropped)
+		formApi.Open = realFormOpen
 	end
 end
 
@@ -17067,6 +17227,18 @@ do
 			if type(spec) == 'table' and spec.id == 'opx.elevators.answer' then spoke = spoke + 1 end
 		end
 		check('and the key pressed away from any lift raises no toast', spoke == 0, spoke)
+
+		-- Nor while the player is down: "where" is asked before "whether", so
+		-- the down answer is not given for a lift nobody is standing at.
+		local downed = OPX.Api.Get('downed')
+		local realDown = downed and downed.IsDown
+		if downed then
+			downed.IsDown = function() return OPX.Result.Ok({ down = true, waiting = false }) end
+		end
+		local farDown = M.Door.Open('key')
+		if downed then downed.IsDown = realDown end
+		check('and down, away from any lift, the answer is still "no lift here"',
+			downed ~= nil and farDown.error == 'no_elevator_nearby', tostring(farDown.error))
 	end
 end
 
@@ -17217,8 +17389,16 @@ do
 		check('the economy starts at a known size', total() == START, tostring(total()))
 
 		-- ── the mint ──────────────────────────────────────────────────────────
+		local noticesBeforeDraw = #control.notices
 		local drew, refusal = Currency.Withdraw(ALICE, 300)
 		check('a withdraw inside the balance is accepted', drew == true, tostring(refusal))
+		-- Said as money, the language's own way: it read "You drew 300x Eddies."
+		local drawn = control.notices[noticesBeforeDraw + 1]
+		check('and it is said as an amount of money, not a count of items',
+			drawn ~= nil and drawn.playerId == ALICE
+				and tostring(drawn.message):find(OPX.Locale.Money(300, 'EDDIES'), 1, true) ~= nil
+				and not tostring(drawn.message):find('300x', 1, true),
+			drawn and drawn.message)
 		check('and it moved the money out of the balance',
 			character.GetMoney(ALICE, 'EDDIES') == 700,
 			tostring(character.GetMoney(ALICE, 'EDDIES')))
@@ -18262,6 +18442,19 @@ do
 		check('while a caller that named itself is still told', said == 1, said)
 		check('with the same refusal', asked.error == 'teleports.noSuchTeleport',
 			tostring(asked.error))
+
+		-- WHILE A BAR IS UP, TOO. "Not here" was asked after "busy", so E pressed
+		-- anywhere while eating answered "Finish what you are doing first."
+		local progress = OPX.Api.Get('progress')
+		local barUp = progress ~= nil
+			and progress.Start('test', { label = 'Eating', durationMs = 5000 }).ok == true
+		said = 0
+		local eating = Runtime.Use('key')
+		check('a progress bar is up for the next press', barUp)
+		check('and the key on empty ground during it says nothing either',
+			said == 0 and eating.error == 'teleports.noSuchTeleport',
+			said .. ' ' .. tostring(eating.error))
+		if barUp then progress.Stop('test') end
 		OPX.Toast.Show = realToast
 	end
 end
@@ -19186,6 +19379,29 @@ end
 -- The queue cap was read in one round trip and filed in another, so two orders
 -- placed together both read the same count and both landed. The insert carries
 -- the cap now; an order it turns away gives back what it took.
+-- ── crafting: a bench the player may no longer use takes its screen down ─────
+-- The client closed the screen only for a fixed list of codes, and the job
+-- gate's were not on it: a player who went off duty with a bench open kept a
+-- stale list, and its five-second refresh toasted "You must be on duty" until
+-- they closed it. The server now says when the SCREEN was refused.
+section('crafting: a refused screen comes down, a refused row does not')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bench screen', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local closes = 0
+		env.AddEventHandler(crafting.Event.ON_STATE, function(state)
+			if type(state) == 'table' and state.open == false then closes = closes + 1 end
+		end)
+		control.netEvents[crafting.Event.REFUSED]('bench', 'off_duty')
+		check('a row refused for the job gate leaves the screen alone', closes == 0, closes)
+		control.netEvents[crafting.Event.REFUSED]('bench', 'off_duty', true)
+		check('the screen itself refused for it takes the screen down', closes == 1, closes)
+	end
+end
+
 section('crafting: an order the full shelf turns away gives everything back')
 do
 	local env, control, why = boot('server')
@@ -21181,6 +21397,76 @@ do
 		check('a crate left lying goes back to its point',
 			props.byId[THIRD].x == thirdHome.x and props.byId[THIRD].y == thirdHome.y,
 			('%.3f, %.3f'):format(props.byId[THIRD].x, props.byId[THIRD].y))
+
+		-- ── a load refused mid-bar leaves a crate that can still be put down ──
+		-- The refusals before the trunk write left the step running, and a drop
+		-- refuses a crate with a step: a truck driven off during the bar left the
+		-- player holding a crate X answered "Not while you are loading it." for.
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.PICKUP, THIRD)
+		at = at + Access.PICKUP_MS + 1
+		fire(12, M.Event.FINISH)
+		check('the third crate is carried again', lastAnswer()[3] == THIRD, tostring(lastAnswer()[2]))
+		vehicles['veh-13'] = { id = 'veh-13', record = 'Vehicle.nothing',
+			position = { x = thirdHome.x + 2.0, y = thirdHome.y, z = thirdHome.z } }
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.LOAD, 'veh-13')
+		vehicles['veh-13'] = nil
+		at = at + Access.LOAD_MS + 1
+		fire(12, M.Event.FINISH)
+		check('a truck gone during the load bar refuses the load',
+			lastAnswer()[2] == 'no_such_vehicle', tostring(lastAnswer()[2]))
+		fire(12, M.Event.DROP, 90.0)
+		check('and the crate can be put down at once, not "busy"',
+			lastAnswer()[1] == true and lastAnswer()[3] == false, tostring(lastAnswer()[2]))
+
+		-- ── a pickup refused at the end of its bar gives the crate back ──────
+		local lying = props.byId[THIRD]
+		positions[12] = { x = lying.x, y = lying.y, z = lying.z, bucket = 0 }
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.PICKUP, THIRD)
+		positions[12] = { x = lying.x + 50.0, y = lying.y, z = lying.z, bucket = 0 }
+		at = at + Access.PICKUP_MS + 1
+		fire(12, M.Event.FINISH)
+		check('a pickup finished from across the yard is refused',
+			lastAnswer()[2] == 'too_far', tostring(lastAnswer()[2]))
+		check('and the player is holding nothing', lastAnswer()[3] == false
+			and OPX.Api.Get('hauling').IsCarrying(12) == false, tostring(lastAnswer()[3]))
+		positions[14] = { x = lying.x, y = lying.y, z = lying.z, bucket = 0 }
+		fire(14, M.Event.HELLO)
+		at = at + 10000
+		fire(14, M.Event.BEGIN, Step.PICKUP, THIRD)
+		check('so somebody else may take that crate straight away',
+			lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		fire(14, M.Event.ABORT, 'cancelled')
+	end
+end
+
+-- ── hud: a money line has a caption in the player's language ────────────────
+-- The line's label was the purse's config id, and the page looked it up and
+-- missed, so it drew the id raw: a French HUD read BANK.
+section('hud: every configured money line has a caption in both languages')
+do
+	local env, _, why = boot('client')
+	check('the client boots for the money captions', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local order = OPX.Config.MODULES.hud.MONEY or {}
+		local missing = {}
+		for _, code in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(code)
+			for _, key in ipairs(order) do
+				if not OPX.Locale.Exists('hud.money.' .. key) then
+					missing[#missing + 1] = code .. ':' .. key
+				end
+			end
+		end
+		check('each configured purse has a caption in English and French',
+			#order > 0 and #missing == 0, table.concat(missing, ', '))
+		OPX.Locale.Set('fr')
+		check('and the French bank line is not the English word',
+			OPX.Locale.Text('hud.money.BANK') ~= 'BANK', OPX.Locale.Text('hud.money.BANK'))
+		OPX.Locale.Set('en')
 	end
 end
 
@@ -21312,6 +21598,32 @@ do
 			players[name] = function(allow) held[name] = allow == false or nil; return true end
 		end
 		players.resetControls = function() held = {}; return true end
+		-- THE KNEEL IS NOT THE CARRY. The BEGIN of a pickup already answers the
+		-- crate's id, and the hint used to be timed from it: "Press X to put the
+		-- crate down" two and a half seconds into a four-second bar.
+		local function dropsSent()
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == M.Event.DROP then n = n + 1 end
+			end
+			return n
+		end
+		local hints = 0
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...)
+			if key == 'hauling.hint.drop' then hints = hints + 1 end
+			return realLocaleToast(key, ...)
+		end
+		control.netEvents[M.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0, z = 18.0,
+			bucket = 0, where = 'claimed' })
+		control.netEvents[M.Event.ANSWER](true, nil, '555')
+		control.Pump(math.ceil(M.LIFT_MS / 100) + 2)
+		local kneeling = dropsSent()
+		drop.pressed()
+		check('during the pickup bar, before the crate is lifted, no hint goes up', hints == 0, hints)
+		check('and X does nothing', dropsSent() == kneeling)
+		control.netEvents[M.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0, z = 18.0,
+			bucket = 0, where = 'carried' })
 		control.netEvents[M.Event.ANSWER](true, nil, '555')
 		check('carrying takes the weapons, the shot and the aim away',
 			held.allowWeapons and held.allowShoot and held.allowAim)
@@ -21334,6 +21646,8 @@ do
 		check('X during the lift does nothing, so the lift is never cut off',
 			drops() == before)
 		control.Pump(math.ceil(M.LIFT_MS / 100) + 2)
+		check('once it is carried, the hint goes up after the lift, once', hints == 1, hints)
+		OPX.Toast.Locale = realLocaleToast
 		-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
 		control.netEvents[M.Event.RUN]({ id = '555', step = 'load', durationMs = 3000 })
 		drop.pressed()
@@ -26598,6 +26912,170 @@ do
 	end
 end
 
+-- ── inventory papercuts: every refusal said once, a Close that closes ────────
+-- What a player met at the screen: the trunk's Close button left the trunk
+-- drawn (the server closed it quietly and the page waited for a push that never
+-- came), a full trunk or a split with no room snapped back with only the page's
+-- "That did not work.", a refused drop toasted twice, a hand-over announced
+-- itself twice to the receiver, a hotbar key ate four burritos in one bite, and
+-- an owner locking the car shut the trunk with no word.
+section('inventory papercuts: refusals are said once, and the trunk Close closes')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		local Containers, Players, Options, KIND, World =
+			inventory.Containers, inventory.Players, inventory.Options, inventory.KIND, inventory.World
+		local REQUEST, ANSWER, SECONDARY = inventory.Event.REQUEST, inventory.Event.ANSWER,
+			inventory.Event.SECONDARY
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+		local function seat(player, citizen)
+			control.Admit(player, 'account-' .. player)
+			control.Stand(player, 10.0, 20.0, 30.0)
+			character.Players[player] = {
+				PlayerData = { citizenId = citizen, source = player,
+					userId = 'account-' .. player, money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizen] = player
+			character.Registry.byUserId['account-' .. player] = player
+			local bag = Containers.Transient(KIND.CHARACTER, citizen, Options.BAG_SLOTS,
+				Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(player)
+			return bag
+		end
+		local PLAYER, OTHER = 811, 812
+		local bag = seat(PLAYER, 'citizen-papercut')
+		seat(OTHER, 'citizen-papercut-2')
+
+		local nextId = 0
+		local function ask(action, payload)
+			nextId = nextId + 1
+			local id, mark = nextId, #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[REQUEST](id, action, payload)
+			env.source = nil
+			control.Pump(20)
+			local reply, toasts, secondary = nil, {}, {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER and event[1] == id then
+					reply = { ok = event[2], code = event[3] }
+				elseif event.name == NOTIFY then
+					toasts[#toasts + 1] = { source = event.source, code = event[1] and event[1].code }
+				elseif event.name == SECONDARY and event.source == PLAYER then
+					secondary[#secondary + 1] = event[1]
+				end
+			end
+			return reply, toasts, secondary
+		end
+		local function mine(toasts, code)
+			local count = 0
+			for _, toast in ipairs(toasts) do
+				if toast.source == PLAYER and (code == nil or toast.code == code) then count = count + 1 end
+			end
+			return count
+		end
+		local function waterSlot()
+			for index, entry in pairs(bag.items) do if entry.name == 'water' then return index end end
+		end
+		local function waterLeft()
+			local total = 0
+			for _, entry in pairs(bag.items) do if entry.name == 'water' then total = total + entry.count end end
+			return total
+		end
+
+		-- The trunk's Close is said back to the screen.
+		local trunk = Containers.Transient(KIND.TRUNK, 'PAPER1', 10, 50000)
+		trunk.vehicleId = 4242
+		Containers.View(PLAYER, trunk)
+		local closed, _, pushes = ask('closeSecondary', {})
+		check('the Close on a trunk panel is answered', closed ~= nil and closed.ok == true)
+		check('and the close is pushed back, so the panel comes down',
+			#pushes == 1 and pushes[1] == false, #pushes)
+		check('and the server no longer counts it open', Containers.Viewing(PLAYER) == nil)
+		Containers.View(PLAYER, trunk)
+		local _, _, quiet = ask('close', {})
+		check('while closing the whole screen still closes it quietly', #quiet == 0, #quiet)
+
+		-- A move that cannot happen says why, once.
+		local moved, toasts = ask('move', { from = bag.id, to = bag.id, fromSlot = 3, toSlot = 4 })
+		check('a move from an empty slot is refused', moved ~= nil and moved.ok == false,
+			moved and moved.code)
+		check('and the refusal is one toast naming why',
+			mine(toasts) == 1 and type(toasts[1].code) == 'string'
+				and toasts[1].code:find('^inventory%.error%.') ~= nil,
+			mine(toasts) .. ' ' .. tostring(toasts[1] and toasts[1].code))
+		local gone, goneToasts = ask('split', { container = 99999, slot = 1, count = 1 })
+		check('a split in a container no longer open is said',
+			gone ~= nil and gone.ok == false and mine(goneToasts, 'inventory.error.not_found') == 1,
+			gone and gone.code)
+
+		-- A drop refused: one toast.
+		local dropped, dropToasts = ask('drop', { slot = 7, count = 1 })
+		check('a drop from an empty slot is refused with one toast',
+			dropped ~= nil and dropped.ok == false and mine(dropToasts) == 1, mine(dropToasts))
+		local first = World.MayCreateDrop(PLAYER, 'citizen-papercut')
+		World.CreateDrop(PLAYER, 'citizen-papercut', { x = 10, y = 20, z = 30, bucket = 0 }, 'water')
+		local may, reason = World.MayCreateDrop(PLAYER, 'citizen-papercut')
+		check('the pile cooldown has its own reason, not "too many piles"',
+			first == true and may == false and reason == 'too_fast', tostring(reason))
+
+		-- A hand-over is announced once to the receiver: by their own bag push.
+		Containers.Add(bag, 'water', 3)
+		local mark = #control.clientEvents
+		local given = ask('give', { target = OTHER, slot = waterSlot(), count = 1 })
+		local toReceiver = 0
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == NOTIFY and event.source == OTHER then toReceiver = toReceiver + 1 end
+		end
+		check('a give goes through', given ~= nil and given.ok == true, given and given.code)
+		check('and the receiver is not toasted by the server on top of their bag push',
+			toReceiver == 0, toReceiver)
+
+		-- A bite is not four bites.
+		local used = ask('use', { slot = waterSlot() })
+		check('a drink is used', used ~= nil and used.ok == true, used and used.code)
+		local afterFirst = waterLeft()
+		local again, againToasts = ask('use', { slot = waterSlot() })
+		check('a second press while the first drink is still going is held off',
+			again ~= nil and again.ok == false and again.code == 'too_fast', again and again.code)
+		check('without a toast, so a held key does not spam', mine(againToasts) == 0, mine(againToasts))
+		check('and costs nothing', waterLeft() == afterFirst, waterLeft())
+		control.Pump(20)
+		local later = ask('use', { slot = waterSlot() })
+		check('once the gesture is over the next one goes', later ~= nil and later.ok == true,
+			later and later.code)
+
+		-- A trunk shut by its lock says so.
+		local realReach, realLocked = World.WithinReach, World.TrunkLocked
+		World.WithinReach = function() return false end
+		World.TrunkLocked = function() return true end
+		Containers.View(PLAYER, trunk)
+		local lockMark = #control.clientEvents
+		World.SweepReach()
+		World.WithinReach, World.TrunkLocked = realReach, realLocked
+		local lockedToasts, closedPushes = 0, 0
+		for index = lockMark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == NOTIFY and event.source == PLAYER and event[1].code == 'inventory.error.locked' then
+				lockedToasts = lockedToasts + 1
+			elseif event.name == SECONDARY and event.source == PLAYER and event[1] == false then
+				closedPushes = closedPushes + 1
+			end
+		end
+		check('a trunk the owner locks closes', closedPushes == 1, closedPushes)
+		check('and says it was locked', lockedToasts == 1, lockedToasts)
+	end
+end
+
 -- ── reach and the routing bucket, on the server ──────────────────────────────
 -- `Open77.players.position` answered `{0,0,0,bucket=0}` for every id forever,
 -- with no way to move it, so every reach check in this runtime compared the
@@ -28755,6 +29233,26 @@ do
 				check(('and the line never carries %s'):format(secret),
 					wire:find(secret, 1, true) == nil, wire)
 			end
+
+			-- A SECOND LINE INSIDE RATE_MS IS DROPPED, AND SAID. The box has
+			-- already cleared on the client, so the line simply vanished.
+			local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+			local function slowDowns(from)
+				local count = 0
+				for index = from + 1, #control.clientEvents do
+					local sent = control.clientEvents[index]
+					if sent.name == NOTIFY and sent.source == 32 and type(sent[1]) == 'table'
+						and sent[1].code == 'chat.tooFast' then count = count + 1 end
+				end
+				return count
+			end
+			local mark = #control.clientEvents
+			env.source = 32
+			control.netEvents[said]('too quick')
+			control.netEvents[said]('and again')
+			env.source = nil
+			check('a line inside the rate floor is refused aloud, once a burst',
+				slowDowns(mark) == 1, slowDowns(mark))
 			character.Players[32] = nil
 		end
 	end
@@ -31515,6 +32013,145 @@ do
 		check('so the third person can take a new call at once',
 			lastState(C, mark) ~= nil and lastState(C, mark).invite ~= nil)
 		ask(B, module.Event.HANG_UP)
+	end
+end
+
+-- ── calls: a ring that ends for any reason ends on both screens ─────────────
+-- Three ways a ring ended on one side only: the caller went down (or the invite
+-- rang out) just as the callee answered, and the caller's sphere said
+-- "Calling..." forever; one side disconnected mid-ring, and the other screen
+-- went quiet with nothing said and nothing filed; and a contact offer told the
+-- person offering nothing at all, sent, refused or ignored.
+section('calls: a ring that ends for any reason ends on both screens')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the ring endings', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C, D = 621, 622, 623, 624
+		local recent = {}
+		for id, tag in pairs({ [A] = 'ra', [B] = 'rb', [C] = 'rc', [D] = 'rd' }) do
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			recent[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Ringer', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == 'callContacts' then
+							return { { citizenId = 'citizen-ra' }, { citizenId = 'citizen-rb' },
+								{ citizenId = 'citizen-rc' } }
+						end
+						return nil
+					end,
+					SetMetaData = function(key, value)
+						if key ~= 'callContacts' then recent[id] = value end
+					end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function lastState(playerId, mark)
+			local found
+			for index = (mark or 0) + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = sent[1]
+				end
+			end
+			return found
+		end
+		local function told(playerId, from, needle)
+			for index = from + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId and tostring(notice.message):find(needle, 1, true) then
+					return true
+				end
+			end
+			return false
+		end
+		local function filed(playerId, outcome)
+			for _, row in ipairs(type(recent[playerId]) == 'table' and recent[playerId] or {}) do
+				if type(row) == 'table' and row.outcome == outcome then return true end
+			end
+			return false
+		end
+
+		-- The caller goes down while ringing, and the callee answers.
+		ask(A, module.Event.INVITE, B)
+		local ringing = lastState(B)
+		check('A is ringing B', ringing ~= nil and ringing.invite ~= nil)
+		control.Life(A, 'dead')
+		local mark = ask(B, module.Event.ACCEPT, ringing and ringing.invite and ringing.invite.id)
+		local caller = lastState(A, mark)
+		check('an answer refused because the caller went down reaches the caller\'s screen too',
+			caller ~= nil and caller.outgoing == nil)
+		control.Life(A, 'alive')
+
+		-- The caller disconnects mid-ring: the callee has a missed call.
+		ask(A, module.Event.INVITE, B)
+		check('A rings B again', lastState(B) ~= nil and lastState(B).invite ~= nil)
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, A)
+		control.Pump(5)
+		check('a caller who leaves mid-ring stops the ring', lastState(B) ~= nil and lastState(B).invite == nil)
+		check('and leaves a missed call behind', filed(B, 'missed'))
+
+		-- The callee disconnects mid-ring: the caller is told.
+		ask(B, module.Event.INVITE, C)
+		check('B rings C', lastState(C) ~= nil and lastState(C).invite ~= nil)
+		local noticeMark = #control.notices
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, C)
+		control.Pump(5)
+		check('a callee who leaves mid-ring stops the dial tone',
+			lastState(B) ~= nil and lastState(B).outgoing == nil)
+		check('and the caller is told the call could not go through',
+			told(B, noticeMark, 'could not go through'))
+		check('and it is filed as unanswered', filed(B, 'unanswered'))
+
+		-- A contact offer: sent, refused, ignored -- the offerer hears each.
+		noticeMark = #control.notices
+		ask(B, module.Event.INVITE, D, 'contact')
+		check('offering a contact tells the person offering', told(B, noticeMark, 'contact was offered'))
+		local offered = lastState(D)
+		noticeMark = #control.notices
+		ask(D, module.Event.DECLINE, offered and offered.invite and offered.invite.id)
+		check('a refused contact offer is said to the person who offered',
+			told(B, noticeMark, 'declined'))
+	end
+end
+
+-- ── calls: going down closes the holocall panel ─────────────────────────────
+-- The down screen takes the keyboard, so neither the key nor Escape could reach
+-- the panel, and after a revive it was still open and still holding the cursor.
+section('calls: going down closes the holocall panel')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the panel', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		calls.OpenHolo()
+		check('the panel is open', calls.HoloOpen() == true)
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), { down = false })
+		check('a revive leaves an open panel open', calls.HoloOpen() == true)
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), { down = true })
+		check('and going down closes it', calls.HoloOpen() == false)
 	end
 end
 
@@ -35542,6 +36179,18 @@ do
 		check('every step landing opens the lock', answer ~= nil and answer.code == 'picked' and state() == 0,
 			answer and tostring(answer.code))
 
+		-- A pick that lands and breaks says it broke.
+		contract.SetState(front, 1)
+		rolls = { 0.1, 0.1, 0.0 }
+		control.Pump(8)
+		pick(60)
+		answer = done()
+		check('a pick that opens the lock and breaks says both',
+			answer ~= nil and answer.code == 'picked_broke' and state() == 0
+				and fakes.counts[60].lockpick == 2,
+			answer and tostring(answer.code))
+		fakes.counts[60] = { lockpick = 3 }
+
 		contract.SetState(front, 1)
 		rolls = { 0.1, 0.5, 0.0 }
 		control.Pump(8)
@@ -36052,7 +36701,10 @@ do
 		check('on a call, X stops the emote and does not hang up', got.stop == 1 and got.hang == 0,
 			says(got))
 
-		-- A crate in the arms outranks the emote, and the call.
+		-- A crate in the arms outranks the emote, and the call. Announced CARRIED
+		-- first, as the server does: the drop key is live only once it is lifted.
+		control.netEvents[hauling.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0,
+			z = 18.0, bucket = 0, where = 'carried' })
 		control.netEvents[hauling.Event.ANSWER](true, nil, '555')
 		control.Pump(math.ceil(hauling.LIFT_MS / 100) + 2)
 		got = press()

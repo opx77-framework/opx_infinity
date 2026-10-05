@@ -18,6 +18,7 @@ local EN = {
 	['spawn.resume'] = 'Where I left off',
 	['spawn.resumeHint'] = 'Your last position',
 	['spawn.resumed'] = 'Back where you left off.',
+	['spawn.placeFailed'] = 'You could not be moved there. You are still where you were.',
 
 	['spawn.noChoice'] = 'That spawn choice is no longer open.',
 }
@@ -32,6 +33,7 @@ local FR = {
 	['spawn.resume'] = "Là où j'étais",
 	['spawn.resumeHint'] = 'Votre dernière position',
 	['spawn.resumed'] = 'Retour là où vous étiez.',
+	['spawn.placeFailed'] = "Le déplacement n'a pas pu se faire : vous n'avez pas bougé.",
 
 	['spawn.noChoice'] = "Ce choix d'apparition n'est plus ouvert.",
 }

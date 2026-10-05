@@ -39,6 +39,7 @@ local EN = {
 	['calls.holo.ringing'] = '{name} is calling you.',
 	['calls.holo.sharing'] = '{name} wants to give you their contact.',
 	['calls.holo.calling'] = 'Calling {name}...',
+	['calls.holo.offering'] = 'Offering your contact...',
 	-- The sphere's line under the callee's name, which already says who.
 	['calls.holo.dialing'] = 'Calling...',
 	['calls.holo.live'] = 'On a call with {names}.',
@@ -80,6 +81,10 @@ local EN = {
 	['calls.expired'] = '{name} did not answer.',
 	['calls.contact.offered'] = '{name} offered you their contact.',
 	['calls.contact.saved'] = '{name} is in your contacts.',
+	['calls.contact.sent'] = 'Your contact was offered. Waiting for an answer.',
+	['calls.contact.declined'] = 'Your contact offer was declined.',
+	['calls.contact.unanswered'] = 'Your contact offer was not answered.',
+	['calls.cutOff'] = 'The call could not go through: the other side left.',
 
 	-- ── the refusals, one per name in `Model.REASONS` ────────────────────────
 	['calls.error.badRequest'] = 'That request made no sense.',
@@ -121,6 +126,7 @@ local FR = {
 	['calls.holo.ringing'] = '{name} vous appelle.',
 	['calls.holo.sharing'] = '{name} veut vous donner son contact.',
 	['calls.holo.calling'] = 'Appel vers {name}...',
+	['calls.holo.offering'] = 'Proposition de votre contact...',
 	['calls.holo.dialing'] = 'Appel sortant...',
 	['calls.holo.live'] = 'En appel avec {names}.',
 	['calls.holo.answer'] = 'RÉPONDRE',
@@ -152,6 +158,10 @@ local FR = {
 	['calls.expired'] = "{name} n'a pas répondu.",
 	['calls.contact.offered'] = '{name} vous propose son contact.',
 	['calls.contact.saved'] = '{name} est dans vos contacts.',
+	['calls.contact.sent'] = 'Votre contact a été proposé. En attente de réponse.',
+	['calls.contact.declined'] = 'Votre proposition de contact a été refusée.',
+	['calls.contact.unanswered'] = "Votre proposition de contact est restée sans réponse.",
+	['calls.cutOff'] = "L'appel n'a pas pu aboutir : l'autre personne est partie.",
 
 	['calls.error.badRequest'] = "Cette requête n'a aucun sens.",
 	['calls.error.tooFast'] = 'Doucement.',

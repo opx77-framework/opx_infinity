@@ -497,7 +497,11 @@ end
 local function answer(player, benchKey, acted)
 	local built = view(player, benchKey)
 	if not built.ok then
-		TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), built.error)
+		-- `true`: the SCREEN itself was refused, whatever the reason. Without it
+		-- the client could only guess from a list of codes, and the job gate's
+		-- (off duty, demoted, fired) were not on it: the stale list stayed up and
+		-- its five-second refresh toasted "You must be on duty" until closed.
+		TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), built.error, true)
 		return
 	end
 	if acted ~= nil then
