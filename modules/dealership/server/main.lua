@@ -783,12 +783,12 @@ function M.Offer(seller, buyer, entryKey)
 		return Result.Err('dealership.notSold', entry.key)
 	end
 
-	-- The courtesy check, so the common refusal costs nobody a round trip. The
-	-- removal itself is still the only one that counts.
-	local balance = character.GetMoney(buyer, currency)
-	if type(balance) ~= 'number' or balance < entry.price then
-		return Result.Err('dealership.buyerCannotAfford', entry.key)
-	end
+	-- NO "CAN THEY AFFORD IT" HERE. A courtesy check stood here and answered the
+	-- SELLER `buyerCannotAfford` before the buyer was asked anything: offering
+	-- one stranger cars of rising price read their balance, to the eddy, without
+	-- them ever seeing an offer. A player's money is nobody else's business. The
+	-- buyer is asked; the payment is what refuses, and the seller hears only
+	-- that it was refused (`Accept`).
 
 	local at = OPX.Now()
 	nextOffer = nextOffer + 1
@@ -957,10 +957,23 @@ function M.Accept(buyer, token, yes, destKey)
 		end
 	end
 
+	-- THE BUYER IS TOLD THEY ARE SHORT; THE SELLER, THAT THE PAYMENT WAS REFUSED.
+	-- Never the buyer's balance to anybody else -- see `Offer`. The removal
+	-- below is still the check that counts; this is the courtesy, on the
+	-- buyer's side of the sale where it belongs.
+	local balance = character.GetMoney(buyer, currency)
+	if type(balance) ~= 'number' or balance < entry.price then
+		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+			error = 'dealership.paymentFailed', entry = offer.entry })
+		return Result.Err('dealership.cannotAfford', entry.key)
+	end
+
 	local bought = purchase(buyer, buyerData, dealer, entry, dest)
 	if not bought.ok then
+		local why = tostring(bought.error)
+		local money = why == 'dealership.cannotAfford' or why:sub(1, 6) == 'money.'
 		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
-			error = bought.error, entry = offer.entry })
+			error = money and 'dealership.paymentFailed' or bought.error, entry = offer.entry })
 		return bought
 	end
 

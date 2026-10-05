@@ -8763,13 +8763,31 @@ do
 				== 'dealership.notInZone')
 		control.Stand(buyer, 0.0, 0.0, 0.0)
 
-		-- The courtesy check, which is not the check that counts: the removal
-		-- itself is still what settles it.
+		-- NO MONEY PROBE. An offer to a buyer who cannot afford it used to be
+		-- refused to the SELLER before the buyer saw anything -- which read a
+		-- stranger's balance. The buyer is asked; the payment refuses; the
+		-- seller hears only that the payment did not go through.
 		local pauper = 76
 		load(pauper, 'citizen-pauper', 10)
 		control.Stand(pauper, 0.0, 0.0, 0.0)
-		check('a buyer who cannot afford it is not asked in the first place',
-			contract.Offer(seller, pauper, 'hella').error == 'dealership.buyerCannotAfford')
+		do
+			local probe = contract.Offer(seller, pauper, 'hella')
+			check('an offer to a buyer who cannot afford it is still made: the seller learns nothing',
+				probe.ok == true, tostring(probe.error))
+			local pauperAsked = lastEvent(dealership.Event.OFFERED)
+			local pauperSettled
+			env.CreateThread(function()
+				pauperSettled = contract.Accept(pauper, pauperAsked[1].token, true)
+			end)
+			settle(control, function() return pauperSettled ~= nil end, 60)
+			check('the buyer is the one told they cannot afford it',
+				pauperSettled ~= nil and pauperSettled.error == 'dealership.cannotAfford',
+				pauperSettled and tostring(pauperSettled.error))
+			local toSeller = lastEvent(dealership.Event.SETTLED)
+			check('and the seller only that the payment was refused',
+				toSeller ~= nil and toSeller.source == seller and toSeller[1].error == 'dealership.paymentFailed',
+				toSeller and tostring(toSeller[1].error))
+		end
 		check('and nobody can sell to themselves',
 			contract.Offer(seller, seller, 'hella').error == 'dealership.noSuchBuyer')
 		env.source = src
