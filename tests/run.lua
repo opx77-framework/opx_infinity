@@ -35034,6 +35034,8 @@ do
 			answer and tostring(answer.code))
 		local pushed = doorlockLast(control, dl.Event.STATE, 51)
 		check('and everyone in the bucket is told ox\'s state', pushed ~= nil and pushed.id == id('front') and pushed.state == 0)
+		check('and not who moved it', pushed ~= nil and pushed.by == nil
+			and env.json.encode(pushed):find('51', 1, true) == nil, pushed and env.json.encode(pushed))
 		local relocked = settle(control, function() return state('front') == 1 end, 60)
 		check('the autolock locks it again on the server\'s clock', relocked)
 
