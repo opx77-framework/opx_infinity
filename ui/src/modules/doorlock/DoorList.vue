@@ -89,8 +89,16 @@ function paths(name: string): string[] {
 }
 
 function distance(row: Row): string {
-  return row.distance < 0 ? t('doorlock.ui.elsewhere') : t('doorlock.ui.metres', { n: row.distance.toFixed(1) })
+  return row.distance < 0 ? t('doorlock.ui.elsewhere') : t('doorlock.ui.metres', { n: row.distance.toFixed(1).replace('.', t('doorlock.ui.decimal')) })
 }
+
+/** "1 door", "0 porte": zero and one are keys of their own, because English and French
+    part on zero and the page does not know which language it is speaking. */
+const countLabel = computed(() => {
+  const n = filtered.value.length
+  const key = n === 0 ? 'doorlock.ui.countZero' : n === 1 ? 'doorlock.ui.countOne' : 'doorlock.ui.count'
+  return t(key, { n })
+})
 
 function mark(column: Column): string {
   if (sortBy.value !== column) return ''
@@ -115,7 +123,7 @@ function mark(column: Column): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path v-for="(d, at) in paths('search')" :key="at" :d="d" /></svg>
         <input v-model="search" class="op-copy" type="text" :placeholder="t('doorlock.ui.search')" maxlength="64" />
       </label>
-      <span class="count op-value">{{ t('doorlock.ui.count', { n: filtered.length }) }}</span>
+      <span class="count op-value">{{ countLabel }}</span>
     </div>
 
     <div class="table">
@@ -276,8 +284,10 @@ svg {
   gap: var(--op-space-2);
 }
 
+/* The right pad carries the rows' own extra `--op-space-1` (see `.rows`), or every
+   fixed column on the right sat 4px left of its heading. */
 .thead {
-  padding: 0 var(--op-space-3) var(--op-space-2);
+  padding: 0 calc(var(--op-space-3) + var(--op-space-1)) var(--op-space-2) var(--op-space-3);
   color: var(--op-red-deep);
 }
 
@@ -291,6 +301,12 @@ svg {
   text-align: left;
   padding: 0;
   cursor: pointer;
+  transition: color var(--op-dur-fast) linear;
+}
+
+/* A heading sorts, so it answers the pointer like the rest of the panel's controls. */
+.th:hover {
+  color: var(--op-red);
 }
 
 .rows {
@@ -302,6 +318,13 @@ svg {
   gap: var(--op-space-1);
   overflow-y: auto;
   min-height: 0;
+  /* Scrolled by the wheel, like every list on the surface: no OS scrollbar. */
+  scrollbar-width: none;
+}
+
+.rows::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .row {

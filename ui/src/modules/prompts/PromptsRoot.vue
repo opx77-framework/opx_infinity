@@ -219,11 +219,10 @@ onBeforeUnmount(() => {
         <div v-if="group.title" class="title op-truncate">{{ t(group.title) }}</div>
 
         <div
-          v-for="(row, at) in group.rows"
+          v-for="row in group.rows"
           :key="row.key"
           class="row"
           :class="{ dim: row.dim }"
-          :style="`--op-slot: ${at}`"
         >
           <span class="caps">
             <span v-for="cap in row.caps" :key="cap.key" class="key">
@@ -522,6 +521,8 @@ onBeforeUnmount(() => {
 
 .strip.open .row {
   animation: prompt-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
+  /* NO STAGGER, on the owner's word: rows land together, as the menu's buttons and
+     the eye's rows do. A per-row delay read as the rows trickling in. */
+  animation-delay: 40ms;
 }
 </style>

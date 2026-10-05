@@ -124,11 +124,10 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
          a frame keeps its element, so the stutter-in below runs once when the vital
          first appears and never again while the stream is running. -->
     <div
-      v-for="(vital, at) in vitals"
+      v-for="vital in vitals"
       :key="vital.id"
       class="gauge"
       :class="vital.tone"
-      :style="`--op-slot: ${at}`"
       role="meter"
       :aria-valuenow="shown(vital.value)"
       :aria-valuemin="0"
@@ -356,6 +355,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
 
 .gauge {
   animation: vital-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms);
+  /* NO STAGGER, on the owner's word: rows land together, as the menu's buttons and
+     the eye's rows do. A per-row delay read as the rows trickling in. */
 }
 </style>
