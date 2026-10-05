@@ -276,8 +276,10 @@ svg {
   gap: var(--op-space-2);
 }
 
+/* The right pad carries the rows' own extra `--op-space-1` (see `.rows`), or every
+   fixed column on the right sat 4px left of its heading. */
 .thead {
-  padding: 0 var(--op-space-3) var(--op-space-2);
+  padding: 0 calc(var(--op-space-3) + var(--op-space-1)) var(--op-space-2) var(--op-space-3);
   color: var(--op-red-deep);
 }
 
@@ -291,6 +293,12 @@ svg {
   text-align: left;
   padding: 0;
   cursor: pointer;
+  transition: color var(--op-dur-fast) linear;
+}
+
+/* A heading sorts, so it answers the pointer like the rest of the panel's controls. */
+.th:hover {
+  color: var(--op-red);
 }
 
 .rows {
@@ -302,6 +310,13 @@ svg {
   gap: var(--op-space-1);
   overflow-y: auto;
   min-height: 0;
+  /* Scrolled by the wheel, like every list on the surface: no OS scrollbar. */
+  scrollbar-width: none;
+}
+
+.rows::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .row {
