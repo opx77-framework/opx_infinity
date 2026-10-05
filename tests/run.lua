@@ -12242,6 +12242,21 @@ do
 		check('and the view is handed its rows outside the scheduler resume',
 			rowsHeard > 0 and not underScheduler, ('%d heard'):format(rowsHeard))
 
+		-- THE CHARACTER COMES OFF THE STAFF LIST, not off a replicated bag: the
+		-- bag reached every stranger and carries nothing now.
+		local drawn
+		env.AddEventHandler(admin.Event.ON_TAGS, function(payload)
+			if type(payload) == 'table' and payload.kind == 'rows' then drawn = payload.rows end
+		end)
+		control.netEvents[admin.Event.TAG_ROWS]({
+			rows = { { id = 2, name = 'vee', character = 'Vincent Kowalski', citizenId = 'VKW-4A7C' } },
+			offset = 0, done = true })
+		control.Pump(20)
+		local tag = type(drawn) == 'table' and drawn[1] or {}
+		check('a tag names the character and the account from the staff list',
+			tag.name == 'Vincent Kowalski' and tag.user == 'vee' and tag.citizenId == 'VKW-4A7C',
+			('%s / %s / %s'):format(tostring(tag.name), tostring(tag.user), tostring(tag.citizenId)))
+
 		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
 		-- reason has to be carried out or it is indistinguishable from "nobody near".
 		notes = {}
@@ -12257,6 +12272,51 @@ do
 		control.Pump(20)
 		check('and an unreachable native says which of the two kinds it is',
 			said('native_not_found') ~= nil, table.concat(notes, ' | '))
+	end
+end
+
+-- Never a name to a stranger, and staff keep theirs: the character and citizen
+-- id travel on the staff tag list, and that list reaches only a player the ACL
+-- grants `opx.admin.self.tags`.
+section('the staff tag list carries the character, and only to staff')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local character = env.OPX.Modules.Get('character')
+		control.Admit(41, 'staff-account')
+		control.Admit(42, 'vk-account')
+		env.OPX.EnsureSession(41)
+		env.OPX.EnsureSession(42)
+		character.Players[42] = { PlayerData = { source = 42, citizenId = 'VKW-4A7C',
+			charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } } }
+		control.acl.granted['41'] = { ['command.opx.admin.self.tags'] = true }
+
+		local function rowsTo(player)
+			local out = {}
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == admin.Event.TAG_ROWS and tonumber(sent.source) == player then
+					for _, row in ipairs(sent[1].rows or {}) do out[#out + 1] = row end
+				end
+			end
+			return out
+		end
+
+		env.source = 41
+		control.netEvents[admin.Event.TAGS_RESTORE]()
+		control.Pump(4)
+		local named
+		for _, row in ipairs(rowsTo(41)) do if row.id == 42 then named = row end end
+		check('staff are sent the character and citizen id',
+			named ~= nil and named.character == 'Vincent Kowalski' and named.citizenId == 'VKW-4A7C',
+			named and tostring(named.character))
+
+		env.source = 42
+		control.netEvents[admin.Event.TAGS_RESTORE]()
+		control.Pump(4)
+		check('a player without the grant is sent no list at all', #rowsTo(42) == 0, #rowsTo(42))
+		character.Players[42] = nil
 	end
 end
 
@@ -28173,83 +28233,128 @@ do
 	end
 end
 
--- The server has always written the character's name to the state bag, at the
--- right moment. NOTHING READ IT. The plate above a head is drawn by the
--- platform and labelled with the displayName the Master vouches for -- the
--- account's gamertag -- and this resource never called `Open77.nameplates.set`
--- nor declared `ui.nameplates`. The chat asked `Open77.players.identity`, whose
--- `name` is that same account name, under a comment claiming it showed "the
--- player's own". So a player who had just named their character still spoke and
--- walked around as their gamertag, on the first connection and on the
--- hundredth: it was never a first-connection defect, it was permanent.
-section('the character name reaches what draws it')
+-- NEVER A NAME TO A STRANGER (the owner, after #91). The server used to write
+-- every character's name, citizen id, job, gang, account name and life flags
+-- onto their state bag -- which goes to EVERY client in the bucket, the whole
+-- city -- and the client then put the character's name on the plate over every
+-- head. Neither half survives: the bag carries nothing about a character, and
+-- every remote plate is hidden (the platform's own label is the account's
+-- gamertag, which is out-of-character and no better).
+section('nothing about a character reaches a stranger')
 do
-	local env, control, why = boot('client')
-	check('the client boots', why == nil, why)
+	local RETIRED = { 'citizenId', 'name', 'charInfo', 'job', 'gang', 'username', 'life' }
+	local SECRETS = { 'Vincent', 'Kowalski', 'VKW-4A7C', 'vk-account', 'NCPD', 'Valentinos' }
 
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
 	if why == nil then
-		local OPX = env.OPX
-		local character = OPX.Modules.Get('character')
+		local character = env.OPX.Modules.Get('character')
+		local State = character and character.State
+		check('the server bag writer is up', State ~= nil)
+		if State ~= nil then
+			check('the bag carries no key at all', type(State.KEYS) == 'table' and #State.KEYS == 0)
+
+			control.Admit(23, 'vk-account')
+			env.OPX.EnsureSession(23)
+			local player = { PlayerData = {
+				source = 23, citizenId = 'VKW-4A7C', userId = 'user-23',
+				charInfo = { firstName = 'Vincent', lastName = 'Kowalski', gender = 'm', origin = 'nomad' },
+				job = { name = 'police', label = 'NCPD', grade = { name = 'officer', level = 1 } },
+				gang = { name = 'valentinos', label = 'Valentinos', grade = { name = 'member', level = 0 } },
+				metadata = { isDead = true, inLastStand = false },
+				money = { EDDIES = 5000 },
+			} }
+
+			-- A bag an older build left behind: every retired key, standing.
+			local bag = env.Open77.state.player(23)
+			for _, key in ipairs(RETIRED) do bag:set(key, key == 'name' and 'Vincent Kowalski' or 'x') end
+			State.Publish(player)
+			local after = bag:all()
+			local left = {}
+			for key, value in pairs(after) do left[#left + 1] = key .. '=' .. tostring(value) end
+			check('publishing a named, employed, downed character puts nothing on the bag',
+				next(after) == nil, table.concat(left, ', '))
+
+			-- And again after a change: `UpdatePlayerData` calls this on every write.
+			player.PlayerData.charInfo.firstName = 'Vince'
+			State.Publish(player)
+			local encoded = env.json.encode(bag:all())
+			for _, secret in ipairs(SECRETS) do
+				check(('the bag never carries %s'):format(secret),
+					encoded:find(secret, 1, true) == nil, encoded)
+			end
+		end
+	end
+
+	env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local character = env.OPX.Modules.Get('character')
 		local State = character ~= nil and character.PlayerState or nil
 		check('the client character module is up', State ~= nil)
-
 		if State ~= nil then
-			-- A body walks past that this VM has never asked about, and the
-			-- server moves their name. The delta alone must put the plate right.
+			env.Open77.players.localId = function() return 7 end
+			env.Open77.players.all = function() return { 7, 21, 22 } end
+
+			-- Even a bag that DOES carry a name -- a hostile or outdated server --
+			-- never reaches a plate or the contract.
 			local bag = env.Open77.state.player(21)
 			bag:set('name', 'Vincent Kowalski')
-			control.Pump(4)
-			check('a name delta puts the character name on the plate',
-				control.plates.byId[21] ~= nil
-					and control.plates.byId[21].label == 'Vincent Kowalski',
-				control.plates.byId[21] and tostring(control.plates.byId[21].label))
+			bag:set('citizenId', 'VKW-4A7C')
+			control.Pump(15)
 
-			-- Somebody named BEFORE this client ever saw them never sends a
-			-- delta. The first pull is the other half, or they keep the account
-			-- plate for ever.
-			local other = env.Open77.state.player(22)
-			other:set('name', 'Jackie Welles')
-			control.plates.byId[22] = nil
-			State.Of(22)
-			check('and so does the first read of a player already named',
-				control.plates.byId[22] ~= nil
-					and control.plates.byId[22].label == 'Jackie Welles',
-				control.plates.byId[22] and tostring(control.plates.byId[22].label))
+			check('every remote plate is hidden',
+				control.plates.byId[21] ~= nil and control.plates.byId[21].visible == false
+					and control.plates.byId[22] ~= nil and control.plates.byId[22].visible == false)
+			check('and no plate is labelled',
+				(control.plates.byId[21] or {}).label == nil and (control.plates.byId[22] or {}).label == nil)
+			check('the local body is left alone', control.plates.byId[7] == nil)
 
-			-- A character with no name yet is not a failure: a row exists before
-			-- anybody does, and the plate must go back rather than say nothing.
-			bag:set('name', nil)
-			control.Pump(4)
-			check('clearing the name hands the plate back to the platform',
-				control.plates.byId[21] == nil)
+			local api = env.OPX.Api.Get('character')
+			local identity = api and api.GetPlayerIdentity(21) or {}
+			check('the contract names nobody',
+				identity.name == nil and identity.citizenId == nil and identity.username == nil
+					and api.GetPlayerName(21) == nil and next(api.GetPlayerState(21)) == nil)
 
-			-- A refused override must not be swallowed: it is the difference
-			-- between "the name is wrong" and "the grant is missing".
+			-- One pass hides at most a handful: a full server joining at once is
+			-- spread over passes rather than spent in one resume.
+			local many = { 7 }
+			for id = 100, 160 do many[#many + 1] = id end
+			env.Open77.players.all = function() return many end
+			local spent = callCost(State.Pass)
+			check('a crowd is veiled within the per-resume budget', spent > 0 and spent < 6000, spent)
+			control.Pump(60)
+			check('and every one of them ends up hidden',
+				control.plates.byId[100] ~= nil and control.plates.byId[160] ~= nil)
+
+			-- A refused override is named where an operator will read it.
 			control.plates.refuse = 'permission_denied:ui.nameplates'
 			local before = #control.log.warn
-			bag:set('name', 'Judy Alvarez')
-			control.Pump(4)
-			check('a refused override is named where an operator will read it',
+			env.Open77.players.all = function() return { 7, 300 } end
+			control.Pump(15)
+			check('a refused veil is named in the log',
 				#control.log.warn > before
-					and table.concat(control.log.warn, ' | ')
-						:find('ui.nameplates', 1, true) ~= nil,
+					and table.concat(control.log.warn, ' | '):find('ui.nameplates', 1, true) ~= nil,
 				table.concat(control.log.warn, ' | '))
 			control.plates.refuse = nil
 
-			-- The overrides go back with the module. The platform cleans up when
-			-- the RESOURCE stops, which is not the same event.
-			bag:set('name', 'Judy Alvarez')
-			control.Pump(4)
-			check('the module holds an override again', control.plates.byId[21] ~= nil)
+			check('a player who left takes their override with them',
+				control.plates.byId[21] == nil and control.plates.byId[100] == nil)
+			env.Open77.players.all = function() return { 7, 21 } end
+			control.Pump(15)
+			check('and a player who is back is hidden again',
+				(control.plates.byId[21] or {}).visible == false)
 			State.Stop()
-			check('and stopping the module hands every plate back',
-				control.plates.byId[21] == nil and control.plates.byId[22] == nil)
+			check('stopping the module hands every plate back', control.plates.byId[21] == nil)
 		end
 	end
 end
 
--- The chat carried the same defect from the other side.
-section('a message is attributed to the character, not the account')
+-- The chat line goes to EVERY client on the server. It was signed with the
+-- character's name, else the account's gamertag, else the first eight characters
+-- of the durable account id. Never a name to a stranger (the owner, after #91):
+-- it is signed with the server id, and nothing else about the speaker crosses.
+section('a chat line names nobody: it is signed with the server id')
 do
 	local env, control, why = boot('server')
 	check('the server boots', why == nil, why)
@@ -28584,46 +28689,33 @@ do
 			check('the eye carries a row of its own for it', row ~= nil,
 				('%d row(s)'):format(#rows))
 
-			-- ── OFFERED ONLY WHEN THERE IS SOMETHING TO ANSWER WITH ─────────
-			-- A row that appears and then says "unknown" teaches a player the
-			-- feature is broken. One that is simply absent teaches them the bag
-			-- has not arrived, which is what is true.
-			-- STUBBED ON THE CONTRACT AND NOT ON THE MODULE. The row reads
-			-- `Api.Get('character').GetPlayerIdentity`, and that reference was
-			-- taken when the contract was published -- replacing the function on
-			-- the module namespace afterwards changes nothing the row can see,
-			-- which is how the first version of this check failed while the
-			-- feature worked.
+			-- ── THE SERVER ID, AND NEVER WHO THEY ARE ───────────────────────
+			-- Never a name to a stranger (the owner, after #91): the row used to
+			-- answer with the character id too, read off the replicated bag. A
+			-- citizen id names a person as surely as a name does. The contract is
+			-- stubbed to KNOW the identity -- as if something still replicated it
+			-- -- so the row is proved to ignore it rather than merely lack it.
 			local characterApi = OPX.Api.Get('character')
-			check('the character contract is up to be stubbed',
-				type(characterApi) == 'table')
 			local realIdentity = characterApi ~= nil and characterApi.GetPlayerIdentity or nil
-			local identity = {}
 			if characterApi ~= nil then
-				characterApi.GetPlayerIdentity = function(playerId)
-					return identity[tonumber(playerId)] or {}
+				characterApi.GetPlayerIdentity = function()
+					return { citizenId = 'CJX-DP9J', name = 'Vincent Kowalski', username = 'vk-account' }
 				end
 			end
 
-			-- THE MODULE, not the contract: `Api.Get` answers the published
-			-- surface and the row builder is not on it -- nothing outside this
-			-- module calls it, so publishing it would widen the contract for a
-			-- test.
 			local eye = OPX.Modules.Get('target')
 			local built = type(eye.IdentifyRow) == 'function' and eye.IdentifyRow(12.0) or nil
 			check('and the row is reachable as a table a test can ask questions of',
 				type(built) == 'table' and type(built.onSelect) == 'function')
 			local context = { kind = 'player', target = { playerId = 42 } }
-			check('with no replicated identity the row is not offered',
-				built == nil or built.canInteract(context) ~= true)
+			check('it is offered on any player the eye resolved',
+				built ~= nil and built.canInteract(context) == true)
+			check('and not on a body with no player id',
+				built ~= nil and built.canInteract({ kind = 'player', target = {} }) ~= true)
 
-			identity[42] = { citizenId = 'CJX-DP9J', name = 'Somebody' }
-			check('and with one it is', built ~= nil and built.canInteract(context) == true)
-
-			-- ── AND IT ANSWERS WITH BOTH ────────────────────────────────────
 			local said
 			local realToast = OPX.Toast.Show
-            OPX.Toast.Show = function(payload)
+			OPX.Toast.Show = function(payload)
 				said = payload
 				return realToast and realToast(payload)
 			end
@@ -28632,14 +28724,18 @@ do
 
 			local ran = built ~= nil and built.onSelect(context)
 			check('selecting it answers', ran == true)
-			check('and puts BOTH identifiers on the clipboard, not one',
-				type(copied) == 'string' and copied:find('42', 1, true) ~= nil
-					and copied:find('CJX-DP9J', 1, true) ~= nil,
-				tostring(copied))
-			check('and says so on screen, with each one named',
-				said ~= nil and tostring(said.message):find('42', 1, true) ~= nil
-					and tostring(said.message):find('CJX-DP9J', 1, true) ~= nil,
-				said and tostring(said.message))
+			check('the clipboard gets the server id',
+				copied == '42', tostring(copied))
+			local shown = said and tostring(said.message) or ''
+			check('and the screen says it',
+				shown:find('42', 1, true) ~= nil, shown)
+			for _, secret in ipairs({ 'CJX-DP9J', 'Vincent', 'Kowalski', 'vk-account' }) do
+				check(('and neither carries %s'):format(secret),
+					tostring(copied):find(secret, 1, true) == nil
+						and shown:find(secret, 1, true) == nil
+						and tostring(said and said.title):find(secret, 1, true) == nil,
+					shown)
+			end
 
 			OPX.Toast.Show = realToast
 			if characterApi ~= nil then characterApi.GetPlayerIdentity = realIdentity end
