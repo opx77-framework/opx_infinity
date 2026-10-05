@@ -1800,10 +1800,12 @@ function filter(value: string): void {
   transition: color var(--op-dur-fast) linear;
 }
 
+/* The menu's hover: denser and 1.5px, not lit. Lit red at 2px is what a chosen
+   control wears, and a pointer passing over a view button is not a choice. */
 .view-btn:hover:not(:disabled),
 .view-btn:focus-visible {
-  --aug-border-bg: var(--op-red);
-  --aug-border-all: 2px;
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.5px;
   color: var(--op-text);
   outline: none;
 }

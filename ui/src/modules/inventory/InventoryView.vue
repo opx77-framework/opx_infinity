@@ -1480,7 +1480,7 @@ try {
 .tab:hover:not(.on) {
   color: var(--op-red-deep);
   --aug-border-bg: var(--op-red-deep);
-  --aug-border-all: 1.8px;
+  --aug-border-all: 1.5px;
 }
 
 /* The active tab is the same outline as every other one. It goes bright and it
@@ -1848,7 +1848,7 @@ try {
 .row:hover:not(.off):not(.on) {
   color: var(--op-red-deep);
   --aug-border-bg: var(--op-red-deep);
-  --aug-border-all: 1.8px;
+  --aug-border-all: 1.5px;
 }
 
 /* Lit and blooming, and no fill. The bloom replaces the dark shadow. */
