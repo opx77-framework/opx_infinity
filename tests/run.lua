@@ -16755,6 +16755,18 @@ do
 			if type(spec) == 'table' and spec.id == 'opx.elevators.answer' then spoke = spoke + 1 end
 		end
 		check('and the key pressed away from any lift raises no toast', spoke == 0, spoke)
+
+		-- Nor while the player is down: "where" is asked before "whether", so
+		-- the down answer is not given for a lift nobody is standing at.
+		local downed = OPX.Api.Get('downed')
+		local realDown = downed and downed.IsDown
+		if downed then
+			downed.IsDown = function() return OPX.Result.Ok({ down = true, waiting = false }) end
+		end
+		local farDown = M.Door.Open('key')
+		if downed then downed.IsDown = realDown end
+		check('and down, away from any lift, the answer is still "no lift here"',
+			downed ~= nil and farDown.error == 'no_elevator_nearby', tostring(farDown.error))
 	end
 end
 
@@ -17931,6 +17943,19 @@ do
 		check('while a caller that named itself is still told', said == 1, said)
 		check('with the same refusal', asked.error == 'teleports.noSuchTeleport',
 			tostring(asked.error))
+
+		-- WHILE A BAR IS UP, TOO. "Not here" was asked after "busy", so E pressed
+		-- anywhere while eating answered "Finish what you are doing first."
+		local progress = OPX.Api.Get('progress')
+		local barUp = progress ~= nil
+			and progress.Start('test', { label = 'Eating', durationMs = 5000 }).ok == true
+		said = 0
+		local eating = Runtime.Use('key')
+		check('a progress bar is up for the next press', barUp)
+		check('and the key on empty ground during it says nothing either',
+			said == 0 and eating.error == 'teleports.noSuchTeleport',
+			said .. ' ' .. tostring(eating.error))
+		if barUp then progress.Stop('test') end
 		OPX.Toast.Show = realToast
 	end
 end
@@ -35113,6 +35138,18 @@ do
 		answer = done()
 		check('every step landing opens the lock', answer ~= nil and answer.code == 'picked' and state() == 0,
 			answer and tostring(answer.code))
+
+		-- A pick that lands and breaks says it broke.
+		contract.SetState(front, 1)
+		rolls = { 0.1, 0.1, 0.0 }
+		control.Pump(8)
+		pick(60)
+		answer = done()
+		check('a pick that opens the lock and breaks says both',
+			answer ~= nil and answer.code == 'picked_broke' and state() == 0
+				and fakes.counts[60].lockpick == 2,
+			answer and tostring(answer.code))
+		fakes.counts[60] = { lockpick = 3 }
 
 		contract.SetState(front, 1)
 		rolls = { 0.1, 0.5, 0.0 }

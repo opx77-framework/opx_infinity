@@ -254,11 +254,11 @@ end
 -- @return table
 function Runtime.Use(origin)
 	local result = { source = origin or 'key' }
-	if captured() then
-		result.ok, result.error = false, 'error.noPermission'
-	elseif busy() then
-		result.ok, result.error = false, 'teleports.busy'
-	elseif nearest == nil then
+	-- "NOT HERE" IS ASKED FIRST. It was asked after the keyboard and the progress
+	-- bar, so E pressed anywhere on the map while eating or repairing answered
+	-- "Finish what you are doing first." under a TELEPORTS title, for a teleport
+	-- the player was nowhere near -- the elevator bug again, by another door.
+	if nearest == nil then
 		result.ok, result.error = false, 'teleports.noSuchTeleport'
 		-- NOT A WORD, WHEN THE KEY IS WHAT ASKED. `E` is a contextual key and four
 		-- modules in this resource declare it -- clothing, garages, dealership and
@@ -277,6 +277,10 @@ function Runtime.Use(origin)
 			publish(result)
 			return result
 		end
+	elseif captured() then
+		result.ok, result.error = false, 'error.noPermission'
+	elseif busy() then
+		result.ok, result.error = false, 'teleports.busy'
 	elseif asking and OPX.Now() - askedAtMs < ASK_LATCH_MS then
 		-- The client's own half of the one-trip-at-a-time rule. The server keeps
 		-- the real lock; this only stops a key held down from filling the request
