@@ -1536,7 +1536,11 @@ local function release(keep, reason)
 		return
 	end
 	if phase ~= 'open' then return end
-	-- Keeping what was never changed is not a save.
+	-- Keeping what was never changed is not a save. Whether the player ASKED to
+	-- keep is published as well: "saved with nothing changed" and "cancelled"
+	-- both arrive as `kept = false`, and a caller holding work for the room's
+	-- end (`shops`' queued outfit save) has to tell them apart.
+	local asked = keep == true
 	keep = keep and changed()
 	phase = 'closed'
 	generation = generation + 1
@@ -1571,7 +1575,7 @@ local function release(keep, reason)
 	end
 
 	Runtime.Publish({ ok = true, event = 'wardrobeClosed', reason = reason, kept = keep,
-		creation = wasCreation, citizenId = mine, slots = moved })
+		asked = asked, creation = wasCreation, citizenId = mine, slots = moved })
 	-- WHATEVER TOOK IT DOWN, THE JOIN IS NO LONGER WAITING. A room the player
 	-- saved, cancelled, was pulled out of by a body reload or lost to a stopped
 	-- owner is a room that has been had: holding the claim open past any of those

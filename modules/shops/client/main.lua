@@ -624,8 +624,23 @@ function M.Start()
 		closeScreens()
 		-- A CANCELLED ROOM DROPS THE QUEUED SAVE. The player named a look they
 		-- then decided not to keep; writing the one they walked in with down under
-		-- that name is exactly the confusion the queue exists to avoid.
-		if decision.kept ~= true then pendingSave = nil end
+		-- that name is exactly the confusion the queue exists to avoid. And it is
+		-- SAID: the player was told "it will be saved when you finish here".
+		--
+		-- A ROOM LEFT BY SAVE WITH NOTHING CHANGED IS NOT A CANCEL. It closes
+		-- `kept = false` too, because keeping what was never changed writes
+		-- nothing, so no `clothingSaved` ever comes -- and "save the look I am
+		-- wearing" silently saved nothing. The stored look IS what is worn then,
+		-- so it is written down now.
+		if decision.kept ~= true and pendingSave ~= nil then
+			local name = pendingSave
+			pendingSave = nil
+			if decision.asked == true then
+				TriggerServerEvent(M.Event.SAVE, { name = name })
+			else
+				OPX.Toast.Locale('shops.save.dropped', { name = name }, 'info')
+			end
+		end
 
 		serving, offered, saved = nil, {}, {}
 	end)

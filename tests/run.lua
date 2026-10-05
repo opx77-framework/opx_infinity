@@ -13687,6 +13687,47 @@ do
 			held ~= nil and held.total == 2,
 			held and tostring(held.total) or 'the menu refused to open')
 		if appearance ~= nil then control.Fire(ON_DECISION, { event = 'wardrobeClosed' }) end
+
+		-- ── the queued save, when nothing was changed ─────────────────────
+		-- "It will be saved as {name} when you finish here", then Save with
+		-- nothing changed: the room closes `kept = false` because keeping what
+		-- was never changed writes nothing, and the queued save was dropped in
+		-- silence. A cancel still drops it, and now says so.
+		local formApi = OPX.Api.Get('form')
+		local realFormOpen = formApi.Open
+		local lastSpec
+		formApi.Open = function(spec) lastSpec = spec; return OPX.Result.Ok({ handle = 'f1' }) end
+		local function queue(name)
+			control.Fire(ON_DECISION, { ok = true, event = 'wardrobeOpened' })
+			control.Fire(ON_DECISION, { ok = true, event = 'wardrobeGroup', owner = 'shops', group = 'save' })
+			if lastSpec ~= nil then lastSpec.on({ action = 'submit', values = { name = name } }) end
+		end
+		local function savesSent(from)
+			local n = 0
+			for index = from + 1, #control.serverEvents do
+				if control.serverEvents[index].name == shops.Event.SAVE then n = n + 1 end
+			end
+			return n
+		end
+		local markSave = #control.serverEvents
+		queue('Street')
+		check('a save asked for inside the room is held, not sent', savesSent(markSave) == 0)
+		control.Fire(ON_DECISION, { ok = true, event = 'wardrobeClosed', kept = false, asked = true })
+		check('and leaving by Save with nothing changed sends it', savesSent(markSave) == 1,
+			savesSent(markSave))
+		markSave = #control.serverEvents
+		local dropped = 0
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...)
+			if key == 'shops.save.dropped' then dropped = dropped + 1 end
+			return realLocaleToast(key, ...)
+		end
+		queue('Night')
+		control.Fire(ON_DECISION, { ok = true, event = 'wardrobeClosed', kept = false, asked = false })
+		OPX.Toast.Locale = realLocaleToast
+		check('while a cancelled room sends nothing', savesSent(markSave) == 0, savesSent(markSave))
+		check('and says the save was dropped', dropped == 1, dropped)
+		formApi.Open = realFormOpen
 	end
 end
 
@@ -18921,6 +18962,29 @@ end
 -- The queue cap was read in one round trip and filed in another, so two orders
 -- placed together both read the same count and both landed. The insert carries
 -- the cap now; an order it turns away gives back what it took.
+-- ── crafting: a bench the player may no longer use takes its screen down ─────
+-- The client closed the screen only for a fixed list of codes, and the job
+-- gate's were not on it: a player who went off duty with a bench open kept a
+-- stale list, and its five-second refresh toasted "You must be on duty" until
+-- they closed it. The server now says when the SCREEN was refused.
+section('crafting: a refused screen comes down, a refused row does not')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bench screen', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local closes = 0
+		env.AddEventHandler(crafting.Event.ON_STATE, function(state)
+			if type(state) == 'table' and state.open == false then closes = closes + 1 end
+		end)
+		control.netEvents[crafting.Event.REFUSED]('bench', 'off_duty')
+		check('a row refused for the job gate leaves the screen alone', closes == 0, closes)
+		control.netEvents[crafting.Event.REFUSED]('bench', 'off_duty', true)
+		check('the screen itself refused for it takes the screen down', closes == 1, closes)
+	end
+end
+
 section('crafting: an order the full shelf turns away gives everything back')
 do
 	local env, control, why = boot('server')
