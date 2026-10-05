@@ -12645,6 +12645,31 @@ do
 end
 
 
+-- ── every refusal the lift's server answers a player with has its sentence ──
+-- The server refuses a downed rider with `downed`; the panel's map had no such
+-- code, so the player read the generic "the lift refused" while
+-- `elevators.downed` sat in both catalogues, reached only by the client's own
+-- `player_down`. This reads the codes `request` can answer and the panel's map.
+section('elevators: every code the server refuses a ride with has a sentence')
+do
+	local handle = io.open('modules/elevators/server/main.lua', 'r')
+	local server = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local body = server:match('local function request%(player, key, index%)(.-)\nend\n') or ''
+	handle = io.open('modules/elevators/client/panel.lua', 'r')
+	local panel = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local map = panel:match('local REFUSAL = {(.-)\n}') or ''
+	local codes, missing = 0, {}
+	for code in body:gmatch("error = '([%w_]+)'") do
+		codes = codes + 1
+		if not map:find('\n%s*' .. code .. ' = ') then missing[#missing + 1] = code end
+	end
+	check('the ride request answers refusal codes', codes >= 6, codes)
+	check('and the panel has a sentence for every one of them', #missing == 0, table.concat(missing, ', '))
+end
+
+
 -- ── every key a menu names is written, in both languages ────────────────────
 -- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
 -- never passes through that spelling: the staff menu hands a row helper its
@@ -34948,8 +34973,18 @@ do
 		check('no lockpick in the bag, no attempt', answer ~= nil and answer.code == 'no_lockpick',
 			answer and tostring(answer.code))
 
+		-- THE PICK SPENDS THE TURN'S WINDOW AT THE TURN'S RATE. It had a 600 of
+		-- its own on the same window, so an operator who raised REQUEST_MS raised
+		-- it for turning a door and not for picking one.
 		fakes.counts[60] = { lockpick = 3 }
+		dl.Settings.REQUEST_MS = 5000
 		control.Pump(8)
+		pick()
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick inside REQUEST_MS of the last request is too fast, at the configured floor',
+			answer ~= nil and answer.code == 'too_fast', answer and tostring(answer.code))
+		dl.Settings.REQUEST_MS = 600
+		control.Pump(52)
 		pick()
 		local go = doorlockLast(control, dl.Event.PICK_GO, 60)
 		check('with one, the server sends the door\'s own steps: easy then hard',
