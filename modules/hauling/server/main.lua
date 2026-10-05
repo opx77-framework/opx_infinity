@@ -1161,6 +1161,11 @@ local function completeSale(player, sale)
 	local inventory = inventoryApi()
 	if inventory == nil then return false, 'no_inventory' end
 
+	-- WHO IS SELLING, pinned before the first yield. The removals below yield,
+	-- and a connection can leave or switch character in the world meanwhile; the
+	-- pay used to follow the CONNECTION, so the crates of one character paid
+	-- the next one, or paid nobody and were put back into a bag already saved.
+	local seller = citizenOf(player)
 	local tag = { site = sale.site }
 	local stock = stockFor(player, sale.site, dropoff, here.bucket)
 	local taken, sold = {}, 0
@@ -1184,8 +1189,19 @@ local function completeSale(player, sale)
 	tuned = type(tuned) == 'number' and math.tointeger(tuned) or nil
 	local each = Access.Pay(sale.site, tuned)
 	local pay = each * sold
-	local called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay,
-		('hauling:%s:%s'):format(tostring(sale.site), tostring(dropoff.key)))
+	local reason = ('hauling:%s:%s'):format(tostring(sale.site), tostring(dropoff.key))
+	local moved = seller ~= nil and citizenOf(player) ~= seller
+	local called, paid, why
+	if moved and type(character.AddMoneyOffline) == 'function' then
+		-- The character who sold is no longer on this connection: paid by citizen
+		-- id, in memory if they are loaded elsewhere and in their row if not.
+		local answer
+		called, answer = pcall(character.AddMoneyOffline, seller, Access.CURRENCY, pay, reason)
+		paid = called and type(answer) == 'table' and answer.ok == true
+		why = called and type(answer) == 'table' and answer.error or answer
+	else
+		called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay, reason)
+	end
 	if not called or paid ~= true then
 		Open77.log.warn(('[hauling] player %d sold %d crate(s) at %s and was not paid: %s')
 			:format(player, sold, safe(dropoff.key), safe(called and why or paid)))
@@ -1195,7 +1211,7 @@ local function completeSale(player, sale)
 	Open77.log.info(('[hauling] player %d sold %d crate(s) of %s at %s for %d')
 		:format(player, sold, safe(sale.site), safe(dropoff.key), pay))
 	OPX.Publish(M.Event.ON_SOLD, player, {
-		citizenId = citizenOf(player),
+		citizenId = seller or citizenOf(player),
 		site = sale.site,
 		dropoff = dropoff.key,
 		count = sold,
@@ -1203,6 +1219,8 @@ local function completeSale(player, sale)
 		each = each,
 		currency = Access.CURRENCY,
 	})
+	-- Not said to a connection that holds somebody else now.
+	if moved then return true end
 	OPX.NotifyLocale(player, 'hauling.paid',
 		{ amount = OPX.Locale.Money(pay, Access.CURRENCY), count = sold, dropoff = dropoff.label },
 		'success')

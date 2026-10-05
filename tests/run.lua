@@ -21401,6 +21401,44 @@ do
 			#paid == 1 and paid[1].reason)
 		check('and the trunk is empty after', trunks['veh-1'].docks == 0, trunks['veh-1'].docks)
 
+		-- A CHARACTER SWITCHED IN THE WORLD WHILE THE CRATES WERE BEING TAKEN.
+		-- The pay follows the character who sold, not whoever holds the slot.
+		local holder = 'SELLER01'
+		local offline = {}
+		wallet = {
+			GetPlayer = function() return { PlayerData = { citizenId = holder } } end,
+			AddMoney = function(player, kind, amount, reason)
+				paid[#paid + 1] = { player = player, kind = kind, amount = amount, reason = reason }
+				return true
+			end,
+			AddMoneyOffline = function(citizenId, kind, amount)
+				offline[#offline + 1] = { citizenId = citizenId, kind = kind, amount = amount }
+				return { ok = true, value = { offline = true } }
+			end,
+		}
+		trunks['veh-1'].docks = 2
+		local realRemove = inventory.RemoveFromTrunk
+		inventory.RemoveFromTrunk = function(...)
+			holder = 'SOMEBODY'
+			return realRemove(...)
+		end
+		local paidBefore = #paid
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		inventory.RemoveFromTrunk = realRemove
+		check('a sale whose seller switched character mid-sale pays the seller, by citizen id',
+			#offline == 1 and offline[1].citizenId == 'SELLER01'
+				and offline[1].amount == Access.Pay('docks') * 2,
+			#offline == 1 and tostring(offline[1].citizenId) or #offline)
+		check('and pays nothing to the character now on the connection', #paid == paidBefore,
+			#paid - paidBefore)
+		wallet = { AddMoney = function(player, kind, amount, reason)
+			paid[#paid + 1] = { player = player, kind = kind, amount = amount, reason = reason }
+			return true
+		end }
+
 		-- ── crates carried in a bag sell too ─────────────────────────────────
 		-- At a rate an operator moved on the panel: HAUL_PAY_PER_CRATE is
 		-- `apply = 'live'`, and a site with no PAY of its own is paid by it.
