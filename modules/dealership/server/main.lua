@@ -813,7 +813,10 @@ function M.Offer(seller, buyer, entryKey)
 		model = entry.label,
 		price = entry.price,
 		text = character.FormatMoney(entry.price, currency),
-		seller = OPX.DisplayNameOf(seller) or tostring(seller),
+		-- NO SELLER. This carried the seller's account gamertag (and their server
+		-- id when it had none) to the buyer: out-of-character, and a name the
+		-- buyer had not been given. Never a name to a stranger, the owner's
+		-- decision (#91); the buyer is looking at the person selling.
 		dealer = dealer.key,
 		label = dealer.label,
 		-- The dealer's kind, so the buyer's own screen lists only the garages a

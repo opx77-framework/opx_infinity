@@ -8442,6 +8442,19 @@ do
 				and asked[1].entry == 'hella' and asked[1].price == hellaRow.price,
 			asked and tostring(asked.source))
 		local offerAt = asked ~= nil and asked[1].token or nil
+		-- FROM NOBODY BY NAME. The ask carried the seller's account gamertag;
+		-- never a name to a stranger (the owner, after #91).
+		do
+			local askedWire = asked ~= nil and env.json.encode(asked[1]) or ''
+			local sellerData = character.Players[seller].PlayerData
+			local sellerInfo = type(sellerData.charInfo) == 'table' and sellerData.charInfo or {}
+			check('and it names no seller, by account or by character',
+				asked ~= nil and asked[1].seller == nil
+					and askedWire:find('player-' .. tostring(seller), 1, true) == nil
+					and (sellerInfo.firstName == nil or askedWire:find(sellerInfo.firstName, 1, true) == nil)
+					and askedWire:find(tostring(sellerData.citizenId), 1, true) == nil,
+				askedWire)
+		end
 
 		-- NO IS AN ANSWER, and it settles the offer rather than leaving it open.
 		local declined = contract.Accept(buyer, offerAt, false)
@@ -9554,7 +9567,7 @@ do
 		-- answered.
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 12345, entry = 'hella', model = 'Archer Hella', price = 29000,
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(4)
 		check('an offer opens the screen that answers it',
@@ -9588,7 +9601,7 @@ do
 			and Runtime.Report().screen == 'root', tostring(Runtime.Report().screen))
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 4242, entry = 'hella', model = 'Archer Hella', price = 29000,
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(2)
 		check('an offer arriving over it waits rather than replacing it',
@@ -9627,7 +9640,7 @@ do
 		cctl.Pump(6)
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 777, entry = 'hella', model = 'Archer Hella', price = 29000, kind = 'garage',
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(4)
 		local function rowNamed(drawn, label)
