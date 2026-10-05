@@ -580,14 +580,12 @@ local function onOffer(number, part, parts, rows, extra)
 end
 
 -- Says what the server answered about an emote with a nearby player.
-local function onNotice(kind, code, params)
+local function onNotice(kind, code)
 	if not KINDS[kind] then kind = 'info' end
 	code = Common.Code(code)
 	if code == nil then return end
-	params = type(params) == 'table' and params or {}
-	local name = Common.Text(params.name, 32) and params.name or '?'
 	local key = DUO_NOTICES[code]
-	if key ~= nil then return Runtime.Notify(kind, key, { name = name }) end
+	if key ~= nil then return Runtime.Notify(kind, key) end
 	Runtime.Refuse(code)
 end
 

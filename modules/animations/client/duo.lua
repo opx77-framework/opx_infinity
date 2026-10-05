@@ -102,21 +102,22 @@ local function described(what)
 end
 
 -- Takes an invitation from the server and puts it in front of the player.
-local function onInvite(inviteId, what, fromName)
+-- No name comes with it: never a name to a stranger. The person inviting is the
+-- one standing next to you, and the words say that instead.
+local function onInvite(inviteId, what)
 	inviteId = Common.Integer(inviteId, 1, M.MAX_REQUEST_ID)
 	local emote = described(what)
 	if inviteId == nil or emote == nil then return end
-	local name = Common.Text(fromName, 32) and fromName or '?'
 	-- A newer invitation replaces an unanswered one; the server withdrew it.
 	closeMenu()
-	current = { id = inviteId, emote = emote, name = name }
+	current = { id = inviteId, emote = emote }
 
 	local command = Opt.PlayCommand()
 	if command then
 		Runtime.Notify('info', 'animations.duo.invited',
-			{ name = name, emote = emote, command = '/' .. command })
+			{ emote = emote, command = '/' .. command })
 	else
-		Runtime.Notify('info', 'animations.duo.invitedMenu', { name = name, emote = emote })
+		Runtime.Notify('info', 'animations.duo.invitedMenu', { emote = emote })
 	end
 
 	local opened = call('Open', {
@@ -126,8 +127,8 @@ local function onInvite(inviteId, what, fromName)
 		on = onMenu,
 		cursor = 'accept',
 		items = {
-			{ id = 'what', label = emote, value = name, icon = 'person', disabled = true,
-				description = locale('animations.duo.from', { name = name }) },
+			{ id = 'what', label = emote, icon = 'person', disabled = true,
+				description = locale('animations.duo.from') },
 			{ id = 'accept', label = locale('animations.duo.accept'), icon = 'emote',
 				data = { accept = true } },
 			{ id = 'decline', label = locale('animations.duo.decline'), icon = 'ban',

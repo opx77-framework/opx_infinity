@@ -14084,13 +14084,42 @@ do
 			Duo.Count() == #offered.kinds + 1 + profiles * profiles, tostring(Duo.Count()))
 
 		-- ── any two: the asker's profile, then the other's ──
-		local asked = Duo.Request(4, { actor = 'dance', target = 'stub_05' })
+		-- Both are somebody, by account and by character, and neither may learn
+		-- the other's name from an invitation: never a name to a stranger.
+		local characters = env.OPX.Modules.Get('character')
+		characters.Players[4] = { PlayerData = { source = 4, citizenId = 'DUO-AAAA',
+			charInfo = { firstName = 'Asker', lastName = 'Secretname' } } }
+		characters.Players[5] = { PlayerData = { source = 5, citizenId = 'DUO-BBBB',
+			charInfo = { firstName = 'Asked', lastName = 'Hiddenname' } } }
+		local mark = #control.clientEvents
+		local asked = Duo.Tell(4, Duo.Request(4, { actor = 'dance', target = 'stub_05' }))
 		local invite = lastTo(Event.INVITE, 5)
 		check('the NEAREST player is invited, and told what they would play', asked.ok == true
 			and type(invite[2]) == 'table' and invite[2].actor == 'dance'
 			and invite[2].target == 'stub_05', asked.error)
+		local function wireSince(from)
+			local parts = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.INVITE or event.name == Event.NOTICE then
+					parts[#parts + 1] = env.json.encode({ event[1], event[2], event[3], event[4] })
+				end
+			end
+			return table.concat(parts, ' | ')
+		end
+		local sentWire = wireSince(mark)
+		for _, secret in ipairs({ 'Secretname', 'Hiddenname', 'DUO-', 'player-4', 'player-5' }) do
+			check(('neither the invitation nor the notice carries %s'):format(secret),
+				sentWire:find(secret, 1, true) == nil, sentWire)
+		end
 		check('nothing plays before the answer', #platform.requests == 0)
+		mark = #control.clientEvents
 		Duo.Reply(5, invite[1], true)
+		sentWire = wireSince(mark)
+		check('and the yes names nobody either',
+			sentWire:find('Hiddenname', 1, true) == nil and sentWire:find('player-5', 1, true) == nil,
+			sentWire)
+		characters.Players[4], characters.Players[5] = nil, nil
 		local request = platform.requests[1] or { options = {} }
 		check('a yes asks the coordinator for `custom` with both profiles and no second consent',
 			request.kind == 'custom' and request.actor == 4 and request.target == 5
@@ -14389,10 +14418,15 @@ do
 
 		-- ── the invitation on the invited screen ──
 		specs = {}
+		-- The OLD shape, a name third: an outdated server's name must not reach
+		-- the screen. Never a name to a stranger.
 		control.netEvents[Event.INVITE](9, { kind = 'carry' }, 'Vic', 15000)
 		local what = specs[#specs] and specs[#specs].items[1] or nil
 		check('an invitation from a carrier reads as being carried', what ~= nil
 			and what.label == 'Be carried', what and what.label)
+		check('and names nobody, even when a name is sent',
+			what ~= nil and what.value == nil and tostring(what.description):find('Vic', 1, true) == nil,
+			what and tostring(what.description))
 		before = #control.serverEvents
 		choose('accept', 'animations.invite')
 		sent = control.serverEvents[#control.serverEvents] or {}
