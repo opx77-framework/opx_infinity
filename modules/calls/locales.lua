@@ -68,6 +68,9 @@ local EN = {
 	['calls.holo.outcome.refused'] = 'You declined',
 
 	-- ── what happened ────────────────────────────────────────────────────────
+	-- Caller id for somebody who is not in your contacts: never a name to a
+	-- stranger.
+	['calls.unknown'] = 'Unknown caller',
 	['calls.placed'] = 'Calling {name}...',
 	['calls.ringing'] = '{name} is calling you.',
 	['calls.answered'] = '{name} answered.',
@@ -144,6 +147,7 @@ local FR = {
 	['calls.holo.outcome.declined'] = 'Refusé',
 	['calls.holo.outcome.refused'] = 'Vous avez refusé',
 
+	['calls.unknown'] = 'Correspondant inconnu',
 	['calls.placed'] = 'Appel vers {name}...',
 	['calls.ringing'] = '{name} vous appelle.',
 	['calls.answered'] = '{name} a répondu.',

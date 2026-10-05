@@ -243,6 +243,16 @@ function Actions.Give(source, target, slot, count)
 	if not target or not slot or target == source then return false, 'bad_request' end
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
+
+	-- REACH FIRST, AND THE SAME ANSWER FOR EVERY ID OUT OF IT. The target's gate
+	-- and bag were asked before the distance, so any server id answered
+	-- `not_ready`, `target_unavailable` or `too_far` -- whether that slot was
+	-- connected, still joining, or had a character loaded -- to a client walking
+	-- ids 1..N from anywhere on the map. Somebody out of reach is `too_far`,
+	-- whoever they are and whether or not they exist; what is left to learn is
+	-- about the person standing in front of you.
+	local here, there = World.Position(source), World.Position(target)
+	if not World.InReach(here, there) then return false, 'too_far' end
 	if not Players.GateOpen(target) then return false, 'not_ready' end
 
 	local from, reason = Players.Bag(source)
@@ -255,7 +265,8 @@ function Actions.Give(source, target, slot, count)
 	count = count == nil and entry.count or Common.Integer(count, 1, entry.count)
 	if not count then return false, 'bad_count' end
 
-	local here, there = World.Position(source), World.Position(target)
+	-- Loading the bags yielded, and either body may have moved meanwhile.
+	here, there = World.Position(source), World.Position(target)
 	if not World.InReach(here, there) then return false, 'too_far' end
 	-- Loading the second bag yielded, so the source stack is read again.
 	if from.items[slot] ~= entry or entry.count < count then return false, 'empty_slot' end

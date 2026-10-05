@@ -102,16 +102,36 @@ Door.REFUSAL = {
 -- @param origin string|nil the key, or a caller's name
 -- @return table
 function Door.Open(origin)
-	local opened = Panel.Open(nil)
+	local fromKey = origin == nil or origin == 'key'
 	-- NOT A WORD WHEN THE KEY FINDS NO LIFT. E is shared: clothing, garages,
-	-- dealership and teleports declare it too, and they already stay silent away
-	-- from their spots. This one answered every press anywhere on the map with
-	-- "you are not standing at an elevator", which is the owner's report. Only a
-	-- press AT a lift, or a caller that named itself, is told why it failed.
-	local quiet = (origin == nil or origin == 'key') and opened.error == 'no_elevator_nearby'
+	-- dealership, teleports and doors declare it too, and they already stay
+	-- silent away from their spots. This one answered every press anywhere on
+	-- the map with "you are not standing at an elevator", which is the owner's
+	-- report. Only a press AT a lift, or a caller that named itself, is told why
+	-- it failed.
+	--
+	-- ASKED BEFORE THE PANEL IS, for the key. `Panel.Open` checks the down state
+	-- and the menu before it looks for a lift, so a player who pressed E while
+	-- down -- for anything, anywhere -- was told "not while downed" by a lift
+	-- that was not there.
+	if fromKey and Runtime.Nearest() == nil then
+		return { ok = false, error = 'no_elevator_nearby', source = 'key' }
+	end
+	local opened = Panel.Open(nil)
+	local quiet = fromKey and opened.error == 'no_elevator_nearby'
 	if opened.ok ~= true and not quiet then say(opened.error) end
 	opened.source = origin or 'key'
 	return opened
+end
+
+-- How far the player is from the lift the key would open, for the contest on a
+-- shared key: the sighting's own reach, as `State.Nearest` ranks it.
+local function wants()
+	local key = Runtime.Nearest()
+	if key == nil then return nil end
+	local lift = M.State and M.State.seen and M.State.seen[key] or nil
+	local reach = type(lift) == 'table' and (lift.reach or lift.distance) or nil
+	return OPX.Spots.Key.Rank('SPOT'), type(reach) == 'number' and reach or nil
 end
 
 --- What the door holds, for a diagnostic or a test.
@@ -140,6 +160,7 @@ function Door.Start()
 		tag = 'elevators',
 		declared = keySettings(),
 		onPress = Door.Open,
+		wants = wants,
 	})
 
 	-- The row follows the scan's own sightings, so it runs at the scan's pace.

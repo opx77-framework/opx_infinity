@@ -901,11 +901,10 @@ permissions {
   "ui.vanilla.map",
 
   -- The plate above a head. The platform draws it labelled with the displayName
-  -- the Master vouches for -- the account gamertag -- and nothing here ever
-  -- overrode it, so a player who had just named their character still walked
-  -- around under their account name, on the first connection and on the
-  -- hundredth. `modules/character/client/state.lua` sets the override from the
-  -- name the server already publishes on the state bag.
+  -- the Master vouches for -- the account gamertag -- and for a while this
+  -- resource replaced it with the character's name. Neither belongs over a
+  -- stranger's head: never a name to a stranger, the owner's decision.
+  -- `modules/character/client/state.lua` hides every remote plate instead.
   --
   -- CLIENT permission: a refusal lands in the player's own log and the server
   -- journal says nothing. Verified in the game, or not verified.

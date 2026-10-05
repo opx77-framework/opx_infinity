@@ -343,14 +343,12 @@ local dropReady = false
 --- Puts the carried crate down. The server decides; this only asks.
 -- The owner: "pendant qu'on carry ont peux faire x pour la drop".
 local function onDropKey()
+	-- A key typed into a text field is not a key pressed in the world, and a
+	-- press another feature on X owns is not this one's. Asked FIRST, before the
+	-- crate is, because the contest is decided by whichever mapping asks first.
+	if OPX.Spots.Captured() or not OPX.Spots.Key.Owns('hauling_drop') then return end
 	-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
 	if carrying == nil or not dropReady or bar ~= nil then return end
-	-- A key typed into a text field is not a key pressed in the world.
-	local input = Open77.input
-	if type(input) == 'table' and type(input.isCaptured) == 'function' then
-		local read, taken = pcall(input.isCaptured)
-		if read and taken == true then return end
-	end
 	local yaw, groundZ = nil, nil
 	local character = Open77.character
 	if type(character) == 'table' and type(character.yaw) == 'function' then
@@ -388,6 +386,15 @@ local function registerDropKey()
 	end
 	dropKey = type(ok) == 'string' and ok ~= '' and ok
 		or (type(answer) == 'string' and answer ~= '' and answer) or Access.DROP_KEY
+	-- X is shared with the progress cancel, a call's decline and hang-up and the
+	-- emote stop. A crate in the arms holds the press for its whole carry --
+	-- during the lift too, where the drop itself still waits -- so the same X
+	-- neither ends the call nor stops the carry pose under the crate.
+	OPX.Spots.Key.Contend({ tag = 'hauling', id = 'hauling_drop', default = Access.DROP_KEY,
+		wants = function()
+			if carrying ~= nil then return OPX.Spots.Key.Rank('CARRY') end
+			return nil
+		end })
 end
 
 --- Wires the rows, the wire and the bar. No job is registered here on purpose.
@@ -481,7 +488,10 @@ function M.Start()
 				if carrying ~= held then return end
 				dropReady = true
 				if dropKey ~= nil then
-					OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
+					-- The key it is bound to NOW: a player who rebound the drop
+					-- was told the default they had moved it away from.
+					OPX.Toast.Locale('hauling.hint.drop',
+						{ key = OPX.Lib.Input.KeyFor('hauling_drop') or dropKey }, 'info', 'box')
 				end
 			end)
 		end

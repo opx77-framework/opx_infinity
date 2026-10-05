@@ -7067,6 +7067,24 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
 
+		-- THE ROW AND THE SERVER AGREE AT THE EDGE. The client draws the row out to
+		-- USE_RADIUS from where IT stands; the server measures where it last saw
+		-- the player, a moment behind, and allows REACH_SLACK for it. Half a metre
+		-- past the drawn edge used to be refused as too far.
+		local edge = garages.Access.USE_RADIUS + 0.5
+		place('edge_dock', {
+			KIND = 'garage', LABEL = 'EDGE',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = edge, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.netEvents[garages.Event.REQUEST]('edge_dock')
+		control.Pump(8)
+		check('half a metre past the drawn edge is not refused as too far',
+			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] ~= 'garages.tooFar',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
 		place('other_bucket', {
 			KIND = 'garage', LABEL = 'ELSEWHERE',
 			LOCATIONS = { { BUCKET = 7,
@@ -8541,6 +8559,19 @@ do
 				and asked[1].entry == 'hella' and asked[1].price == hellaRow.price,
 			asked and tostring(asked.source))
 		local offerAt = asked ~= nil and asked[1].token or nil
+		-- FROM NOBODY BY NAME. The ask carried the seller's account gamertag;
+		-- never a name to a stranger (the owner, after #91).
+		do
+			local askedWire = asked ~= nil and env.json.encode(asked[1]) or ''
+			local sellerData = character.Players[seller].PlayerData
+			local sellerInfo = type(sellerData.charInfo) == 'table' and sellerData.charInfo or {}
+			check('and it names no seller, by account or by character',
+				asked ~= nil and asked[1].seller == nil
+					and askedWire:find('player-' .. tostring(seller), 1, true) == nil
+					and (sellerInfo.firstName == nil or askedWire:find(sellerInfo.firstName, 1, true) == nil)
+					and askedWire:find(tostring(sellerData.citizenId), 1, true) == nil,
+				askedWire)
+		end
 
 		-- NO IS AN ANSWER, and it settles the offer rather than leaving it open.
 		local declined = contract.Accept(buyer, offerAt, false)
@@ -8849,15 +8880,44 @@ do
 				== 'dealership.notInZone')
 		control.Stand(buyer, 0.0, 0.0, 0.0)
 
-		-- The courtesy check, which is not the check that counts: the removal
-		-- itself is still what settles it.
+		-- NO MONEY PROBE. An offer to a buyer who cannot afford it used to be
+		-- refused to the SELLER before the buyer saw anything -- which read a
+		-- stranger's balance. The buyer is asked; the payment refuses; the
+		-- seller hears only that the payment did not go through.
 		local pauper = 76
 		load(pauper, 'citizen-pauper', 10)
 		control.Stand(pauper, 0.0, 0.0, 0.0)
-		check('a buyer who cannot afford it is not asked in the first place',
-			contract.Offer(seller, pauper, 'hella').error == 'dealership.buyerCannotAfford')
+		do
+			local probe = contract.Offer(seller, pauper, 'hella')
+			check('an offer to a buyer who cannot afford it is still made: the seller learns nothing',
+				probe.ok == true, tostring(probe.error))
+			local pauperAsked = lastEvent(dealership.Event.OFFERED)
+			local pauperSettled
+			env.CreateThread(function()
+				pauperSettled = contract.Accept(pauper, pauperAsked[1].token, true)
+			end)
+			settle(control, function() return pauperSettled ~= nil end, 60)
+			check('the buyer is the one told they cannot afford it',
+				pauperSettled ~= nil and pauperSettled.error == 'dealership.cannotAfford',
+				pauperSettled and tostring(pauperSettled.error))
+			local toSeller = lastEvent(dealership.Event.SETTLED)
+			check('and the seller only that the payment was refused',
+				toSeller ~= nil and toSeller.source == seller and toSeller[1].error == 'dealership.paymentFailed',
+				toSeller and tostring(toSeller[1].error))
+		end
 		check('and nobody can sell to themselves',
 			contract.Offer(seller, seller, 'hella').error == 'dealership.noSuchBuyer')
+		-- NO PRESENCE PROBE: somebody who is not in the showroom answers the same
+		-- whether the id is connected, has a character, or names nobody at all.
+		do
+			control.Admit(4405, 'account-4405')
+			control.Stand(4405, 900.0, 900.0, 0.0)
+			local ghost = contract.Offer(seller, 4406, 'hella').error
+			local unloaded = contract.Offer(seller, 4405, 'hella').error
+			check('an absent id and a slot with no character answer alike',
+				ghost == 'dealership.buyerNotInZone' and unloaded == 'dealership.buyerNotInZone',
+				('%s / %s'):format(tostring(ghost), tostring(unloaded)))
+		end
 		env.source = src
 
 		-- ── the commands an operator reads ─────────────────────────────────
@@ -9673,7 +9733,7 @@ do
 		-- answered.
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 12345, entry = 'hella', model = 'Archer Hella', price = 29000,
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(4)
 		check('an offer opens the screen that answers it',
@@ -9707,7 +9767,7 @@ do
 			and Runtime.Report().screen == 'root', tostring(Runtime.Report().screen))
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 4242, entry = 'hella', model = 'Archer Hella', price = 29000,
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(2)
 		check('an offer arriving over it waits rather than replacing it',
@@ -9746,7 +9806,7 @@ do
 		cctl.Pump(6)
 		cctl.netEvents[dealership.Event.OFFERED]({
 			token = 777, entry = 'hella', model = 'Archer Hella', price = 29000, kind = 'garage',
-			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+			text = '29,000 $', dealer = 'yard', label = 'UPTOWN YARD',
 		})
 		cctl.Pump(4)
 		local function rowNamed(drawn, label)
@@ -12361,6 +12421,21 @@ do
 		check('and the view is handed its rows outside the scheduler resume',
 			rowsHeard > 0 and not underScheduler, ('%d heard'):format(rowsHeard))
 
+		-- THE CHARACTER COMES OFF THE STAFF LIST, not off a replicated bag: the
+		-- bag reached every stranger and carries nothing now.
+		local drawn
+		env.AddEventHandler(admin.Event.ON_TAGS, function(payload)
+			if type(payload) == 'table' and payload.kind == 'rows' then drawn = payload.rows end
+		end)
+		control.netEvents[admin.Event.TAG_ROWS]({
+			rows = { { id = 2, name = 'vee', character = 'Vincent Kowalski', citizenId = 'VKW-4A7C' } },
+			offset = 0, done = true })
+		control.Pump(20)
+		local tag = type(drawn) == 'table' and drawn[1] or {}
+		check('a tag names the character and the account from the staff list',
+			tag.name == 'Vincent Kowalski' and tag.user == 'vee' and tag.citizenId == 'VKW-4A7C',
+			('%s / %s / %s'):format(tostring(tag.name), tostring(tag.user), tostring(tag.citizenId)))
+
 		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
 		-- reason has to be carried out or it is indistinguishable from "nobody near".
 		notes = {}
@@ -12376,6 +12451,51 @@ do
 		control.Pump(20)
 		check('and an unreachable native says which of the two kinds it is',
 			said('native_not_found') ~= nil, table.concat(notes, ' | '))
+	end
+end
+
+-- Never a name to a stranger, and staff keep theirs: the character and citizen
+-- id travel on the staff tag list, and that list reaches only a player the ACL
+-- grants `opx.admin.self.tags`.
+section('the staff tag list carries the character, and only to staff')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local character = env.OPX.Modules.Get('character')
+		control.Admit(41, 'staff-account')
+		control.Admit(42, 'vk-account')
+		env.OPX.EnsureSession(41)
+		env.OPX.EnsureSession(42)
+		character.Players[42] = { PlayerData = { source = 42, citizenId = 'VKW-4A7C',
+			charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } } }
+		control.acl.granted['41'] = { ['command.opx.admin.self.tags'] = true }
+
+		local function rowsTo(player)
+			local out = {}
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == admin.Event.TAG_ROWS and tonumber(sent.source) == player then
+					for _, row in ipairs(sent[1].rows or {}) do out[#out + 1] = row end
+				end
+			end
+			return out
+		end
+
+		env.source = 41
+		control.netEvents[admin.Event.TAGS_RESTORE]()
+		control.Pump(4)
+		local named
+		for _, row in ipairs(rowsTo(41)) do if row.id == 42 then named = row end end
+		check('staff are sent the character and citizen id',
+			named ~= nil and named.character == 'Vincent Kowalski' and named.citizenId == 'VKW-4A7C',
+			named and tostring(named.character))
+
+		env.source = 42
+		control.netEvents[admin.Event.TAGS_RESTORE]()
+		control.Pump(4)
+		check('a player without the grant is sent no list at all', #rowsTo(42) == 0, #rowsTo(42))
+		character.Players[42] = nil
 	end
 end
 
@@ -12743,6 +12863,31 @@ do
 	table.sort(missing)
 	check('every literal key the code asks locale() for is written', #missing == 0,
 		table.concat(missing, '; '))
+end
+
+
+-- ── every refusal the lift's server answers a player with has its sentence ──
+-- The server refuses a downed rider with `downed`; the panel's map had no such
+-- code, so the player read the generic "the lift refused" while
+-- `elevators.downed` sat in both catalogues, reached only by the client's own
+-- `player_down`. This reads the codes `request` can answer and the panel's map.
+section('elevators: every code the server refuses a ride with has a sentence')
+do
+	local handle = io.open('modules/elevators/server/main.lua', 'r')
+	local server = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local body = server:match('local function request%(player, key, index%)(.-)\nend\n') or ''
+	handle = io.open('modules/elevators/client/panel.lua', 'r')
+	local panel = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	local map = panel:match('local REFUSAL = {(.-)\n}') or ''
+	local codes, missing = 0, {}
+	for code in body:gmatch("error = '([%w_]+)'") do
+		codes = codes + 1
+		if not map:find('\n%s*' .. code .. ' = ') then missing[#missing + 1] = code end
+	end
+	check('the ride request answers refusal codes', codes >= 6, codes)
+	check('and the panel has a sentence for every one of them', #missing == 0, table.concat(missing, ', '))
 end
 
 
@@ -14171,13 +14316,42 @@ do
 			Duo.Count() == #offered.kinds + 1 + profiles * profiles, tostring(Duo.Count()))
 
 		-- ── any two: the asker's profile, then the other's ──
-		local asked = Duo.Request(4, { actor = 'dance', target = 'stub_05' })
+		-- Both are somebody, by account and by character, and neither may learn
+		-- the other's name from an invitation: never a name to a stranger.
+		local characters = env.OPX.Modules.Get('character')
+		characters.Players[4] = { PlayerData = { source = 4, citizenId = 'DUO-AAAA',
+			charInfo = { firstName = 'Asker', lastName = 'Secretname' } } }
+		characters.Players[5] = { PlayerData = { source = 5, citizenId = 'DUO-BBBB',
+			charInfo = { firstName = 'Asked', lastName = 'Hiddenname' } } }
+		local mark = #control.clientEvents
+		local asked = Duo.Tell(4, Duo.Request(4, { actor = 'dance', target = 'stub_05' }))
 		local invite = lastTo(Event.INVITE, 5)
 		check('the NEAREST player is invited, and told what they would play', asked.ok == true
 			and type(invite[2]) == 'table' and invite[2].actor == 'dance'
 			and invite[2].target == 'stub_05', asked.error)
+		local function wireSince(from)
+			local parts = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.INVITE or event.name == Event.NOTICE then
+					parts[#parts + 1] = env.json.encode({ event[1], event[2], event[3], event[4] })
+				end
+			end
+			return table.concat(parts, ' | ')
+		end
+		local sentWire = wireSince(mark)
+		for _, secret in ipairs({ 'Secretname', 'Hiddenname', 'DUO-', 'player-4', 'player-5' }) do
+			check(('neither the invitation nor the notice carries %s'):format(secret),
+				sentWire:find(secret, 1, true) == nil, sentWire)
+		end
 		check('nothing plays before the answer', #platform.requests == 0)
+		mark = #control.clientEvents
 		Duo.Reply(5, invite[1], true)
+		sentWire = wireSince(mark)
+		check('and the yes names nobody either',
+			sentWire:find('Hiddenname', 1, true) == nil and sentWire:find('player-5', 1, true) == nil,
+			sentWire)
+		characters.Players[4], characters.Players[5] = nil, nil
 		local request = platform.requests[1] or { options = {} }
 		check('a yes asks the coordinator for `custom` with both profiles and no second consent',
 			request.kind == 'custom' and request.actor == 4 and request.target == 5
@@ -14476,10 +14650,15 @@ do
 
 		-- ── the invitation on the invited screen ──
 		specs = {}
+		-- The OLD shape, a name third: an outdated server's name must not reach
+		-- the screen. Never a name to a stranger.
 		control.netEvents[Event.INVITE](9, { kind = 'carry' }, 'Vic', 15000)
 		local what = specs[#specs] and specs[#specs].items[1] or nil
 		check('an invitation from a carrier reads as being carried', what ~= nil
 			and what.label == 'Be carried', what and what.label)
+		check('and names nobody, even when a name is sent',
+			what ~= nil and what.value == nil and tostring(what.description):find('Vic', 1, true) == nil,
+			what and tostring(what.description))
 		before = #control.serverEvents
 		choose('accept', 'animations.invite')
 		sent = control.serverEvents[#control.serverEvents] or {}
@@ -17122,6 +17301,19 @@ do
 		end
 		check('the notes are in a slot that can be handed over', slot ~= nil)
 
+		-- NO PRESENCE PROBE. The target's gate and bag were asked before the
+		-- distance, so any id answered whether it was connected, joining or
+		-- loaded. Out of reach is `too_far`, whoever the id names.
+		do
+			control.Admit(4403, 'account-4403')
+			control.Stand(4403, 900.0, 900.0, 0.0)
+			local _, ghostWhy = Actions.Give(ALICE, 4404, slot, 1)
+			local _, unloadedWhy = Actions.Give(ALICE, 4403, slot, 1)
+			check('an id nobody holds and a connected slot with no character answer alike',
+				ghostWhy == 'too_far' and unloadedWhy == 'too_far',
+				('%s / %s'):format(tostring(ghostWhy), tostring(unloadedWhy)))
+		end
+
 		local gave, giveWhy = Actions.Give(ALICE, BOB, slot, 120)
 		check('a stack of eddies hands over like any other item', gave == true,
 			tostring(giveWhy))
@@ -17660,6 +17852,12 @@ do
 			(Access.AtEntrance(at, 100.0, 200.0, 10.0, 0)) == true)
 		check('a body across the street is not',
 			select(2, Access.AtEntrance(at, 140.0, 200.0, 10.0, 0)) == 'too_far')
+		-- The server measures a moment behind the client that drew the row, and
+		-- allows REACH_SLACK for it: the edge of the drawn row is still a press.
+		check('half a metre past the drawn radius is still standing on it, for the server',
+			(Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 0.5, 200.0, 10.0, 0)) == true)
+		check('and a metre and a half past it is not',
+			select(2, Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 1.5, 200.0, 10.0, 0)) == 'too_far')
 		check('nor is one in another routing bucket standing in the same spot',
 			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0, 7)) == 'wrong_bucket')
 		-- THE VERTICAL BAND, which is the measurement the elevators deliberately
@@ -21270,8 +21468,9 @@ do
 		control.netEvents[M.Event.RUN]({ id = '555', step = 'load', durationMs = 3000 })
 		drop.pressed()
 		check('and X while the load bar runs does nothing either', drops() == before)
-		control.Fire(OPX.Modules.Get('progress').Event.ON_DONE, { owner = 'hauling', finished = false,
-			ending = 'cancelled' })
+		-- The bar really ends -- through the progress module, not a forged ON_DONE
+		-- -- because X is contested now, and a bar still up holds the press.
+		OPX.Api.Get('progress').Stop('hauling')
 		drop.pressed()
 		local sent = control.serverEvents[#control.serverEvents]
 		check('X while carrying asks the server, with the way the player faces',
@@ -28651,83 +28850,128 @@ do
 	end
 end
 
--- The server has always written the character's name to the state bag, at the
--- right moment. NOTHING READ IT. The plate above a head is drawn by the
--- platform and labelled with the displayName the Master vouches for -- the
--- account's gamertag -- and this resource never called `Open77.nameplates.set`
--- nor declared `ui.nameplates`. The chat asked `Open77.players.identity`, whose
--- `name` is that same account name, under a comment claiming it showed "the
--- player's own". So a player who had just named their character still spoke and
--- walked around as their gamertag, on the first connection and on the
--- hundredth: it was never a first-connection defect, it was permanent.
-section('the character name reaches what draws it')
+-- NEVER A NAME TO A STRANGER (the owner, after #91). The server used to write
+-- every character's name, citizen id, job, gang, account name and life flags
+-- onto their state bag -- which goes to EVERY client in the bucket, the whole
+-- city -- and the client then put the character's name on the plate over every
+-- head. Neither half survives: the bag carries nothing about a character, and
+-- every remote plate is hidden (the platform's own label is the account's
+-- gamertag, which is out-of-character and no better).
+section('nothing about a character reaches a stranger')
 do
-	local env, control, why = boot('client')
-	check('the client boots', why == nil, why)
+	local RETIRED = { 'citizenId', 'name', 'charInfo', 'job', 'gang', 'username', 'life' }
+	local SECRETS = { 'Vincent', 'Kowalski', 'VKW-4A7C', 'vk-account', 'NCPD', 'Valentinos' }
 
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
 	if why == nil then
-		local OPX = env.OPX
-		local character = OPX.Modules.Get('character')
+		local character = env.OPX.Modules.Get('character')
+		local State = character and character.State
+		check('the server bag writer is up', State ~= nil)
+		if State ~= nil then
+			check('the bag carries no key at all', type(State.KEYS) == 'table' and #State.KEYS == 0)
+
+			control.Admit(23, 'vk-account')
+			env.OPX.EnsureSession(23)
+			local player = { PlayerData = {
+				source = 23, citizenId = 'VKW-4A7C', userId = 'user-23',
+				charInfo = { firstName = 'Vincent', lastName = 'Kowalski', gender = 'm', origin = 'nomad' },
+				job = { name = 'police', label = 'NCPD', grade = { name = 'officer', level = 1 } },
+				gang = { name = 'valentinos', label = 'Valentinos', grade = { name = 'member', level = 0 } },
+				metadata = { isDead = true, inLastStand = false },
+				money = { EDDIES = 5000 },
+			} }
+
+			-- A bag an older build left behind: every retired key, standing.
+			local bag = env.Open77.state.player(23)
+			for _, key in ipairs(RETIRED) do bag:set(key, key == 'name' and 'Vincent Kowalski' or 'x') end
+			State.Publish(player)
+			local after = bag:all()
+			local left = {}
+			for key, value in pairs(after) do left[#left + 1] = key .. '=' .. tostring(value) end
+			check('publishing a named, employed, downed character puts nothing on the bag',
+				next(after) == nil, table.concat(left, ', '))
+
+			-- And again after a change: `UpdatePlayerData` calls this on every write.
+			player.PlayerData.charInfo.firstName = 'Vince'
+			State.Publish(player)
+			local encoded = env.json.encode(bag:all())
+			for _, secret in ipairs(SECRETS) do
+				check(('the bag never carries %s'):format(secret),
+					encoded:find(secret, 1, true) == nil, encoded)
+			end
+		end
+	end
+
+	env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local character = env.OPX.Modules.Get('character')
 		local State = character ~= nil and character.PlayerState or nil
 		check('the client character module is up', State ~= nil)
-
 		if State ~= nil then
-			-- A body walks past that this VM has never asked about, and the
-			-- server moves their name. The delta alone must put the plate right.
+			env.Open77.players.localId = function() return 7 end
+			env.Open77.players.all = function() return { 7, 21, 22 } end
+
+			-- Even a bag that DOES carry a name -- a hostile or outdated server --
+			-- never reaches a plate or the contract.
 			local bag = env.Open77.state.player(21)
 			bag:set('name', 'Vincent Kowalski')
-			control.Pump(4)
-			check('a name delta puts the character name on the plate',
-				control.plates.byId[21] ~= nil
-					and control.plates.byId[21].label == 'Vincent Kowalski',
-				control.plates.byId[21] and tostring(control.plates.byId[21].label))
+			bag:set('citizenId', 'VKW-4A7C')
+			control.Pump(15)
 
-			-- Somebody named BEFORE this client ever saw them never sends a
-			-- delta. The first pull is the other half, or they keep the account
-			-- plate for ever.
-			local other = env.Open77.state.player(22)
-			other:set('name', 'Jackie Welles')
-			control.plates.byId[22] = nil
-			State.Of(22)
-			check('and so does the first read of a player already named',
-				control.plates.byId[22] ~= nil
-					and control.plates.byId[22].label == 'Jackie Welles',
-				control.plates.byId[22] and tostring(control.plates.byId[22].label))
+			check('every remote plate is hidden',
+				control.plates.byId[21] ~= nil and control.plates.byId[21].visible == false
+					and control.plates.byId[22] ~= nil and control.plates.byId[22].visible == false)
+			check('and no plate is labelled',
+				(control.plates.byId[21] or {}).label == nil and (control.plates.byId[22] or {}).label == nil)
+			check('the local body is left alone', control.plates.byId[7] == nil)
 
-			-- A character with no name yet is not a failure: a row exists before
-			-- anybody does, and the plate must go back rather than say nothing.
-			bag:set('name', nil)
-			control.Pump(4)
-			check('clearing the name hands the plate back to the platform',
-				control.plates.byId[21] == nil)
+			local api = env.OPX.Api.Get('character')
+			local identity = api and api.GetPlayerIdentity(21) or {}
+			check('the contract names nobody',
+				identity.name == nil and identity.citizenId == nil and identity.username == nil
+					and api.GetPlayerName(21) == nil and next(api.GetPlayerState(21)) == nil)
 
-			-- A refused override must not be swallowed: it is the difference
-			-- between "the name is wrong" and "the grant is missing".
+			-- One pass hides at most a handful: a full server joining at once is
+			-- spread over passes rather than spent in one resume.
+			local many = { 7 }
+			for id = 100, 160 do many[#many + 1] = id end
+			env.Open77.players.all = function() return many end
+			local spent = callCost(State.Pass)
+			check('a crowd is veiled within the per-resume budget', spent > 0 and spent < 6000, spent)
+			control.Pump(60)
+			check('and every one of them ends up hidden',
+				control.plates.byId[100] ~= nil and control.plates.byId[160] ~= nil)
+
+			-- A refused override is named where an operator will read it.
 			control.plates.refuse = 'permission_denied:ui.nameplates'
 			local before = #control.log.warn
-			bag:set('name', 'Judy Alvarez')
-			control.Pump(4)
-			check('a refused override is named where an operator will read it',
+			env.Open77.players.all = function() return { 7, 300 } end
+			control.Pump(15)
+			check('a refused veil is named in the log',
 				#control.log.warn > before
-					and table.concat(control.log.warn, ' | ')
-						:find('ui.nameplates', 1, true) ~= nil,
+					and table.concat(control.log.warn, ' | '):find('ui.nameplates', 1, true) ~= nil,
 				table.concat(control.log.warn, ' | '))
 			control.plates.refuse = nil
 
-			-- The overrides go back with the module. The platform cleans up when
-			-- the RESOURCE stops, which is not the same event.
-			bag:set('name', 'Judy Alvarez')
-			control.Pump(4)
-			check('the module holds an override again', control.plates.byId[21] ~= nil)
+			check('a player who left takes their override with them',
+				control.plates.byId[21] == nil and control.plates.byId[100] == nil)
+			env.Open77.players.all = function() return { 7, 21 } end
+			control.Pump(15)
+			check('and a player who is back is hidden again',
+				(control.plates.byId[21] or {}).visible == false)
 			State.Stop()
-			check('and stopping the module hands every plate back',
-				control.plates.byId[21] == nil and control.plates.byId[22] == nil)
+			check('stopping the module hands every plate back', control.plates.byId[21] == nil)
 		end
 	end
 end
 
--- The chat carried the same defect from the other side.
-section('a message is attributed to the character, not the account')
+-- The chat line goes to EVERY client on the server. It was signed with the
+-- character's name, else the account's gamertag, else the first eight characters
+-- of the durable account id. Never a name to a stranger (the owner, after #91):
+-- it is signed with the server id, and nothing else about the speaker crosses.
+section('a chat line names nobody: it is signed with the server id')
 do
 	local env, control, why = boot('server')
 	check('the server boots', why == nil, why)
@@ -28740,43 +28984,45 @@ do
 
 		if chat ~= nil and character ~= nil then
 			local said = chat.Event.SAY
-			control.Admit(31, 'account-speaker')
-			OPX.EnsureSession(31)
-
-			--  is a flat list of every TriggerClientEvent, newest
-			-- last, so the message is found by name rather than by key.
-			local function lastAuthor()
+			local function lastLine()
 				for index = #control.clientEvents, 1, -1 do
 					local sent = control.clientEvents[index]
 					if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then
-						return sent[1].author
+						return sent[1], sent.source
 					end
 				end
 				return nil
 			end
 
-			-- Nobody loaded: the account name is all there is, and that is right.
+			control.Admit(31, 'account-id-31-durable')
+			OPX.EnsureSession(31)
 			env.source = 31
 			control.netEvents[said]('hello')
 			control.Pump(4)
-			local anonymous = lastAuthor()
-			check('with no character loaded the account name is used',
-				anonymous ~= nil, tostring(anonymous))
+			local line = lastLine() or {}
+			check('with no character loaded the line is signed with the server id',
+				tostring(line.author):find('#31', 1, true) ~= nil, tostring(line.author))
+			local wire = env.json.encode(line)
+			check('and carries neither the account name nor the account id',
+				wire:find('player-31', 1, true) == nil and wire:find('account-id', 1, true) == nil, wire)
 
-			-- A SECOND SPEAKER, not the same one again: the box rate-limits a
-			-- player to one line per RATE_MS and the second would simply be
-			-- dropped, leaving the first message's author standing and the check
-			-- passing or failing for the wrong reason.
-			control.Admit(32, 'account-named')
+			control.Admit(32, 'account-id-32-durable')
 			OPX.EnsureSession(32)
-			character.Players[32] = {
-				PlayerData = { charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } },
-			}
+			character.Players[32] = { PlayerData = { source = 32, citizenId = 'VKW-4A7C',
+				charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } } }
 			env.source = 32
 			control.netEvents[said]('hello again')
 			control.Pump(4)
-			check('once a character is loaded the message is theirs',
-				lastAuthor() == 'Vincent Kowalski', tostring(lastAuthor()))
+			local named, to = lastLine()
+			named = named or {}
+			check('a loaded character speaks as their server id too',
+				tostring(named.author):find('#32', 1, true) ~= nil, tostring(named.author))
+			check('to everybody', to == -1, tostring(to))
+			wire = env.json.encode(named)
+			for _, secret in ipairs({ 'Vincent', 'Kowalski', 'VKW-4A7C', 'player-32', 'account-id' }) do
+				check(('and the line never carries %s'):format(secret),
+					wire:find(secret, 1, true) == nil, wire)
+			end
 
 			-- A SECOND LINE INSIDE RATE_MS IS DROPPED, AND SAID. The box has
 			-- already cleared on the client, so the line simply vanished.
@@ -29082,46 +29328,33 @@ do
 			check('the eye carries a row of its own for it', row ~= nil,
 				('%d row(s)'):format(#rows))
 
-			-- ── OFFERED ONLY WHEN THERE IS SOMETHING TO ANSWER WITH ─────────
-			-- A row that appears and then says "unknown" teaches a player the
-			-- feature is broken. One that is simply absent teaches them the bag
-			-- has not arrived, which is what is true.
-			-- STUBBED ON THE CONTRACT AND NOT ON THE MODULE. The row reads
-			-- `Api.Get('character').GetPlayerIdentity`, and that reference was
-			-- taken when the contract was published -- replacing the function on
-			-- the module namespace afterwards changes nothing the row can see,
-			-- which is how the first version of this check failed while the
-			-- feature worked.
+			-- ── THE SERVER ID, AND NEVER WHO THEY ARE ───────────────────────
+			-- Never a name to a stranger (the owner, after #91): the row used to
+			-- answer with the character id too, read off the replicated bag. A
+			-- citizen id names a person as surely as a name does. The contract is
+			-- stubbed to KNOW the identity -- as if something still replicated it
+			-- -- so the row is proved to ignore it rather than merely lack it.
 			local characterApi = OPX.Api.Get('character')
-			check('the character contract is up to be stubbed',
-				type(characterApi) == 'table')
 			local realIdentity = characterApi ~= nil and characterApi.GetPlayerIdentity or nil
-			local identity = {}
 			if characterApi ~= nil then
-				characterApi.GetPlayerIdentity = function(playerId)
-					return identity[tonumber(playerId)] or {}
+				characterApi.GetPlayerIdentity = function()
+					return { citizenId = 'CJX-DP9J', name = 'Vincent Kowalski', username = 'vk-account' }
 				end
 			end
 
-			-- THE MODULE, not the contract: `Api.Get` answers the published
-			-- surface and the row builder is not on it -- nothing outside this
-			-- module calls it, so publishing it would widen the contract for a
-			-- test.
 			local eye = OPX.Modules.Get('target')
 			local built = type(eye.IdentifyRow) == 'function' and eye.IdentifyRow(12.0) or nil
 			check('and the row is reachable as a table a test can ask questions of',
 				type(built) == 'table' and type(built.onSelect) == 'function')
 			local context = { kind = 'player', target = { playerId = 42 } }
-			check('with no replicated identity the row is not offered',
-				built == nil or built.canInteract(context) ~= true)
+			check('it is offered on any player the eye resolved',
+				built ~= nil and built.canInteract(context) == true)
+			check('and not on a body with no player id',
+				built ~= nil and built.canInteract({ kind = 'player', target = {} }) ~= true)
 
-			identity[42] = { citizenId = 'CJX-DP9J', name = 'Somebody' }
-			check('and with one it is', built ~= nil and built.canInteract(context) == true)
-
-			-- ── AND IT ANSWERS WITH BOTH ────────────────────────────────────
 			local said
 			local realToast = OPX.Toast.Show
-            OPX.Toast.Show = function(payload)
+			OPX.Toast.Show = function(payload)
 				said = payload
 				return realToast and realToast(payload)
 			end
@@ -29130,14 +29363,18 @@ do
 
 			local ran = built ~= nil and built.onSelect(context)
 			check('selecting it answers', ran == true)
-			check('and puts BOTH identifiers on the clipboard, not one',
-				type(copied) == 'string' and copied:find('42', 1, true) ~= nil
-					and copied:find('CJX-DP9J', 1, true) ~= nil,
-				tostring(copied))
-			check('and says so on screen, with each one named',
-				said ~= nil and tostring(said.message):find('42', 1, true) ~= nil
-					and tostring(said.message):find('CJX-DP9J', 1, true) ~= nil,
-				said and tostring(said.message))
+			check('the clipboard gets the server id',
+				copied == '42', tostring(copied))
+			local shown = said and tostring(said.message) or ''
+			check('and the screen says it',
+				shown:find('42', 1, true) ~= nil, shown)
+			for _, secret in ipairs({ 'CJX-DP9J', 'Vincent', 'Kowalski', 'vk-account' }) do
+				check(('and neither carries %s'):format(secret),
+					tostring(copied):find(secret, 1, true) == nil
+						and shown:find(secret, 1, true) == nil
+						and tostring(said and said.title):find(secret, 1, true) == nil,
+					shown)
+			end
 
 			OPX.Toast.Show = realToast
 			if characterApi ~= nil then characterApi.GetPlayerIdentity = realIdentity end
@@ -30759,6 +30996,136 @@ do
 		check('and the stored contact row itself is untouched -- they are away, not deleted',
 			#contactsOf(A) == 1, #contactsOf(A))
 
+	end
+end
+
+-- NEVER A NAME TO A STRANGER (the owner, after #91). A holocall carried every
+-- participant's character name to every other participant, a contact offer told
+-- its SENDER the name of the person it was offered to before they had answered,
+-- and "X hung up" / "X joined" named X to people who had never exchanged
+-- anything with them. A name now reaches a screen only when the two people
+-- exchanged contacts; anybody else is "unknown caller".
+section('calls: a name reaches only the people who exchanged contacts')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C, D = 811, 812, 813, 814
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Secret', lastName = 'Name' .. tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+			control.Stand(id, 0.0, 0.0, 0.0)
+		end
+		incarnate(A, 'na')
+		incarnate(B, 'nb')
+		incarnate(C, 'nc')
+		incarnate(D, 'nd')
+		-- A has B and C; B and C have A; B and C are strangers to each other, and
+		-- D is a stranger to everybody.
+		local function contact(tag) return { citizenId = 'citizen-' .. tag, name = 'Secret Name' .. tag } end
+		meta[A].callContacts = { contact('nb'), contact('nc') }
+		meta[B].callContacts = { contact('na') }
+		meta[C].callContacts = { contact('na') }
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			local notes = #control.notices
+			control.netEvents[name](...)
+			env.source = nil
+			return mark, notes
+		end
+		-- Everything one player was sent since a mark -- states and notices --
+		-- as one string, so a name anywhere in it is found.
+		local function seenBy(playerId, mark, notes)
+			local parts = {}
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId then parts[#parts + 1] = env.json.encode(sent[1]) end
+			end
+			for index = notes + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId then parts[#parts + 1] = tostring(notice.message) end
+			end
+			return table.concat(parts, ' | ')
+		end
+		local function lastState(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId then found = sent[1] end
+			end
+			return found or {}
+		end
+
+		-- ── a contact offer does not name the person it was offered to ────────
+		local mark, notes = ask(A, module.Event.INVITE, D, 'contact')
+		local toA = seenBy(A, mark, notes)
+		check('a contact offer was made', type(lastState(D).invite) == 'table', toA)
+		check('and its sender is not told the name of the person they offered it to',
+			toA:find('Namend', 1, true) == nil, toA)
+		check('while the person offered it is told who is offering (the sender chose that)',
+			seenBy(D, mark, notes):find('Namena', 1, true) ~= nil, seenBy(D, mark, notes))
+		ask(A, module.Event.WITHDRAW)
+
+		-- ── a call between contacts names them to each other ────────────────
+		mark, notes = ask(A, module.Event.INVITE, B)
+		check('a contact rings, under their name',
+			seenBy(B, mark, notes):find('Namena', 1, true) ~= nil, seenBy(B, mark, notes))
+		ask(B, module.Event.ACCEPT, lastState(B).invite and lastState(B).invite.id)
+		check('the call is up', type(lastState(A).call) == 'table')
+
+		-- ── a third person added names nobody they do not know ──────────────
+		mark, notes = ask(A, module.Event.INVITE, C)
+		local joining = lastState(C).invite
+		check('the third person is rung by their own contact, under that name',
+			joining ~= nil and tostring(joining.fromName):find('Namena', 1, true) ~= nil,
+			joining and tostring(joining.fromName))
+		mark, notes = ask(C, module.Event.ACCEPT, joining and joining.id)
+		local toB, toC = seenBy(B, mark, notes), seenBy(C, mark, notes)
+		check('the third person joined', type(lastState(C).call) == 'table', toC)
+		check('the people already on the call are not told their name',
+			toB:find('Namenc', 1, true) == nil, toB)
+		check('and they are told an unknown caller joined',
+			toB:find(OPX.Locale.Text('calls.unknown'), 1, true) ~= nil, toB)
+		check('the third person is not told the names of strangers on the call',
+			toC:find('Namenb', 1, true) == nil, toC)
+		check('but sees the contact who added them',
+			toC:find('Namena', 1, true) ~= nil, toC)
+
+		-- ── and leaving names nobody either ──────────────────────────────────
+		mark, notes = ask(C, module.Event.HANG_UP)
+		toB = seenBy(B, mark, notes)
+		check('hanging up does not name the leaver to a stranger',
+			toB:find('Namenc', 1, true) == nil, toB)
+		check('nor does anything carry an account name',
+			toB:find('account-', 1, true) == nil and seenBy(A, mark, notes):find('player-', 1, true) == nil,
+			toB)
+		ask(B, module.Event.HANG_UP)
+		for _, id in ipairs({ A, B, C, D }) do character.Players[id] = nil end
 	end
 end
 
@@ -35396,6 +35763,8 @@ do
 			answer and tostring(answer.code))
 		local pushed = doorlockLast(control, dl.Event.STATE, 51)
 		check('and everyone in the bucket is told ox\'s state', pushed ~= nil and pushed.id == id('front') and pushed.state == 0)
+		check('and not who moved it', pushed ~= nil and pushed.by == nil
+			and env.json.encode(pushed):find('51', 1, true) == nil, pushed and env.json.encode(pushed))
 		local relocked = settle(control, function() return state('front') == 1 end, 60)
 		check('the autolock locks it again on the server\'s clock', relocked)
 
@@ -35560,8 +35929,18 @@ do
 		check('no lockpick in the bag, no attempt', answer ~= nil and answer.code == 'no_lockpick',
 			answer and tostring(answer.code))
 
+		-- THE PICK SPENDS THE TURN'S WINDOW AT THE TURN'S RATE. It had a 600 of
+		-- its own on the same window, so an operator who raised REQUEST_MS raised
+		-- it for turning a door and not for picking one.
 		fakes.counts[60] = { lockpick = 3 }
+		dl.Settings.REQUEST_MS = 5000
 		control.Pump(8)
+		pick()
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick inside REQUEST_MS of the last request is too fast, at the configured floor',
+			answer ~= nil and answer.code == 'too_fast', answer and tostring(answer.code))
+		dl.Settings.REQUEST_MS = 600
+		control.Pump(52)
 		pick()
 		local go = doorlockLast(control, dl.Event.PICK_GO, 60)
 		check('with one, the server sends the door\'s own steps: easy then hard',
@@ -35851,6 +36230,297 @@ do
 		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
 		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
 		check('getAllDoors lists them by id', contract.All().ok and #contract.All().value >= 4)
+	end
+end
+
+-- ── one press, one owner: the contest on a shared key ───────────────────────
+-- The host fires every mapping bound to a key from one press, in either order.
+-- `OPX.Spots.Key.Owns` gives a contested press to exactly one of them; these
+-- press the real mappings in overlapping contexts, both orders, and rebound.
+section('the shared keys: a contested press goes to exactly one mapping, in either order')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bare contest', why == nil, why)
+	if why == nil then
+		local Key = env.OPX.Spots.Key
+		local acted = {}
+		local want = {}
+		local function contender(id, distance)
+			Key.Contend({ tag = 'test', id = id, default = 'K', wants = function()
+				if want[id] == nil then return nil end
+				return want[id], distance
+			end })
+		end
+		contender('a', 3.0)
+		contender('b', 1.0)
+		local function press(order)
+			acted = {}
+			for index = 1, #order do
+				if Key.Owns(order[index]) then acted[#acted + 1] = order[index] end
+			end
+			control.Pump(1)
+			return table.concat(acted, ',')
+		end
+		check('nobody wanting the press lets every handler run its own silent path',
+			press({ 'a', 'b' }) == 'a,b', table.concat(acted, ','))
+		want.a = 50
+		check('one wanting it takes it alone, asked first', press({ 'a', 'b' }) == 'a', table.concat(acted, ','))
+		check('and asked second', press({ 'b', 'a' }) == 'a', table.concat(acted, ','))
+		want.b = 50
+		check('at equal rank the nearer one takes it', press({ 'a', 'b' }) == 'b'
+			and press({ 'b', 'a' }) == 'b', table.concat(acted, ','))
+		want.a = 90
+		check('and a higher rank beats a nearer one', press({ 'b', 'a' }) == 'a', table.concat(acted, ','))
+		-- The decision is taken BEFORE anybody acts: the first handler changing the
+		-- world it was decided on does not hand the press to the second.
+		acted = {}
+		if Key.Owns('a') then
+			acted[#acted + 1] = 'a'
+			want.a = nil
+		end
+		if Key.Owns('b') then acted[#acted + 1] = 'b' end
+		check('the second handler of a press reads the decision, not the world the first changed',
+			table.concat(acted, ',') == 'a', table.concat(acted, ','))
+		control.Pump(1)
+		check('and the next press is decided afresh', press({ 'a', 'b' }) == 'b', table.concat(acted, ','))
+		-- A rebind takes a mapping out of the other's contest.
+		control.input.keys.a = 'J'
+		want.a = 90
+		check('rebound apart, both act on their own keys', press({ 'a', 'b' }) == 'a,b',
+			table.concat(acted, ','))
+		control.input.keys.a = nil
+		-- A press whose other half never came (its mapping went away) does not
+		-- leave the decision standing for ever.
+		Key.Owns('b')
+		control.Pump(Key.PRESS_MS // 100 + 2)
+		want.a, want.b = nil, 50
+		check('a stale half-press is forgotten', press({ 'a', 'b' }) == 'b', table.concat(acted, ','))
+		check('a mapping that never contended is never held back', Key.Owns('opx.test.free') == true)
+	end
+end
+
+section('E: a garage spot beside a managed door turns one of them, the nearer')
+do
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return {} end,
+			setLocked = function() return true end,
+			setInteractionAllowed = function() return true end,
+			setAutomaticClose = function() return true end,
+			setOpen = function() return true end,
+			reset = function() return true end,
+			state = function() return nil end,
+			aimed = function() return nil end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots with garages and doorlock', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local garages, dl = OPX.Modules.Get('garages'), OPX.Modules.Get('doorlock')
+		local garageKey = control.keyMappings.byId['opx.garages.use']
+		local doorKey = control.keyMappings.byId['opx.doorlock.use']
+		check('both are on E out of the box', garageKey ~= nil and doorKey ~= nil
+			and garageKey.key == 'E' and doorKey.key == 'E')
+		local toasts = 0
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			toasts = toasts + 1
+			return realToast(definition)
+		end
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'g#1', label = 'G', kind = 'garage', garage = 'g', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {
+			{ id = 1, name = 'Front', ids = { DOORLOCK_IDS.front }, x = 1.6, y = 0.0, z = 0.0,
+				state = 1, reach = 2.0 },
+		} })
+		check('the player stands at both', settle(control, function()
+			return garages.Runtime.Report().nearest == 'g#1' and dl.Runtime.Report().nearest == 1
+		end), ('%s / %s'):format(tostring(garages.Runtime.Report().nearest),
+			tostring(dl.Runtime.Report().nearest)))
+
+		local function sent()
+			local list, door, garage = control.serverEvents, 0, 0
+			for index = 1, #list do
+				if list[index].name == dl.Event.SET_STATE then door = door + 1 end
+				if list[index].name == garages.Event.LIST then garage = garage + 1 end
+			end
+			return garage, door
+		end
+		local function press(first, second)
+			local g0, d0 = sent()
+			first.pressed()
+			second.pressed()
+			control.Pump(1)
+			local g1, d1 = sent()
+			return g1 - g0, d1 - d0
+		end
+		local g, d = press(garageKey, doorKey)
+		check('nearer the garage spot, E asks for the list and leaves the door alone',
+			g == 1 and d == 0, ('%d/%d'):format(g, d))
+		g, d = press(doorKey, garageKey)
+		check('whichever mapping the host calls first', g == 1 and d == 0, ('%d/%d'):format(g, d))
+
+		control.placement.x = 1.4
+		settle(control, function() return dl.Runtime.Report().nearest == 1
+			and garages.Runtime.Report().nearest == 'g#1' end)
+		g, d = press(garageKey, doorKey)
+		check('nearer the door, E turns the door and asks for no list', g == 0 and d == 1,
+			('%d/%d'):format(g, d))
+		g, d = press(doorKey, garageKey)
+		check('in either order', g == 0 and d == 1, ('%d/%d'):format(g, d))
+		check('and neither press said a word', toasts == 0, toasts)
+
+		-- Rebound apart, each key is its own again.
+		control.input.keys['opx.doorlock.use'] = 'F'
+		g, d = press(garageKey, doorKey)
+		check('with the door rebound to F, each press does its own job', g == 1 and d == 1,
+			('%d/%d'):format(g, d))
+		control.input.keys['opx.doorlock.use'] = 'E'
+	end
+end
+
+section('E: a press away from a lift or a teleport says nothing, down or busy')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the silent E', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local toasts = {}
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			toasts[#toasts + 1] = tostring(definition.id)
+			return realToast(definition)
+		end
+		local lift = control.keyMappings.byId['opx.elevators.use']
+		local teleport = control.keyMappings.byId['opx.teleports.use']
+		check('both keys are mapped', lift ~= nil and teleport ~= nil)
+		-- A bar up anywhere: teleports used to answer "you are busy" before it
+		-- looked for a teleport at all.
+		OPX.Api.Get('progress').Start('test', { label = 'Eating', durationMs = 5000 })
+		teleport.pressed()
+		lift.pressed()
+		control.Pump(2)
+		check('E during a progress bar, at no teleport, says nothing', #toasts == 0,
+			table.concat(toasts, ','))
+		OPX.Api.Get('progress').Stop('test')
+		-- Down: the lift used to answer "not while downed" before it looked for a
+		-- lift at all, so the panel is never even asked away from one.
+		local panel = OPX.Modules.Get('elevators').Panel
+		local opened = 0
+		local realOpen = panel.Open
+		panel.Open = function(...)
+			opened = opened + 1
+			return realOpen(...)
+		end
+		lift.pressed()
+		control.Pump(2)
+		check('E at no lift never reaches the panel, so the down check cannot speak',
+			opened == 0 and #toasts == 0, ('%d / %s'):format(opened, table.concat(toasts, ',')))
+		panel.Open = realOpen
+	end
+end
+
+section('X: a bar, a ring, a crate, an emote and a call each take the press in turn')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the contested X', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls, hauling = OPX.Modules.Get('calls'), OPX.Modules.Get('hauling')
+		local anim = OPX.Modules.Get('animations')
+		local keys = control.keyMappings.byId
+		local cancel, decline = keys['opx.progress.cancel'], keys['opx.calls.decline']
+		local drop, stop = keys['hauling_drop'], keys['opx.animations.stop']
+		check('all four are on X out of the box', cancel and decline and drop and stop
+			and cancel.key == 'X' and decline.key == 'X' and drop.key == 'X' and stop.key == 'X')
+		local function count(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		local function press()
+			local before = {
+				decline = count(calls.Event.DECLINE), hang = count(calls.Event.HANG_UP),
+				drop = count(hauling.Event.DROP), stop = count(anim.Event.STOP),
+			}
+			-- The host's order is nobody's: the stop first, the cancel last.
+			stop.pressed()
+			drop.pressed()
+			decline.pressed()
+			cancel.pressed()
+			control.Pump(1)
+			return {
+				decline = count(calls.Event.DECLINE) - before.decline,
+				hang = count(calls.Event.HANG_UP) - before.hang,
+				drop = count(hauling.Event.DROP) - before.drop,
+				stop = count(anim.Event.STOP) - before.stop,
+			}
+		end
+		local function says(got)
+			return ('decline %d hang %d drop %d stop %d'):format(got.decline, got.hang, got.drop, got.stop)
+		end
+		local deliver = control.netEvents[calls.Event.STATE]
+
+		local got = press()
+		check('X with nothing going on sends nothing at all, not even a stop',
+			got.decline + got.hang + got.drop + got.stop == 0, says(got))
+
+		-- On a call, with an emote playing: the emote stops, the call stays.
+		local realPlaying = anim.Runtime.Playing
+		local playing = true
+		anim.Runtime.Playing = function() return playing end
+		deliver({ call = { id = 'k1', members = {} } })
+		got = press()
+		check('on a call, X stops the emote and does not hang up', got.stop == 1 and got.hang == 0,
+			says(got))
+
+		-- A crate in the arms outranks the emote, and the call. Announced CARRIED
+		-- first, as the server does: the drop key is live only once it is lifted.
+		control.netEvents[hauling.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0,
+			z = 18.0, bucket = 0, where = 'carried' })
+		control.netEvents[hauling.Event.ANSWER](true, nil, '555')
+		control.Pump(math.ceil(hauling.LIFT_MS / 100) + 2)
+		got = press()
+		check('carrying a crate, X puts it down and neither stops nor hangs up',
+			got.drop == 1 and got.stop == 0 and got.hang == 0, says(got))
+
+		-- A call ringing outranks the crate: the projection is saying "X to refuse".
+		deliver({ call = { id = 'k1', members = {} }, invite = { id = 'r9', kind = 'call', from = 2,
+			fromName = 'Judy' } })
+		got = press()
+		check('a call ringing, X refuses it and the crate stays in the arms',
+			got.decline == 1 and got.drop == 0 and got.stop == 0 and got.hang == 0, says(got))
+
+		-- A cancelable bar outranks everything.
+		deliver({ call = { id = 'k1', members = {} } })
+		local progress = OPX.Api.Get('progress')
+		progress.Start('test', { label = 'Eating', durationMs = 5000, cancelable = true })
+		got = press()
+		check('a cancelable bar up, X cancels only the bar',
+			progress.State().value.open == false and got.decline + got.hang + got.drop + got.stop == 0,
+			says(got))
+
+		-- Down to the call alone: X hangs up, as it always did.
+		control.netEvents[hauling.Event.ANSWER](true, 'dropped', false)
+		playing = false
+		control.Pump(1)
+		got = press()
+		check('with only the call left, X hangs up', got.hang == 1 and got.stop == 0, says(got))
+		anim.Runtime.Playing = realPlaying
+
+		-- Typing in another surface is not a press, for the call keys too.
+		deliver({ invite = { id = 'r10', kind = 'call', from = 2, fromName = 'Judy' } })
+		control.input.captured = true
+		got = press()
+		control.input.captured = false
+		check('while another surface holds the keyboard, X refuses nothing', got.decline == 0, says(got))
 	end
 end
 

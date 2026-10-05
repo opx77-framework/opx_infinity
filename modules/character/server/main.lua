@@ -153,7 +153,7 @@ local function tick()
 	-- at load freezes for the life of the resource. Each job is wrapped in its own
 	-- pcall so that one failing job does not stop the others.
 	if now >= nextSaveAt then
-		nextSaveAt = now + M.Number(M.Settings.AUTOSAVE_SECONDS, 30) * 1000
+		nextSaveAt = now + M.Number(M.Settings.AUTOSAVE_SECONDS, 300) * 1000
 		local ok, err = pcall(autosave)
 		if not ok then Open77.log.error('[character] autosave raised: ' .. tostring(err)) end
 	end
@@ -173,7 +173,7 @@ end
 
 --- Runs the background pass until the module stops.
 local function background()
-	nextSaveAt = OPX.Now() + M.Number(M.Settings.AUTOSAVE_SECONDS, 30) * 1000
+	nextSaveAt = OPX.Now() + M.Number(M.Settings.AUTOSAVE_SECONDS, 300) * 1000
 	nextPaycheckAt = OPX.Now() + math.max(M.Number(M.Settings.MONEY.PAYCHECK_MINUTES, 0), 1) * 60000
 	nextPruneAt = OPX.Now() + 300000
 

@@ -256,11 +256,10 @@ function M.CreatePlayer(entity, offline)
 		self.Revision = self.Revision + 1
 		if self.Offline then return end
 		TriggerClientEvent(M.Event.DATA, self.PlayerData.source, self.PlayerData)
-		-- The whole of PlayerData to its owner above, and the PUBLIC half of it to
-		-- everybody else in the bucket here. Every mutator in this module and in
-		-- `groups.lua` funnels through this function, which is what makes one call
-		-- enough; `State` reads the same PlayerData and decides for itself what is
-		-- fit to replicate, and writes nothing that has not moved.
+		-- The whole of PlayerData to its owner above, and NOTHING to anybody else:
+		-- never a name to a stranger (the owner's decision, see `server/state.lua`).
+		-- The call stays so the bag of a slot reloaded over an older build is
+		-- scrubbed of the keys that build replicated.
 		M.State.Publish(self)
 	end
 
@@ -341,15 +340,9 @@ function M.RegisterPlayer(player)
 	M.Registry.byCitizenId[data.citizenId] = data.source
 	M.Registry.byUserId[data.userId] = data.source
 
-	-- In the roster and on the wire in the same breath: a client that streams this
-	-- body in the next tick reads who it is off the bag rather than waiting for
-	-- somebody to tell it.
-	--
-	-- CLEARED FIRST, and not as a formality. `State` skips writing a key whose value
-	-- has not moved since it last published it, and what it remembers is keyed on
-	-- the player id -- which is recycled. A slot whose previous bag went down with
-	-- its session would otherwise have every key that happens to match skipped, and
-	-- a key skipped onto an empty bag is a key nobody ever sees.
+	-- The bag carries nothing about a character any more (`server/state.lua`);
+	-- clearing and publishing here scrubs a recycled slot of whatever an older
+	-- build left on it.
 	M.State.Clear(data.source)
 	M.State.Publish(player)
 end

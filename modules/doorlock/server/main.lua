@@ -323,13 +323,17 @@ local function syncBuckets(buckets)
 end
 
 --- Tells everyone in a door's bucket its new state (ox's `setState` to -1).
-local function pushState(door, by)
+--
+-- THE DOOR'S STATE AND NOTHING ABOUT WHO MOVED IT. This carried `by`, the server
+-- id of the player who locked or unlocked it, to every client in the bucket --
+-- the whole city -- and no client read it. Who opened a door is something you
+-- learn by watching the door; the journal keeps it for staff.
+local function pushState(door)
 	local state = states[door.id]
 	for _, player in ipairs(players()) do
 		local at = pointOf(player)
 		if at ~= nil and at.bucket == door.bucket then
-			TriggerClientEvent(M.Event.STATE, player, { id = door.id, state = state.state,
-				by = type(by) == 'number' and by or nil })
+			TriggerClientEvent(M.Event.STATE, player, { id = door.id, state = state.state })
 		end
 	end
 end
@@ -360,7 +364,7 @@ local function setState(door, state, by, player, item)
 	if live.state == 0 and door.autolock > 0 then
 		live.relockAt = OPX.Now() + door.autolock * 1000
 	end
-	pushState(door, by)
+	pushState(door)
 	Backend.Apply(door, live.state == 1)
 	OPX.Publish(M.Event.ON_CHANGED, player, { id = door.id, door = door.id, name = door.name,
 		state = live.state, locked = live.state == 1, by = tostring(by), item = item and item.name or nil })
@@ -380,13 +384,18 @@ local function vetoed(player, door, lockpick, how)
 		lockpick = lockpick == true, authorised = how })
 end
 
+-- The floor between two door requests from one player, read where it is used:
+-- a turn and a pick share one window, so they share one number.
+local function requestFloorMs()
+	return math.floor(OPX.Math.Finite(settings().REQUEST_MS) or 600)
+end
+
 --- Turns a door for a player, or answers why not: ox's `ox_doorlock:setState`
 --- net event. Yields.
 -- @param player integer
 -- @param payload table { id, state?, code? }
 local function toggle(player, payload)
-	local requestMs = math.floor(OPX.Math.Finite(settings().REQUEST_MS) or 600)
-	if OPX.Cooling(player, 'doorlock.request', requestMs) then
+	if OPX.Cooling(player, 'doorlock.request', requestFloorMs()) then
 		return answer(player, false, 'too_fast')
 	end
 	local door = doors[Access.Id(payload.id) or 0]
@@ -445,7 +454,11 @@ end
 --- Starts a pick, if this player may try one here (ox's `pickLock` up to the
 --- skill check). Yields.
 local function pickStart(player, payload)
-	if OPX.Cooling(player, 'doorlock.request', 600) then return answer(player, false, 'too_fast') end
+	-- REQUEST_MS, not a 600 of its own: the pick spends the turn's window, and an
+	-- operator who changed the floor changed it for one of the two.
+	if OPX.Cooling(player, 'doorlock.request', requestFloorMs()) then
+		return answer(player, false, 'too_fast')
+	end
 	local door = doors[Access.Id(payload and payload.id) or 0]
 	if door == nil then return answer(player, false, 'unknown_door') end
 	if not door.lockpick then return answer(player, false, 'not_pickable', door) end

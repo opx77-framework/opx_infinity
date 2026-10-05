@@ -265,7 +265,8 @@ local function dealerAt(at, dealerKey)
 		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
 		-- a dealer on the same spot that sorted first won the search and was then
 		-- refused as `wrongBucket` to somebody standing on a dealer in theirs.
-		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
+		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y,
+			OPX.Spots.ServerReachSq(Access.USE_RADIUS))
 	else
 		dealer = Access.Spot(spots, dealerKey)
 	end
@@ -273,7 +274,8 @@ local function dealerAt(at, dealerKey)
 	if dealer.bucket ~= at.bucket then return nil, Result.Err('dealership.wrongBucket') end
 
 	local flat = Access.FlatDistanceSquared(dealer, at.x, at.y)
-	if flat == nil or flat > Access.USE_RADIUS_SQ then
+	-- With the server's slack, as garages: see `REACH_SLACK`.
+	if flat == nil or flat > OPX.Spots.ServerReachSq(Access.USE_RADIUS) then
 		return nil, Result.Err('dealership.tooFar', dealer.key)
 	end
 	return dealer, nil
@@ -759,17 +761,21 @@ function M.Offer(seller, buyer, entryKey)
 	buyer = tonumber(buyer)
 	if buyer == nil or buyer == seller then return Result.Err('dealership.noSuchBuyer') end
 
+	-- THE SELLER'S SIDE FIRST, THEN WHETHER THE BUYER IS IN THE ROOM, AND ONLY
+	-- THEN ANYTHING ABOUT THE BUYER. The buyer's character was read first, so a
+	-- salesperson naming arbitrary server ids was told `noCharacter` or
+	-- `noPosition` for one and `buyerNotInZone` for another -- which slots were
+	-- connected and which had a character loaded, from anywhere. Somebody who is
+	-- not standing in the showroom is `buyerNotInZone`, whoever they are and
+	-- whether or not they exist.
 	local sellerData = characterOf(seller)
-	local buyerData = characterOf(buyer)
-	if sellerData == nil or buyerData == nil or type(buyerData.citizenId) ~= 'string' then
-		return Result.Err('dealership.noCharacter')
-	end
+	if sellerData == nil then return Result.Err('dealership.noCharacter') end
 
 	local kind, group = companyOf(seller)
 	if kind == nil then return Result.Err('dealership.noCompany') end
 
-	local sellerAt, buyerAt = pointOf(seller), pointOf(buyer)
-	if sellerAt == nil or buyerAt == nil then return Result.Err('dealership.noPosition') end
+	local sellerAt = pointOf(seller)
+	if sellerAt == nil then return Result.Err('dealership.noPosition') end
 
 	-- THE SELLER'S OWN NEAREST DEALER decides which showroom this is, and both
 	-- of them have to be standing in it: a salesperson who can sell to somebody
@@ -782,7 +788,14 @@ function M.Offer(seller, buyer, entryKey)
 	if dealer == nil or not inZone(sellerAt, dealer) then
 		return Result.Err('dealership.notInZone')
 	end
-	if not inZone(buyerAt, dealer) then return Result.Err('dealership.buyerNotInZone') end
+	local buyerAt = pointOf(buyer)
+	if buyerAt == nil or not inZone(buyerAt, dealer) then
+		return Result.Err('dealership.buyerNotInZone')
+	end
+	local buyerData = characterOf(buyer)
+	if buyerData == nil or type(buyerData.citizenId) ~= 'string' then
+		return Result.Err('dealership.noSuchBuyer')
+	end
 
 	local entry = Access.Entry(entryKey)
 	if entry == nil then return Result.Err('dealership.noSuchEntry') end
@@ -790,12 +803,12 @@ function M.Offer(seller, buyer, entryKey)
 		return Result.Err('dealership.notSold', entry.key)
 	end
 
-	-- The courtesy check, so the common refusal costs nobody a round trip. The
-	-- removal itself is still the only one that counts.
-	local balance = character.GetMoney(buyer, currency)
-	if type(balance) ~= 'number' or balance < entry.price then
-		return Result.Err('dealership.buyerCannotAfford', entry.key)
-	end
+	-- NO "CAN THEY AFFORD IT" HERE. A courtesy check stood here and answered the
+	-- SELLER `buyerCannotAfford` before the buyer was asked anything: offering
+	-- one stranger cars of rising price read their balance, to the eddy, without
+	-- them ever seeing an offer. A player's money is nobody else's business. The
+	-- buyer is asked; the payment is what refuses, and the seller hears only
+	-- that it was refused (`Accept`).
 
 	local at = OPX.Now()
 	nextOffer = nextOffer + 1
@@ -820,7 +833,10 @@ function M.Offer(seller, buyer, entryKey)
 		model = entry.label,
 		price = entry.price,
 		text = character.FormatMoney(entry.price, currency),
-		seller = OPX.DisplayNameOf(seller) or tostring(seller),
+		-- NO SELLER. This carried the seller's account gamertag (and their server
+		-- id when it had none) to the buyer: out-of-character, and a name the
+		-- buyer had not been given. Never a name to a stranger, the owner's
+		-- decision (#91); the buyer is looking at the person selling.
 		dealer = dealer.key,
 		label = dealer.label,
 		-- The dealer's kind, so the buyer's own screen lists only the garages a
@@ -961,10 +977,23 @@ function M.Accept(buyer, token, yes, destKey)
 		end
 	end
 
+	-- THE BUYER IS TOLD THEY ARE SHORT; THE SELLER, THAT THE PAYMENT WAS REFUSED.
+	-- Never the buyer's balance to anybody else -- see `Offer`. The removal
+	-- below is still the check that counts; this is the courtesy, on the
+	-- buyer's side of the sale where it belongs.
+	local balance = character.GetMoney(buyer, currency)
+	if type(balance) ~= 'number' or balance < entry.price then
+		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+			error = 'dealership.paymentFailed', entry = offer.entry })
+		return Result.Err('dealership.cannotAfford', entry.key)
+	end
+
 	local bought = purchase(buyer, buyerData, dealer, entry, dest)
 	if not bought.ok then
+		local why = tostring(bought.error)
+		local money = why == 'dealership.cannotAfford' or why:sub(1, 6) == 'money.'
 		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
-			error = bought.error, entry = offer.entry })
+			error = money and 'dealership.paymentFailed' or bought.error, entry = offer.entry })
 		return bought
 	end
 

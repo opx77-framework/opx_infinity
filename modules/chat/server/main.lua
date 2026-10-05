@@ -32,17 +32,6 @@ local function clean(value)
 	return OPX.Text.Clean(value, M.Settings.MAX_LENGTH, '...') or ''
 end
 
---- Reads what the host vouches for about a connection.
--- Guarded twice: the reader may be absent on a build without it, and a reader
--- that is present can still raise.
-local function identityOf(player)
-	local players = Open77.players
-	if type(players) ~= 'table' or type(players.identity) ~= 'function' then return nil end
-	local read, identity = pcall(players.identity, player)
-	if not read or type(identity) ~= 'table' then return nil end
-	return identity
-end
-
 --- Relays a player's message to everyone, attributed to its connection.
 local function onSaid(text)
 	local player = tonumber(source) or 0
@@ -67,43 +56,18 @@ local function onSaid(text)
 	if said:match('^%s*$') then return end
 
 	-- `source` is the authenticated connection: a client cannot speak for
-	-- another. The displayed name is the player's own and is a label, never an
-	-- identity. Without one, the first eight characters of the account say
-	-- something an operator can act on; a session id says nothing to anyone once
-	-- the player has gone.
+	-- another.
 	--
-	-- THE CHARACTER FIRST, AND IT NEVER WAS. This comment has always said "the
-	-- displayed name is the player's own", and the code went straight to
-	-- `Open77.players.identity`, whose `name` is the displayName the Master
-	-- vouches for -- the account's gamertag. So a player who had typed a
-	-- character name still spoke under their gamertag, on the first connection
-	-- and on the hundredth, and the `chat.author.unknown` branch below was dead
-	-- code: the platform always knows a connected session.
-	--
-	-- Optional rather than required: a runtime without the character module is
-	-- one where the gamertag IS the only name there is, and the box must still
-	-- work there.
-	local name
-	local character = OPX.Api.Get('character')
-	if character ~= nil then
-		local held = character.GetPlayer(player)
-		local charInfo = held and held.PlayerData and held.PlayerData.charInfo
-		local first = type(charInfo) == 'table' and charInfo.firstName or nil
-		local last = type(charInfo) == 'table' and charInfo.lastName or nil
-		if type(first) == 'string' and first ~= '' and type(last) == 'string' and last ~= '' then
-			name = first .. ' ' .. last
-		else
-			name = type(first) == 'string' and first ~= '' and first or nil
-		end
-	end
-
-	local identity = identityOf(player)
-	if name == nil then name = identity and identity.name end
-	if type(name) ~= 'string' or name == '' then name = nil end
-	local unknown = identity and identity.userId and identity.userId:sub(1, 8) or tostring(player)
+	-- NEVER A NAME TO A STRANGER, the owner's decision (#91). This line goes to
+	-- EVERY client on the server, and it was signed with the character's name --
+	-- and before that with the account's gamertag, and with the first eight
+	-- characters of the durable account id when neither was known. Each told the
+	-- whole city something only people who have met the speaker should know. The
+	-- line is signed with the server id instead: what a report to staff needs,
+	-- the same `#12` the give list shows, and nothing a stranger can put a name to.
 	TriggerClientEvent(M.Event.MESSAGE, -1, {
 		kind = 'chat',
-		author = OPX.Text.Clean(name or locale('chat.author.unknown', { id = unknown }), MAX_AUTHOR, '...') or '',
+		author = OPX.Text.Clean(locale('chat.author.player', { id = player }), MAX_AUTHOR, '...') or '',
 		text = said,
 	})
 end

@@ -291,6 +291,20 @@ local function remember(action, origin, owner)
 	return serial
 end
 
+--- Whether the local player has something for the stop key to end: a playback
+--- of their own on the mirror, or a play this client asked for and the server
+--- has not answered yet.
+-- @author dop42
+-- @return boolean
+function Runtime.Playing()
+	local own = Presenter.State()
+	if type(own) == 'table' and own.active == true then return true end
+	for _, request in pairs(pending) do
+		if request.action == 'play' then return true end
+	end
+	return false
+end
+
 --- Whether the local player's playback may not be stopped by the player.
 -- @author dop42
 -- @return boolean
@@ -580,14 +594,12 @@ local function onOffer(number, part, parts, rows, extra)
 end
 
 -- Says what the server answered about an emote with a nearby player.
-local function onNotice(kind, code, params)
+local function onNotice(kind, code)
 	if not KINDS[kind] then kind = 'info' end
 	code = Common.Code(code)
 	if code == nil then return end
-	params = type(params) == 'table' and params or {}
-	local name = Common.Text(params.name, 32) and params.name or '?'
 	local key = DUO_NOTICES[code]
-	if key ~= nil then return Runtime.Notify(kind, key, { name = name }) end
+	if key ~= nil then return Runtime.Notify(kind, key) end
 	Runtime.Refuse(code)
 end
 

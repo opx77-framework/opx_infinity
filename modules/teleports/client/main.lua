@@ -254,11 +254,9 @@ end
 -- @return table
 function Runtime.Use(origin)
 	local result = { source = origin or 'key' }
-	-- "NOT HERE" IS ASKED FIRST. It was asked after the keyboard and the progress
-	-- bar, so E pressed anywhere on the map while eating or repairing answered
-	-- "Finish what you are doing first." under a TELEPORTS title, for a teleport
-	-- the player was nowhere near -- the elevator bug again, by another door.
-	if nearest == nil then
+	if captured() then
+		result.ok, result.error = false, 'error.noPermission'
+	elseif nearest == nil then
 		result.ok, result.error = false, 'teleports.noSuchTeleport'
 		-- NOT A WORD, WHEN THE KEY IS WHAT ASKED. `E` is a contextual key and four
 		-- modules in this resource declare it -- clothing, garages, dealership and
@@ -277,9 +275,11 @@ function Runtime.Use(origin)
 			publish(result)
 			return result
 		end
-	elseif captured() then
-		result.ok, result.error = false, 'error.noPermission'
 	elseif busy() then
+		-- AFTER THE SPOT, NOT BEFORE IT. Asked first, this answered "you are
+		-- busy" to every E pressed during any progress bar anywhere in the city
+		-- -- the silence above never got its turn. Busy is only news to a player
+		-- standing at a teleport.
 		result.ok, result.error = false, 'teleports.busy'
 	elseif asking and OPX.Now() - askedAtMs < ASK_LATCH_MS then
 		-- The client's own half of the one-trip-at-a-time rule. The server keeps
@@ -373,6 +373,10 @@ function Runtime.Start()
 		tag = 'teleports',
 		declared = keySettings(),
 		onPress = Runtime.Use,
+		wants = function(x, y)
+			if nearest == nil then return nil end
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+		end,
 	})
 
 	-- The strip redraws a rebound key itself; this only re-reads whether the row

@@ -47,7 +47,7 @@ end
 --- Answers how many characters an account may hold.
 local function slotsFor(userId)
 	return M.Settings.CHARACTERS.SLOTS_BY_USER[userId]
-		or M.Number(M.Settings.CHARACTERS.DEFAULT_SLOTS, 1)
+		or M.Number(M.Settings.CHARACTERS.DEFAULT_SLOTS, 3)
 end
 
 --- Trims a character entity to what the selection screen shows.
@@ -122,7 +122,7 @@ function M.CreateCharacter(source)
 	-- while `NextCid` frees the slot.
 	local rows = M.Storage.CountRows(session.userId)
 	if not rows.ok then return rows end
-	local ceiling = M.Number(M.Settings.CHARACTERS.ROW_CEILING, 5)
+	local ceiling = M.Number(M.Settings.CHARACTERS.ROW_CEILING, 60)
 	if rows.value >= ceiling then
 		Open77.log.warn(('[character] %s has %d character rows, at the ceiling of %d')
 			:format(session.userId, rows.value, ceiling))
@@ -322,7 +322,7 @@ function M.NewCharacter(source)
 
 	local rows = M.Storage.CountRows(session.userId)
 	if not rows.ok then return rows end
-	local ceiling = M.Number(M.Settings.CHARACTERS.ROW_CEILING, 5)
+	local ceiling = M.Number(M.Settings.CHARACTERS.ROW_CEILING, 60)
 	if rows.value >= ceiling then return Result.Err('character.rowLimit', tostring(ceiling)) end
 
 	local characters = M.Storage.FetchAll(session.userId)

@@ -425,7 +425,7 @@ OPX.Config.MODULES.character = {
 	-- Lifepaths, and NOTHING READS THIS YET. The claim that used to stand here --
 	-- "offered at creation, validated against this list" -- was not true: no file
 	-- in the runtime reads `ORIGINS`, and nothing writes `charInfo.origin`, so the
-	-- field replicated on the state bag is always empty. The creator this would be
+	-- field is always empty. The creator this would be
 	-- offered in belongs to the platform and runs at join, before this runtime has
 	-- a character to put a lifepath on.
 	--

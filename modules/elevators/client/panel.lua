@@ -47,8 +47,9 @@ local REFUSAL = {
 	no_position = 'elevators.noPosition',
 	wrong_bucket = 'elevators.wrongBucket',
 	too_far = 'elevators.tooFar',
-	-- The server's own word for it: a player who went down between opening the
-	-- list and picking a floor read "That floor is not available."
+	-- The server's own down check. The sentence existed and was reached only by
+	-- the client's `player_down`, so a refusal from the server read as the
+	-- generic "the lift refused".
 	downed = 'elevators.downed',
 }
 
