@@ -164,7 +164,7 @@ function Door.Start()
 	})
 
 	-- The row follows the scan's own sightings, so it runs at the scan's pace.
-	local every = M.Access.SCAN_MS > 0 and M.Access.SCAN_MS or 2000
+	local every = M.Access.SCAN_MS > 0 and M.Access.SCAN_MS or 500
 	syncJob = OPX.Scheduler.Every('elevators:door', every, syncPrompt)
 end
 

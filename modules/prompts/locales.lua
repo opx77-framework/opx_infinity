@@ -35,6 +35,14 @@ OPX.Locale.Register('en', {
 	['prompts.key.RMB'] = 'RMB',
 	['prompts.key.MMB'] = 'MMB',
 	['prompts.key.SCROLL'] = 'SCROLL',
+
+	-- What the contract answers a calling resource; never a toast of ours.
+	['prompts.invalidOwner'] = 'That owner name is not valid.',
+	['prompts.invalidId'] = 'That prompt id is not valid.',
+	['prompts.invalidPlayer'] = 'There is no such player.',
+	['prompts.limit'] = 'The key strip is full.',
+	['prompts.ownerLimit'] = 'This resource already has as many prompt groups as it may.',
+	['prompts.notFound'] = 'There is no such prompt group.',
 })
 
 OPX.Locale.Register('fr', {
@@ -63,4 +71,11 @@ OPX.Locale.Register('fr', {
 	['prompts.key.RMB'] = 'CLIC D',
 	['prompts.key.MMB'] = 'CLIC M',
 	['prompts.key.SCROLL'] = 'MOLETTE',
+
+	['prompts.invalidOwner'] = "Ce nom de propriétaire n'est pas valide.",
+	['prompts.invalidId'] = "Cet identifiant d'invite n'est pas valide.",
+	['prompts.invalidPlayer'] = "Ce joueur n'existe pas.",
+	['prompts.limit'] = 'La barre des touches est pleine.',
+	['prompts.ownerLimit'] = "Cette ressource a déjà autant de groupes d'invites qu'elle peut.",
+	['prompts.notFound'] = "Ce groupe d'invites n'existe pas.",
 })

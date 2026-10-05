@@ -12670,6 +12670,77 @@ do
 end
 
 
+-- ── every code a contract answers with is a sentence ───────────────────────
+-- A `Result.Err('x.y')` reaches another resource, which shows `error` to its
+-- player as often as not. `doorlock.unknownDoor`, `prompts.limit`,
+-- `clothing.tooLarge` and a dozen like them had no catalogue entry, so the
+-- screen got the raw code. Every literal code is a written key now, and parity
+-- (above) makes it a key in both languages.
+section('every literal Result.Err code is written in the catalogue')
+do
+	local keys, files = {}, {}
+	for _, side in ipairs({ 'client', 'server', 'shared' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do files[file] = true end
+	end
+	for file in pairs(files) do
+		if file:match('locales') then
+			for line in io.lines(file) do
+				local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
+				if key then keys[key] = true end
+			end
+		end
+	end
+	local missing, seen = {}, 0
+	for file in pairs(files) do
+		local handle = io.open(file, 'r')
+		local source = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		for code in source:gmatch("Result%.Err%('([%w_]+%.[%w_%.]*[%w_])'") do
+			seen = seen + 1
+			if not keys[code] then missing[#missing + 1] = ('%s (%s)'):format(code, file) end
+		end
+	end
+	table.sort(missing)
+	check('the sweep finds the contract codes', seen > 100, seen)
+	check('and every one has a sentence', #missing == 0, table.concat(missing, '; '))
+end
+
+-- ── the places keep one pace ─────────────────────────────────────────────────
+-- A lift scanned every 2000 ms where every other place scanned at 500, so its
+-- row (and its key) came up to two seconds after the player reached the doors;
+-- teleports allowed four requests a window where the others allow six. The
+-- owner aligned both; this keeps them aligned. `ORIGINS` was a config table
+-- nothing read, and is gone rather than documented as unread.
+section('the places scan at one pace and allow one request rate')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the config read', why == nil, why)
+	if why == nil then
+		local modules = env.OPX.Config.MODULES
+		local places = { 'garages', 'dealership', 'clothing', 'teleports', 'elevators', 'doorlock' }
+		local scans = {}
+		for _, name in ipairs(places) do
+			scans[#scans + 1] = ('%s=%s'):format(name, tostring(modules[name].SCAN_MS))
+		end
+		local same = true
+		for _, name in ipairs(places) do
+			if modules[name].SCAN_MS ~= 500 then same = false end
+		end
+		check('every place scans for the nearest spot every 500 ms', same, table.concat(scans, ' '))
+		local rates = {}
+		same = true
+		for _, name in ipairs({ 'garages', 'dealership', 'teleports', 'elevators' }) do
+			local block = modules[name]
+			rates[#rates + 1] = ('%s=%s/%s'):format(name, tostring(block.REQUESTS_PER_WINDOW),
+				tostring(block.REQUEST_WINDOW_MS))
+			if block.REQUESTS_PER_WINDOW ~= 6 or block.REQUEST_WINDOW_MS ~= 10000 then same = false end
+		end
+		check('and every place allows six requests in ten seconds', same, table.concat(rates, ' '))
+		check('ORIGINS is gone from the character config, since nothing reads it',
+			modules.character.ORIGINS == nil)
+	end
+end
+
 -- ── every key a menu names is written, in both languages ────────────────────
 -- THE SWEEP ABOVE READS `locale('...')` AND NOTHING ELSE, and most menu text
 -- never passes through that spelling: the staff menu hands a row helper its
@@ -35261,6 +35332,13 @@ do
 			and contract.GetFromName('Great Hall').ok and contract.Get(made.value).value.name == 'Great Hall')
 		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
 		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
+		check('with a code that has a sentence, naming the field in the detail',
+			wrong and wrong.error == 'doorlock.error.bad_field' and wrong.detail == 'autolock'
+				and OPX.Locale.Text(wrong.error) ~= wrong.error, wrong and tostring(wrong.error))
+		local unknown = contract.Remove(999999, 'ext:test')
+		check('and an unknown door answers a written sentence too',
+			unknown and unknown.ok == false and OPX.Locale.Text(unknown.error) ~= unknown.error,
+			unknown and tostring(unknown.error))
 		check('getAllDoors lists them by id', contract.All().ok and #contract.All().value >= 4)
 	end
 end

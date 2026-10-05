@@ -375,6 +375,10 @@ local function registerDropKey()
 	if type(RegisterKeyMapping) ~= 'function' then
 		return OPX.Note('hauling', 'this host has no RegisterKeyMapping: a crate cannot be put down')
 	end
+	-- `hauling_drop`, NOT `opx.hauling.drop`, AND IT STAYS THAT WAY. It is the
+	-- one mapping id outside the `opx.<module>.<verb>` pattern, but a player's
+	-- rebind is stored under the id: renaming it would silently put every
+	-- rebound drop key back on X. The owner's call, 2026-10.
 	local called, ok, answer = pcall(RegisterKeyMapping, 'hauling_drop',
 		locale('hauling.key.drop'), Access.DROP_KEY, onDropKey)
 	if not called or (ok ~= true and type(ok) ~= 'string') then
