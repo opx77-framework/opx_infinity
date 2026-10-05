@@ -1016,8 +1016,9 @@ end
 -- A stash the creator exports reach is LOADED, NEVER OPENED (see
 -- `main.lua`, `withStash`), so nothing else would ever unload it, and a caller
 -- walking a thousand names would hold a thousand containers for the life of the
--- resource. One marked `external` and untouched for `idleMs` is written and
--- unloaded, unless somebody has it open; it loads again on the next call.
+-- resource. A stash a player opened (`World.Stash`) is marked the same way. One
+-- marked `external` and untouched for `idleMs` is written and unloaded, unless
+-- somebody has it open; it loads again on the next call.
 -- Yields: an unload writes first.
 -- @param idleMs integer
 -- @return integer how many were unloaded
@@ -1027,6 +1028,8 @@ function Containers.SweepExternal(idleMs)
 	for _, view in pairs(viewing) do open[view.id] = true end
 	local due = {}
 	for id, container in pairs(loaded) do
+		-- An open one is in use, and its idle time starts again when it closes.
+		if container.external and open[id] then container.externalAt = now end
 		if container.external and not open[id]
 			and now - (container.externalAt or 0) >= idleMs then
 			due[#due + 1] = id

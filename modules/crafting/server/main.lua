@@ -340,6 +340,28 @@ local function refund(player, citizenId, recipe, bench)
 	end
 end
 
+-- A placement's own name: a tag drawn once per boot (so a restart never reuses
+-- one) and a counter. 6 + 6 hex digits and a decimal, well inside the column.
+local bootTag = ('%06x%s'):format(math.random(0, 0xFFFFFF),
+	(tostring({}):match('(%x%x%x%x%x%x)$') or ''))
+local nextToken = 0
+
+--- How long `order` keeps asking whether a failed placement went in after all.
+local PLACED_TRIES = 3
+local PLACED_RETRY_MS = 500
+
+--- Whether a placement whose answer was a failure is in the table anyway. Yields.
+-- @return integer|nil the order id when it is, false when it is not, nil when
+-- the database could not say
+local function placedAnyway(citizenId, token)
+	for attempt = 1, PLACED_TRIES do
+		local found = M.Storage.Placed(citizenId, token)
+		if found.ok then return found.value or false end
+		if attempt < PLACED_TRIES then Wait(PLACED_RETRY_MS) end
+	end
+	return nil
+end
+
 --- Places one order. Yields.
 -- @author dop42
 -- @param player Source
@@ -414,7 +436,28 @@ local function order(player, benchKey, recipeKey)
 	end
 
 	local seconds = Recipes.ReadyIn(shelf.value.tail, recipe.seconds)
-	local placed = M.Storage.Place(citizenId, bench.key, recipe.key, seconds, bench.queue)
+	nextToken = nextToken + 1
+	local token = ('%s-%d'):format(bootTag, nextToken)
+	local placed = M.Storage.Place(citizenId, bench.key, recipe.key, seconds, bench.queue, token)
+	if not placed.ok then
+		-- AN ANSWER LOST IS NOT A ROW MISSING. The insert may have committed and
+		-- only its answer failed to come back; refunding then handed back the
+		-- materials and the price of an order that was cooking all the same.
+		local found = placedAnyway(citizenId, token)
+		if found then
+			Open77.log.warn(('[crafting] the order at %s answered %s but was filed as %d; ' ..
+				'it stands'):format(bench.key, tostring(placed.detail), found))
+			placed = Result.Ok(found)
+		elseif found == nil then
+			-- Neither answer: refunding could pay twice and keeping could lose it.
+			-- Kept, and said with everything needed to settle it by hand.
+			Open77.log.error(('[crafting] the order %s of %s at %s (%s) could not be filed ' ..
+				'or found (%s); NOTHING WAS REFUNDED. If no order with that token exists, ' ..
+				'refund %d %s and the materials by hand'):format(token, citizenId, bench.key,
+					recipe.key, tostring(placed.detail), recipe.price, tostring(recipe.money)))
+			return Result.Err(Refusal.UNAVAILABLE)
+		end
+	end
 	if placed.ok and placed.value == nil then
 		-- THE SHELF FILLED BETWEEN THE CHECK ABOVE AND THE ROW: another order of
 		-- this character's landed first. Nothing was promised, so everything
@@ -563,6 +606,8 @@ function M.Init()
 	-- here would answer nil for the life of the resource.
 	M.Contracts = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
+	OPX.Schema.AddColumns(M.Storage.COLUMNS)
+	OPX.Schema.AddIndexes(M.Storage.INDEXES)
 end
 
 --- Publishes the contract. Nothing may read one before this phase ends.

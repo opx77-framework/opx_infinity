@@ -1674,6 +1674,32 @@ do
 		OPX.Locale.Set('fr')
 		check('in French too', OPX.Locale.Exists('character.nameLength'))
 		OPX.Locale.Set('en')
+
+		-- INVISIBLE AND TEXT-TURNING CODE POINTS. Any two- or three-byte
+		-- sequence passed the letter class, so a name could be nothing anybody
+		-- can read, or reverse whatever is drawn after it.
+		local hidden = {
+			zeroWidth = 'Jo\u{200B}hn', rlo = 'Ja\u{202E}ck', lro = 'Ja\u{202D}ck',
+			lineSeparator = 'Ja\u{2028}ck', c1 = 'Ja\u{85}ck', bom = 'Ja\u{FEFF}ck',
+			wordJoiner = 'Ja\u{2060}ck', hangulFiller = 'Ja\u{3164}ck', nbsp = 'Ja\u{A0}ck',
+		}
+		for label, name in pairs(hidden) do
+			local checked = character.ValidateName(name)
+			check(('a name holding a %s is refused'):format(label),
+				checked.ok == false and character.NameRefusal(checked) == 'character.nameInvisible',
+				checked.ok and 'accepted' or tostring(checked.error))
+		end
+		check('while accents and other alphabets are still letters',
+			character.ValidateName('Éloïse').ok and character.ValidateName('Zoë-Anne').ok
+				and character.ValidateName('Ваня').ok and character.ValidateName("O'Neil").ok)
+		check('and the refusal has its sentence in both languages',
+			OPX.Locale.Text('character.nameInvisible') ~= 'character.nameInvisible'
+				and (function()
+					OPX.Locale.Set('fr')
+					local said = OPX.Locale.Text('character.nameInvisible')
+					OPX.Locale.Set('en')
+					return said ~= 'character.nameInvisible' and said:find('caractères', 1, true) ~= nil
+				end)())
 	end
 end
 
@@ -8015,13 +8041,27 @@ do
 			-- THE LEDGER OF OWED DEPOSITS, settled the way the real one is: the
 			-- deposit and the strike-off commit together or not at all.
 			-- `ledger.down` is a database that refuses the company account.
+			--
+			-- AND ONLY A ROW STILL OWED IS PAID: the deposit is an INSERT ... SELECT
+			-- of the ledger row named by id or token, so a settlement of a row that
+			-- is gone pays nothing. `ledger.settled` counts the ones that paid.
 			transaction = function(statements)
 				if ledger.down then return false, 'down' end
-				local deposit, strike = statements[1], statements[2]
-				local key = tostring(deposit.values[1]) .. ':' .. tostring(deposit.values[2])
-				accounts[key] = (accounts[key] or 0) + (tonumber(deposit.values[3]) or 0)
+				local strike = statements[#statements]
+				local byToken = strike.query:find('token = ?', 1, true) ~= nil
+				local named = strike.values[1]
 				for index = #ledger.rows, 1, -1 do
-					if ledger.rows[index].id == strike.values[1] then table.remove(ledger.rows, index) end
+					local row = ledger.rows[index]
+					if (byToken and row.token == named) or (not byToken and row.id == named) then
+						local key = tostring(row.kind) .. ':' .. tostring(row.group_key)
+						accounts[key] = (accounts[key] or 0) + (tonumber(row.amount) or 0)
+						table.remove(ledger.rows, index)
+						ledger.settled = (ledger.settled or 0) + 1
+					end
+				end
+				if ledger.loseAnswer then
+					ledger.loseAnswer = nil
+					return false, 'connection reset'
 				end
 				return true
 			end,
@@ -8049,6 +8089,11 @@ do
 				if sql:find('opx77_company_accounts', 1, true) then
 					local key = tostring(params.kind) .. ':' .. tostring(params.group)
 					accounts[key] = (accounts[key] or 0) + (tonumber(params.amount) or 0)
+					-- Committed, and the answer lost on the way back.
+					if ledger.loseAnswer then
+						ledger.loseAnswer = nil
+						error('connection reset', 0)
+					end
 					return 1
 				end
 				if sql:find('opx77_dealership_previews', 1, true) then
@@ -9102,6 +9147,27 @@ do
 		settle(control, function() return swept ~= nil end, 60)
 		check('and a second sweep finds nothing to pay again',
 			swept == 0 and accounts['job:fixer'] == fixerBefore + banked)
+
+		-- A DEPOSIT THAT COMMITTED AND WHOSE ANSWER WAS LOST. It used to be
+		-- written to the ledger as owed as well, and the sweep paid it again.
+		local lostBefore = accounts['job:fixer'] or 0
+		ledger.loseAnswer = true
+		contract.Offer(seller, buyer, 'hella')
+		local lostAsked = lastEvent(dealership.Event.OFFERED)
+		local lostSettled
+		env.CreateThread(function()
+			lostSettled = contract.Accept(buyer, lostAsked[1].token, true)
+		end)
+		settle(control, function() return lostSettled ~= nil end, 60)
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('a deposit whose answer was lost after it committed is paid in once, not twice',
+			lostSettled ~= nil and lostSettled.ok == true
+				and accounts['job:fixer'] == lostBefore + banked and #ledger.rows == 0,
+			('%s now, %s before, %s banked'):format(tostring(accounts['job:fixer']),
+				tostring(lostBefore), tostring(banked)))
+		ledger.loseAnswer = nil
 
 		-- AND WHEN THE LEDGER CANNOT BE WRITTEN EITHER, it is held in memory and
 		-- written by the sweep once it can be: owed, still, and paid once.
@@ -11717,6 +11783,43 @@ do
 			kept ~= nil and kept.ok == true and kept.value == false and #none == 0)
 		check('a name that is not a bare identifier is refused before any SQL',
 			env.OPX.Storage.EnsureIndex('t; DROP TABLE x', 'i', { 'c' }).ok == false)
+
+		-- THE COLUMN'S TWIN: crafting's placement token reaches a table that
+		-- predates it the same way.
+		local function columnWith(present)
+			local altered = {}
+			local probe = Host.Database({
+				scalar = function(sql)
+					if sql:find('information_schema.COLUMNS', 1, true) then return present end
+					return 1
+				end,
+				update = function(sql)
+					if sql:find('ALTER TABLE', 1, true) then altered[#altered + 1] = sql end
+					return 0
+				end,
+			})
+			local saved = env.MySQL
+			env.MySQL = probe
+			local answer
+			env.CreateThread(function()
+				answer = env.OPX.Storage.EnsureColumn('opx77_crafting_orders', 'token',
+					'VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL')
+			end)
+			settle(control, function() return answer ~= nil end, 20)
+			env.MySQL = saved
+			return answer, altered
+		end
+		local column, columnAlters = columnWith(0)
+		check('a table without a column the code writes is given it',
+			column ~= nil and column.ok == true and column.value == true and #columnAlters == 1
+				and columnAlters[1]:find('ADD COLUMN token VARCHAR(40)', 1, true) ~= nil,
+			columnAlters[1])
+		local had, noAlter = columnWith(1)
+		check('and one that has it is left alone',
+			had ~= nil and had.ok == true and had.value == false and #noAlter == 0)
+		check('a definition carrying anything but a plain type is refused before any SQL',
+			env.OPX.Storage.EnsureColumn('t', 'c', "INT; DROP TABLE x").ok == false
+				and env.OPX.Storage.EnsureColumn('t', 'c', "VARCHAR(4) DEFAULT 'x'").ok == false)
 
 		-- ── the staff half ───────────────────────────────────────────────────
 		-- WHAT THE ADMIN MODULE ADDS: who is connected, and who may ask. It adds no
@@ -17470,6 +17573,19 @@ do
 		env.source = nil
 		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
 
+		-- A RIDER WHO LEAVES MID-TRAVEL. The cabin used to be recalled to floor 0
+		-- with every other passenger in it; it carries on to the floor asked for.
+		env.source = 4
+		control.netEvents[M.Event.REQUEST]('arasaka_tower', 2)
+		env.source = nil
+		control.Pump(1)
+		local tripsBefore = #lifts.trips
+		check('a floor asked for is a trip', tripsBefore >= 1, tripsBefore)
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, 4, 'quit')
+		control.Pump(2)
+		check('the rider leaving mid-travel sends the cabin nowhere else',
+			#lifts.trips == tripsBefore, #lifts.trips - tripsBefore)
+
 		-- `Open77.elevators.nearby` takes 1..300 metres; a wider scan found no lift
 		-- at all and nothing said why.
 		local settings = env.OPX.Config.MODULES.elevators
@@ -18888,6 +19004,49 @@ end
 -- stops naming the linked commands, the rows vanish for a DIFFERENT reason and
 -- the diagnosis below would be wrong. The second is that the eye now SAYS what
 -- it dropped and which grant would bring it back.
+
+-- ── the eye's control hold is all or nothing ────────────────────────────────
+-- A later step that raised or refused left the earlier ones applied with
+-- nothing to give them back: aim, shooting and interaction off for the session.
+section('target: the control hold is taken whole or not at all')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local target = env.OPX.Modules.Get('target')
+		local players = env.Open77.players
+		local saved = {}
+		local state = {}
+		for _, name in ipairs({ 'allowAim', 'allowShoot', 'allowInteraction', 'freezeRotation' }) do
+			saved[name] = players[name]
+			players[name] = function(value) state[name] = value return true end
+		end
+		local function restore() for name, fn in pairs(saved) do players[name] = fn end end
+
+		check('with all four there the hold is taken', target.HoldControls(true) == true
+			and state.allowAim == false and state.allowShoot == false
+			and state.allowInteraction == false and state.freezeRotation == true)
+
+		state = {}
+		players.freezeRotation = nil
+		check('with one missing it is refused before anything is touched',
+			target.HoldControls(true) == false and next(state) == nil)
+
+		state = {}
+		players.freezeRotation = function() error('not on this build') end
+		check('a step that raises gives back every step before it',
+			target.HoldControls(true) == false and state.allowAim == true
+				and state.allowShoot == true and state.allowInteraction == true)
+
+		state = {}
+		players.freezeRotation = function(value) state.freezeRotation = value return true end
+		players.allowInteraction = function() return false, 'refused' end
+		check('and so does a step the host refuses, without touching the ones after it',
+			target.HoldControls(true) == false and state.allowAim == true
+				and state.allowShoot == true and state.freezeRotation == nil)
+		restore()
+	end
+end
 section('the eye and the grants it does not hold')
 do
 	local senv, scontrol, swhy = boot('server')
@@ -19882,6 +20041,54 @@ do
 		check('the materials go back to the bag of the character, not to whoever holds the connection',
 			#inventoryTargets > 0 and inventoryTargets[1] == 'ABC12345', tostring(inventoryTargets[1]))
 
+		-- AN ANSWER LOST AFTER THE INSERT COMMITTED. It looks exactly like an
+		-- insert that never ran, and refunding it paid back the materials and
+		-- the price of an order that was cooking all the same.
+		local realPlaced = crafting.Storage.Placed
+		local tokens = {}
+		crafting.Storage.Place = function(_, _, _, _, _, token)
+			tokens[#tokens + 1] = token
+			return OPX.Result.Err('transaction-raised', 'connection reset')
+		end
+		crafting.Storage.Placed = function(_, token)
+			return OPX.Result.Ok(token == tokens[#tokens] and 77 or nil)
+		end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('a placement whose answer was lost but which went in stands as placed',
+			answer ~= nil and answer.ok == true and answer.value.id == 77,
+			answer and tostring(answer.error))
+		check('and nothing is refunded for it', bag.scrap_metal == 0 and purse == 75,
+			('%d / %d'):format(bag.scrap_metal, purse))
+
+		-- And one that really did not go in is refunded, as before.
+		crafting.Storage.Placed = function() return OPX.Result.Ok(nil) end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('a placement that is not there after all is refunded in full',
+			answer ~= nil and answer.ok == false and bag.scrap_metal == 2 and purse == 100,
+			('%d / %d'):format(bag.scrap_metal, purse))
+		check('and every placement carries its own token', #tokens == 2 and tokens[1] ~= tokens[2]
+			and type(tokens[1]) == 'string')
+
+		-- And when the database can say neither, nothing is refunded and the
+		-- journal says what to settle by hand.
+		crafting.Storage.Placed = function() return OPX.Result.Err('no-database', 'down') end
+		bag.scrap_metal, purse = 2, 100
+		answer = nil
+		local loud = #control.log.error
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 60)
+		check('a placement nobody can confirm either way refunds nothing and says so',
+			answer ~= nil and answer.ok == false and purse == 75 and #control.log.error > loud
+				and control.log.error[#control.log.error]:find('NOTHING WAS REFUNDED', 1, true) ~= nil,
+			('%d / %d'):format(bag.scrap_metal, purse))
+		crafting.Storage.Placed = realPlaced
+
 		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
 		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
 		contract.UnregisterBenches('tests')
@@ -20698,9 +20905,23 @@ do
 		end
 
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 
 		fire(7, M.Event.HELLO)
@@ -21018,9 +21239,23 @@ do
 			return out
 		end
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 		-- An EMPTY TABLE and never nil when nothing was answered: a check that
 		-- raises on a nil index reports which line blew up, not which guard went,
@@ -21366,9 +21601,23 @@ do
 		end
 
 		local function fire(player, event, ...)
+			-- BEGIN and FINISH run on a thread of their own. That thread is run to
+			-- its end here, and ONLY that thread: pumping the frame instead would
+			-- also move every scheduler job and timed pose these checks count.
+			local spawned, realCreate = {}, env.CreateThread
+			env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
 			env.source = player
 			control.netEvents[event](...)
 			env.source = nil
+			env.CreateThread = realCreate
+			for _, fn in ipairs(spawned) do
+				local thread = coroutine.create(fn)
+				for _ = 1, 50 do
+					local ok, failure = coroutine.resume(thread)
+					if not ok then error(failure, 0) end
+					if coroutine.status(thread) == 'dead' then break end
+				end
+			end
 		end
 		local function lastAnswer()
 			local out = nil
@@ -21783,6 +22032,41 @@ do
 		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 2, 'quit')
 		check('the seller leaving mid-sale leaves the crate where it was',
 			bags[2].docks == 1 and #paid == 2)
+
+		-- ── the handler itself never waits on the inventory ──────────────────
+		-- A FINISH used to run the sale inside the network handler, and every
+		-- inventory call yields. Here they really do yield: the handler must
+		-- return at once, and the sale finish on a thread of its own.
+		trunks['veh-1'].docks = 1
+		local yieldingRemove = inventory.RemoveFromTrunk
+		inventory.RemoveFromTrunk = function(...)
+			coroutine.yield()
+			return yieldingRemove(...)
+		end
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		local paidAt = #paid
+		local spawned, realCreate = {}, env.CreateThread
+		env.CreateThread = function(fn) spawned[#spawned + 1] = fn end
+		local handler = coroutine.create(function()
+			env.source = 2
+			control.netEvents[M.Event.FINISH]()
+			env.source = nil
+		end)
+		coroutine.resume(handler)
+		env.CreateThread = realCreate
+		check('a FINISH handler returns without waiting on a yielding inventory',
+			coroutine.status(handler) == 'dead' and #spawned == 1, coroutine.status(handler))
+		-- The sale's own thread, resumed through its yields and nothing else.
+		local sale = coroutine.create(spawned[1] or function() end)
+		for _ = 1, 20 do
+			coroutine.resume(sale)
+			if coroutine.status(sale) == 'dead' then break end
+		end
+		inventory.RemoveFromTrunk = yieldingRemove
+		check('and the sale still completes and is paid, on its own thread',
+			#paid == paidAt + 1 and trunks['veh-1'].docks == 0, #paid - paidAt)
 		OPX.Api.Get = realGet
 
 		-- ── a subject that is not a name never reaches a native ──────────────
@@ -23437,6 +23721,47 @@ do
 			second == 1, second)
 		check('and the retired loop is not still running the old one',
 			first == 1, first)
+	end
+end
+
+-- The ceiling is counted, then the row inserted, with a yield between. Two
+-- registrations for one character in the same moment both counted the same
+-- number, and a character one under the ceiling ended one over it.
+section('vehicles: two registrations for one character never pass the ceiling together')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local vehicles = env.OPX.Modules.Get('vehicles')
+		local Store = vehicles.Storage
+		local realCount, realInsert = Store.CountByOwner, Store.Insert
+		local rows = 2
+		Store.CountByOwner = function()
+			local seen = rows
+			coroutine.yield()
+			coroutine.yield()
+			return env.OPX.Result.Ok(seen)
+		end
+		Store.Insert = function()
+			coroutine.yield()
+			rows = rows + 1
+			return env.OPX.Result.Ok(true)
+		end
+		local ceiling = vehicles.Settings.PER_CHARACTER
+		vehicles.Settings.PER_CHARACTER = 3
+		local first, second
+		env.CreateThread(function() first = vehicles.Register('CIT-VCAP', 'Vehicle.v_standard2_archer_hella_player') end)
+		env.CreateThread(function() second = vehicles.Register('CIT-VCAP', 'Vehicle.v_standard2_archer_hella_player') end)
+		settle(control, function() return first ~= nil and second ~= nil end, 120)
+		vehicles.Settings.PER_CHARACTER = ceiling
+		Store.CountByOwner, Store.Insert = realCount, realInsert
+		local oks = (first and first.ok and 1 or 0) + (second and second.ok and 1 or 0)
+		check('exactly one of the two goes in', oks == 1 and rows == 3, ('%d ok, %d rows'):format(oks, rows))
+		local refused = (first and not first.ok) and first or second
+		check('and the other is told the ceiling, after counting again',
+			refused ~= nil and refused.error == 'vehicle.limit', refused and tostring(refused.error))
+		check('the wait has a sentence in both languages',
+			env.OPX.Locale.Text('vehicle.registering') ~= 'vehicle.registering')
 	end
 end
 section('vehicles: two spawns of one plate in one tick produce exactly one car')
@@ -34575,6 +34900,36 @@ do
 		local again = call('my_shop', 'CountInStash', 'my_shop.backroom', 'water')
 		check('and it loads again on the next call', again.ok == true, tostring(again.error))
 
+		-- ── a stash a player opened is put away too, once closed ──────────────
+		-- It used to be taken off the sweep for good the moment it was opened,
+		-- so every stash ever opened stayed in memory for the session.
+		local World = inventory.World
+		local opened = nil
+		env.CreateThread(function()
+			opened = World.Stash('opened_by_hand', { slots = 10, maxWeight = 10000 }, nil, 'Hand')
+		end)
+		settle(control, function() return opened ~= nil end)
+		control.Admit(662, 'account-662')
+		Containers.View(662, opened, false)
+		opened.externalAt = 0
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('a stash a player has open is never put away, however long it is open',
+			Containers.Find('stash', 'opened_by_hand') ~= nil)
+		Containers.CloseSecondary(662, false)
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('nor at once when it is closed: the idle time starts at the close',
+			Containers.Find('stash', 'opened_by_hand') ~= nil)
+		control.Pump(15)
+		swept = nil
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('and once it has been closed for IDLE_MS it is written and unloaded',
+			Containers.Find('stash', 'opened_by_hand') == nil)
+
 		-- ── a load whose thread was dropped does not hang the next one ────────
 		db.park = function(method, sql)
 			return method == 'single' and sql:find('FROM opx77_inventories', 1, true) ~= nil
@@ -35711,6 +36066,48 @@ do
 	end
 end
 
+
+-- ── the staff lists arrive in pages, and each page fits a resume ────────────
+-- `OPX_BUDGET_METER` flags `opx:net:admin:items` and `opx:net:admin:roster`
+-- past the client's per-resume budget. Those figures are the FIXTURES' doing:
+-- the sections above hand 600 items or 150 players to the client in ONE event,
+-- to load the screen fast, and no server sends that -- `pushChunks` in
+-- `modules/admin/server/menu.lua` sends 20 rows an event. This plays the same
+-- lists the way the server does and holds every event to the budget.
+section('the staff lists are paged by the server, and each page fits one resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local PAGE = 20
+		local function played(event, total, row)
+			local dearest = 0
+			for offset = 0, total - 1, PAGE do
+				local chunk = {}
+				for index = offset + 1, math.min(offset + PAGE, total) do chunk[#chunk + 1] = row(index) end
+				local payload = { rows = chunk, offset = offset, total = total,
+					done = offset + #chunk >= total }
+				local cost = callCost(control.netEvents[event], payload)
+				if cost > dearest then dearest = cost end
+			end
+			return dearest
+		end
+		local items = played(admin.Event.ITEMS, 600, function(index)
+			return { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
+		end)
+		check('600 catalogue items, as the server pages them, cost well under a resume each',
+			items < 5000, items)
+		local roster = played(admin.Event.ROSTER, 150, function(index)
+			return { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
+				user = 'user' .. index, citizenId = 'CID' .. index }
+		end)
+		check('and so do 150 players on the roster', roster < 5000, roster)
+	end
+end
 -- ── a staff screen built over a big catalogue yields as it walks ────────────
 -- The owner's second log, after the redraw moved onto its own thread: still
 -- `admin/client/menu.lua: ... budget exceeded` in `drawNow`, at the builder.
@@ -35730,6 +36127,9 @@ do
 		for index = 1, 600 do
 			rows[index] = { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
 		end
+		-- ONE EVENT OF 600 ROWS, which no server sends (it pages them 20 at a time):
+		-- a fixture shortcut, and the reason `OPX_BUDGET_METER` names this handler.
+		-- What a real page costs is held by "the staff lists are paged by the server".
 		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 600, done = true })
 		local realWait, fromBuilder = env.Wait, 0
 		env.Wait = function(ms)
@@ -35778,6 +36178,8 @@ do
 			rows[index] = { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
 				user = 'user' .. index, citizenId = 'CID' .. index }
 		end
+		-- One event of 150 players, a fixture shortcut as the catalogue above is:
+		-- the server pages the roster 20 a time (see that same section).
 		control.netEvents[admin.Event.ROSTER]({ rows = rows, offset = 0, total = 150, done = true })
 		control.Pump(10)
 

@@ -451,9 +451,13 @@ function World.Stash(name, size, anchor, title)
 	if not container then return nil, reason end
 	if anchor then container.anchor = anchor end
 	if title then container.title = title end
-	-- Opened in front of a player, so it is no longer only a name another
-	-- resource reached: the idle sweep of `Containers.SweepExternal` lets go.
-	container.external = nil
+	-- ON THE IDLE SWEEP LIKE ANY OTHER, once nobody has it open. It used to be
+	-- taken off it for good here, so every stash a player ever opened -- a
+	-- housing resource's one per character, say -- stayed in memory for the
+	-- life of the process. `Containers.SweepExternal` never unloads one that is
+	-- open, and counts the idle time from the last pass that saw it open.
+	container.external = true
+	container.externalAt = OPX.Now()
 
 	-- SAID HERE RATHER THAN INFERRED IN `WithinReach`. A stash with no anchor is
 	-- in reach from anywhere, for as long as the server runs, for anybody who is

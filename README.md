@@ -282,9 +282,11 @@ they have none). On a yes the price is charged to the buyer, paid into the **com
 bank** of the seller's job (or gang, when they have no job) in `opx77_company_accounts`,
 and `SELLER_CUT_PERCENT` of it is paid to the seller as commission — rounded down, with
 the remainder to the company, because the other way round mints currency on every odd
-price. A company deposit that fails is not a failed sale and is not forgotten either:
-it is written to `opx77_company_pending` and a sweep, at boot and every minute, pays it
-in and strikes it off in one transaction, so a retry can never pay it twice.
+price. Every company deposit is written to `opx77_company_pending` under its own token
+first and settled at once: the settlement pays in only a row that is still owed and
+strikes it off in the same transaction, so a retry, a lost answer or the sweep racing
+it can never pay it twice. One that does not settle is not a failed sale and is not
+forgotten either: the sweep, at boot and every minute, pays it in.
 Either way the sale is raised as `opx:on:dealership:sold` — `kind = 'counter'` or
 `'offer'`, with the `garage` the buyer chose — and an offer sale whose company share
 went to that ledger says so with `pending = true`.
