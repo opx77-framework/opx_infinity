@@ -752,17 +752,21 @@ function M.Offer(seller, buyer, entryKey)
 	buyer = tonumber(buyer)
 	if buyer == nil or buyer == seller then return Result.Err('dealership.noSuchBuyer') end
 
+	-- THE SELLER'S SIDE FIRST, THEN WHETHER THE BUYER IS IN THE ROOM, AND ONLY
+	-- THEN ANYTHING ABOUT THE BUYER. The buyer's character was read first, so a
+	-- salesperson naming arbitrary server ids was told `noCharacter` or
+	-- `noPosition` for one and `buyerNotInZone` for another -- which slots were
+	-- connected and which had a character loaded, from anywhere. Somebody who is
+	-- not standing in the showroom is `buyerNotInZone`, whoever they are and
+	-- whether or not they exist.
 	local sellerData = characterOf(seller)
-	local buyerData = characterOf(buyer)
-	if sellerData == nil or buyerData == nil or type(buyerData.citizenId) ~= 'string' then
-		return Result.Err('dealership.noCharacter')
-	end
+	if sellerData == nil then return Result.Err('dealership.noCharacter') end
 
 	local kind, group = companyOf(seller)
 	if kind == nil then return Result.Err('dealership.noCompany') end
 
-	local sellerAt, buyerAt = pointOf(seller), pointOf(buyer)
-	if sellerAt == nil or buyerAt == nil then return Result.Err('dealership.noPosition') end
+	local sellerAt = pointOf(seller)
+	if sellerAt == nil then return Result.Err('dealership.noPosition') end
 
 	-- THE SELLER'S OWN NEAREST DEALER decides which showroom this is, and both
 	-- of them have to be standing in it: a salesperson who can sell to somebody
@@ -775,7 +779,14 @@ function M.Offer(seller, buyer, entryKey)
 	if dealer == nil or not inZone(sellerAt, dealer) then
 		return Result.Err('dealership.notInZone')
 	end
-	if not inZone(buyerAt, dealer) then return Result.Err('dealership.buyerNotInZone') end
+	local buyerAt = pointOf(buyer)
+	if buyerAt == nil or not inZone(buyerAt, dealer) then
+		return Result.Err('dealership.buyerNotInZone')
+	end
+	local buyerData = characterOf(buyer)
+	if buyerData == nil or type(buyerData.citizenId) ~= 'string' then
+		return Result.Err('dealership.noSuchBuyer')
+	end
 
 	local entry = Access.Entry(entryKey)
 	if entry == nil then return Result.Err('dealership.noSuchEntry') end

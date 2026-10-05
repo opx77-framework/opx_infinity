@@ -8790,6 +8790,17 @@ do
 		end
 		check('and nobody can sell to themselves',
 			contract.Offer(seller, seller, 'hella').error == 'dealership.noSuchBuyer')
+		-- NO PRESENCE PROBE: somebody who is not in the showroom answers the same
+		-- whether the id is connected, has a character, or names nobody at all.
+		do
+			control.Admit(4405, 'account-4405')
+			control.Stand(4405, 900.0, 900.0, 0.0)
+			local ghost = contract.Offer(seller, 4406, 'hella').error
+			local unloaded = contract.Offer(seller, 4405, 'hella').error
+			check('an absent id and a slot with no character answer alike',
+				ghost == 'dealership.buyerNotInZone' and unloaded == 'dealership.buyerNotInZone',
+				('%s / %s'):format(tostring(ghost), tostring(unloaded)))
+		end
 		env.source = src
 
 		-- ── the commands an operator reads ─────────────────────────────────
