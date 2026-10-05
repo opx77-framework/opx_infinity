@@ -47,6 +47,17 @@ local function clean(value)
 	return OPX.Text.Clean(value, tuning.maxLength, '...') or ''
 end
 
+--- Whether a connection may put a line in front of everybody: a loaded
+--- character, or a staff grant.
+local function mayBroadcast(player)
+	local character = OPX.Api.Get('character')
+	if character == nil or type(character.GetPlayer) ~= 'function' then return true end
+	if character.GetPlayer(player) ~= nil then return true end
+	local right = tuning.staffPermission
+	local read, allowed = pcall(function() return Open77.acl.isAllowed(player, right) end)
+	return read and allowed == true
+end
+
 --- Relays a player's message to everyone, attributed to its connection.
 local function onSaid(text)
 	local player = tonumber(source) or 0
@@ -66,6 +77,21 @@ local function onSaid(text)
 		return
 	end
 	lastSaidMs[player] = at
+
+	-- A CONNECTION WITH NO CHARACTER DOES NOT SPEAK TO THE SERVER, the owner's
+	-- ruling (2026-10, after the hostile-net-events audit). This line goes to
+	-- every client, and it went out for any slot the host had admitted: one on
+	-- the character screen, or one whose entry failed and left it behind the
+	-- gate. Staff (`STAFF_PERMISSION`) still may -- they are the people a player
+	-- stuck on that screen needs to reach -- and the console never comes through
+	-- here at all: it speaks through the `chat` contract. With no character
+	-- contract there is nobody to ask, and the chat keeps working.
+	if not mayBroadcast(player) then
+		if not OPX.Cooling(player, 'chat:notLoaded', 2000) then
+			OPX.Refuse(player, 'chat.notLoaded')
+		end
+		return
+	end
 
 	local said = clean(text)
 	if said:match('^%s*$') then return end
@@ -265,6 +291,8 @@ function M.Init()
 		maxLength = bounded(settings.MAX_LENGTH, 1, 2000, 240),
 		rateMs = bounded(settings.RATE_MS, 0, 60000, 800),
 		readyMs = bounded(settings.READY_MS, 0, 600000, 5000),
+		staffPermission = type(settings.STAFF_PERMISSION) == 'string'
+			and settings.STAFF_PERMISSION ~= '' and settings.STAFF_PERMISSION or 'command.opx.admin',
 	}
 end
 
