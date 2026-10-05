@@ -30362,6 +30362,136 @@ do
 	end
 end
 
+-- NEVER A NAME TO A STRANGER (the owner, after #91). A holocall carried every
+-- participant's character name to every other participant, a contact offer told
+-- its SENDER the name of the person it was offered to before they had answered,
+-- and "X hung up" / "X joined" named X to people who had never exchanged
+-- anything with them. A name now reaches a screen only when the two people
+-- exchanged contacts; anybody else is "unknown caller".
+section('calls: a name reaches only the people who exchanged contacts')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C, D = 811, 812, 813, 814
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Secret', lastName = 'Name' .. tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+			control.Stand(id, 0.0, 0.0, 0.0)
+		end
+		incarnate(A, 'na')
+		incarnate(B, 'nb')
+		incarnate(C, 'nc')
+		incarnate(D, 'nd')
+		-- A has B and C; B and C have A; B and C are strangers to each other, and
+		-- D is a stranger to everybody.
+		local function contact(tag) return { citizenId = 'citizen-' .. tag, name = 'Secret Name' .. tag } end
+		meta[A].callContacts = { contact('nb'), contact('nc') }
+		meta[B].callContacts = { contact('na') }
+		meta[C].callContacts = { contact('na') }
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			local notes = #control.notices
+			control.netEvents[name](...)
+			env.source = nil
+			return mark, notes
+		end
+		-- Everything one player was sent since a mark -- states and notices --
+		-- as one string, so a name anywhere in it is found.
+		local function seenBy(playerId, mark, notes)
+			local parts = {}
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId then parts[#parts + 1] = env.json.encode(sent[1]) end
+			end
+			for index = notes + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId then parts[#parts + 1] = tostring(notice.message) end
+			end
+			return table.concat(parts, ' | ')
+		end
+		local function lastState(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId then found = sent[1] end
+			end
+			return found or {}
+		end
+
+		-- ── a contact offer does not name the person it was offered to ────────
+		local mark, notes = ask(A, module.Event.INVITE, D, 'contact')
+		local toA = seenBy(A, mark, notes)
+		check('a contact offer was made', type(lastState(D).invite) == 'table', toA)
+		check('and its sender is not told the name of the person they offered it to',
+			toA:find('Namend', 1, true) == nil, toA)
+		check('while the person offered it is told who is offering (the sender chose that)',
+			seenBy(D, mark, notes):find('Namena', 1, true) ~= nil, seenBy(D, mark, notes))
+		ask(A, module.Event.WITHDRAW)
+
+		-- ── a call between contacts names them to each other ────────────────
+		mark, notes = ask(A, module.Event.INVITE, B)
+		check('a contact rings, under their name',
+			seenBy(B, mark, notes):find('Namena', 1, true) ~= nil, seenBy(B, mark, notes))
+		ask(B, module.Event.ACCEPT, lastState(B).invite and lastState(B).invite.id)
+		check('the call is up', type(lastState(A).call) == 'table')
+
+		-- ── a third person added names nobody they do not know ──────────────
+		mark, notes = ask(A, module.Event.INVITE, C)
+		local joining = lastState(C).invite
+		check('the third person is rung by their own contact, under that name',
+			joining ~= nil and tostring(joining.fromName):find('Namena', 1, true) ~= nil,
+			joining and tostring(joining.fromName))
+		mark, notes = ask(C, module.Event.ACCEPT, joining and joining.id)
+		local toB, toC = seenBy(B, mark, notes), seenBy(C, mark, notes)
+		check('the third person joined', type(lastState(C).call) == 'table', toC)
+		check('the people already on the call are not told their name',
+			toB:find('Namenc', 1, true) == nil, toB)
+		check('and they are told an unknown caller joined',
+			toB:find(OPX.Locale.Text('calls.unknown'), 1, true) ~= nil, toB)
+		check('the third person is not told the names of strangers on the call',
+			toC:find('Namenb', 1, true) == nil, toC)
+		check('but sees the contact who added them',
+			toC:find('Namena', 1, true) ~= nil, toC)
+
+		-- ── and leaving names nobody either ──────────────────────────────────
+		mark, notes = ask(C, module.Event.HANG_UP)
+		toB = seenBy(B, mark, notes)
+		check('hanging up does not name the leaver to a stranger',
+			toB:find('Namenc', 1, true) == nil, toB)
+		check('nor does anything carry an account name',
+			toB:find('account-', 1, true) == nil and seenBy(A, mark, notes):find('player-', 1, true) == nil,
+			toB)
+		ask(B, module.Event.HANG_UP)
+		for _, id in ipairs({ A, B, C, D }) do character.Players[id] = nil end
+	end
+end
+
 -- ── the blue eyes ────────────────────────────────────────────────────────────
 -- The glow is a LEASE held by a resource VM, not a switch on a player: the
 -- platform keeps it lit while ANY resource holds one, `false` releases only

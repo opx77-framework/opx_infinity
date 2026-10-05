@@ -134,27 +134,26 @@ local function loadedIn(playerId)
 	return loaded, data
 end
 
--- The name a card shows: the CHARACTER'S, never the account's.
+-- The CHARACTER'S name, never the account's, or nil.
 --
 -- `Open77.players.name` answers the displayName the Master vouches for -- the
--- account gamertag -- and the manifest's `ui.nameplates` block records what
--- that cost the last time a surface drew it: a player who had just named their
--- character walked around under their account name. A holocall card is the same
--- mistake waiting to happen, so the character's own name is what is read and
--- the account name is the fallback for a slot with no character yet.
+-- account gamertag -- and it used to be the fallback for a slot with no
+-- character yet. It is out-of-character, and the account is nobody's contact:
+-- there is no fallback now. Who may READ this name is `labelFor`'s question.
 local function nameOf(playerId)
 	local _, data = loadedIn(playerId)
 	local info = type(data) == 'table' and type(data.charInfo) == 'table' and data.charInfo or nil
-	if info ~= nil then
-		local first = type(info.firstName) == 'string' and info.firstName or ''
-		local last = type(info.lastName) == 'string' and info.lastName or ''
-		local full = (first .. ' ' .. last):gsub('^%s+', ''):gsub('%s+$', '')
-		if full ~= '' then return (full:gsub('%c', ' ')):sub(1, 32) end
-	end
-	local read, name = pcall(Open77.players.name, playerId)
-	if not read or type(name) ~= 'string' then return nil end
-	return (name:gsub('%c', ' ')):sub(1, 32)
+	if info == nil then return nil end
+	local first = type(info.firstName) == 'string' and info.firstName or ''
+	local last = type(info.lastName) == 'string' and info.lastName or ''
+	local full = (first .. ' ' .. last):gsub('^%s+', ''):gsub('%s+$', '')
+	if full == '' then return nil end
+	return (full:gsub('%c', ' ')):sub(1, 32)
 end
+
+-- What one player's screen calls another: see `labelFor` below. Declared here
+-- because `stateFor` reads it, and defined after the contact helpers it needs.
+local labelFor
 
 --- Whether a player may take part in a call at all, and why not.
 ---
@@ -380,7 +379,7 @@ local function stateFor(playerId)
 		participants = {}
 		for index = 1, #call.order do
 			local id = call.order[index]
-			participants[index] = { id = id, name = nameOf(id) or '?', self = id == playerId }
+			participants[index] = { id = id, name = labelFor(playerId, id), self = id == playerId }
 		end
 	end
 
@@ -395,14 +394,19 @@ local function stateFor(playerId)
 			id = invite.id,
 			kind = invite.kind,
 			from = invite.from,
-			fromName = nameOf(invite.from) or '?',
+			-- A CONTACT OFFER NAMES ITS SENDER: handing over your contact is the
+			-- sender choosing to be known. Anything else is caller id.
+			fromName = invite.kind == 'contact' and (nameOf(invite.from) or '?')
+				or labelFor(playerId, invite.from),
 			expiresInMs = math.max(0, invite.expiresAtMs - atMs),
 		} or nil,
 		outgoing = outgoing ~= nil and {
 			id = outgoing.id,
 			kind = outgoing.kind,
 			to = outgoing.to,
-			toName = nameOf(outgoing.to) or '?',
+			-- NEVER the name of the person a contact was offered to: they have not
+			-- agreed to anything yet. It used to be sent the moment the offer left.
+			toName = labelFor(playerId, outgoing.to),
 			expiresInMs = math.max(0, outgoing.expiresAtMs - atMs),
 		} or nil,
 	}
@@ -523,6 +527,37 @@ local function citizenOf(playerId)
 	return data.citizenId
 end
 
+-- What `viewer`'s screen calls `subject`: their name when the viewer has them as
+-- a contact (or is them), and "unknown caller" otherwise.
+--
+-- NEVER A NAME TO A STRANGER, the owner's decision (#91). Every line and every
+-- card here used to carry the character's name to whoever was on the other end:
+-- a third person added to a call learnt the names of everybody on it, everybody
+-- on it learnt theirs, a contact offer told the SENDER the name of the person
+-- they offered it to before that person had said anything, and "X hung up" named
+-- X to people who had never exchanged anything with them. A name is known here
+-- because the two people exchanged contacts -- by citizen id, which is what a
+-- contact row holds -- and for no other reason.
+labelFor = function(viewer, subject)
+	if viewer == subject then return nameOf(subject) or '?' end
+	local wanted = citizenOf(subject)
+	if wanted ~= nil then
+		for _, row in ipairs(contactsOf(viewer)) do
+			if row.citizenId == wanted then return nameOf(subject) or row.name end
+		end
+	end
+	return locale('calls.unknown')
+end
+
+-- Tells each of `ids` but `except` that `subject` did something, each in the
+-- words their own contact list allows.
+local function tellEach(ids, except, key, subject)
+	for index = 1, #ids do
+		local id = ids[index]
+		if id ~= except then tell(id, key, { name = labelFor(id, subject) }) end
+	end
+end
+
 -- ── the verbs, as the wire asks for them ─────────────────────────────────────
 
 -- Applies the eye-glow to everyone on a call and pushes them all their state.
@@ -560,7 +595,7 @@ local function callEnded(outcome)
 				local withdrawn = registry.Cancel(id)
 				if withdrawn ~= nil then
 					audit('calls.cancel', id, true, 'join: the sender left the call')
-					fileRecent(withdrawn.to, 'missed', nameOf(id), citizenOf(id))
+					fileRecent(withdrawn.to, 'missed', labelFor(withdrawn.to, id), citizenOf(id))
 					push(withdrawn.to)
 				end
 			end
@@ -634,10 +669,11 @@ local function onInvite(rawTarget, rawKind)
 	push(playerId)
 	push(target)
 	if invite.kind == 'contact' then
+		-- The sender's own name: offering a contact is choosing to be known.
 		tell(target, 'calls.contact.offered', { name = nameOf(playerId) or '?' })
 	else
-		tell(target, 'calls.ringing', { name = nameOf(playerId) or '?' })
-		tell(playerId, 'calls.placed', { name = nameOf(target) or '?' })
+		tell(target, 'calls.ringing', { name = labelFor(target, playerId) })
+		tell(playerId, 'calls.placed', { name = labelFor(playerId, target) })
 	end
 end
 
@@ -685,11 +721,7 @@ local function onAccept(rawInvite)
 	audit('calls.accept', playerId, true, ('%s (%s)'):format(outcome.callId, outcome.kind))
 	callChanged(outcome.callId)
 	local key = outcome.kind == 'join' and 'calls.joined' or 'calls.answered'
-	local joinedName = nameOf(outcome.joined) or '?'
-	for index = 1, #outcome.participants do
-		local id = outcome.participants[index]
-		if id ~= outcome.joined then tell(id, key, { name = joinedName }) end
-	end
+	tellEach(outcome.participants, outcome.joined, key, outcome.joined)
 end
 
 local function onDecline(rawInvite)
@@ -714,12 +746,12 @@ local function onDecline(rawInvite)
 	push(playerId)
 	push(outcome.from)
 	if outcome.kind ~= 'contact' then
-		tell(outcome.from, 'calls.declined', { name = nameOf(playerId) or '?' })
+		tell(outcome.from, 'calls.declined', { name = labelFor(outcome.from, playerId) })
 		-- The refusal, on both sides and named honestly on each: the caller was
 		-- refused, and the person who refused turned one down. Neither is a
 		-- missed call and calling them one would be a small lie repeated daily.
-		fileRecent(outcome.from, 'declined', nameOf(playerId), citizenOf(playerId))
-		fileRecent(playerId, 'refused', nameOf(outcome.from), citizenOf(outcome.from))
+		fileRecent(outcome.from, 'declined', labelFor(outcome.from, playerId), citizenOf(playerId))
+		fileRecent(playerId, 'refused', labelFor(playerId, outcome.from), citizenOf(outcome.from))
 	end
 end
 
@@ -733,7 +765,7 @@ local function withdraw(playerId)
 	push(withdrawn.to)
 	audit('calls.cancel', playerId, true, tostring(withdrawn.kind))
 	if withdrawn.kind ~= 'contact' then
-		fileRecent(withdrawn.to, 'missed', nameOf(playerId), citizenOf(playerId))
+		fileRecent(withdrawn.to, 'missed', labelFor(withdrawn.to, playerId), citizenOf(playerId))
 	end
 end
 
@@ -777,13 +809,7 @@ local function onHangUp()
 	audit('calls.hangUp', playerId, true, ('%s ended=%s'):format(outcome.callId,
 		tostring(outcome.ended)))
 	callEnded(outcome)
-	local leaverName = nameOf(playerId) or '?'
-	for index = 1, #outcome.were do
-		local id = outcome.were[index]
-		if id ~= playerId then
-			tell(id, outcome.ended and 'calls.ended' or 'calls.left', { name = leaverName })
-		end
-	end
+	tellEach(outcome.were, playerId, outcome.ended and 'calls.ended' or 'calls.left', playerId)
 end
 
 -- Answers the caller their own contact list, with each row's reachability
@@ -890,12 +916,7 @@ local function departed(rawPlayerId)
 		-- What `onHangUp` says, because a disconnect is a hang-up nobody pressed:
 		-- in a call of three the other two are still talking, and telling them
 		-- "the call ended" was wrong.
-		local name = nameOf(playerId) or '?'
-		for index = 1, #left.were do
-			if left.were[index] ~= playerId then
-				tell(left.were[index], left.ended and 'calls.ended' or 'calls.left', { name = name })
-			end
-		end
+		tellEach(left.were, playerId, left.ended and 'calls.ended' or 'calls.left', playerId)
 	end
 end
 
@@ -906,12 +927,12 @@ local function scan()
 		push(invite.from)
 		push(invite.to)
 		if invite.kind ~= 'contact' then
-			tell(invite.from, 'calls.expired', { name = nameOf(invite.to) or '?' })
+			tell(invite.from, 'calls.expired', { name = labelFor(invite.from, invite.to) })
 			-- BOTH SIDES, AND NOT THE SAME ROW. `unanswered` is what the caller
 			-- reads; `missed` is what the person who never looked at their screen
 			-- reads, and it is the one that makes the feature worth having.
-			fileRecent(invite.from, 'unanswered', nameOf(invite.to), citizenOf(invite.to))
-			fileRecent(invite.to, 'missed', nameOf(invite.from), citizenOf(invite.from))
+			fileRecent(invite.from, 'unanswered', labelFor(invite.from, invite.to), citizenOf(invite.to))
+			fileRecent(invite.to, 'missed', labelFor(invite.to, invite.from), citizenOf(invite.from))
 			audit('calls.unanswered', invite.from, true,
 				('%s did not pick up'):format(tostring(nameOf(invite.to) or invite.to)))
 		end
@@ -939,12 +960,8 @@ local function scan()
 		if outcome ~= nil then
 			audit('calls.hangUp', ending[index], true, 'dropped: no longer reachable')
 			callEnded(outcome)
-			for at = 1, #outcome.were do
-				if outcome.were[at] ~= ending[index] then
-					tell(outcome.were[at], outcome.ended and 'calls.ended' or 'calls.left',
-						{ name = nameOf(ending[index]) or '?' })
-				end
-			end
+			tellEach(outcome.were, ending[index], outcome.ended and 'calls.ended' or 'calls.left',
+				ending[index])
 		end
 	end
 
