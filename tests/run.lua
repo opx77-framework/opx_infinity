@@ -25542,6 +25542,25 @@ do
 				(character.AddMoney(RICH, 'EDDIES', -250)) == false and balance() == 500,
 				balance())
 
+			-- THE TOP OF THE RANGE. There was no ceiling: two staff grants of
+			-- 9e18 wrapped the 64-bit sum negative, and two of 1e308 made the
+			-- balance `inf`, which no JSON encoder writes -- the row stopped saving.
+			check('an amount past what an account holds is refused',
+				(character.AddMoney(RICH, 'EDDIES', 9000000000000000000)) == false
+					and (character.AddMoney(RICH, 'EDDIES', 1e308)) == false and balance() == 500,
+				balance())
+			character.SetMoney(RICH, 'EDDIES', 9007199254740000)
+			local over, overWhy = character.AddMoney(RICH, 'EDDIES', 5000)
+			check('and so is an amount that would carry the balance past it',
+				over == false and overWhy == 'money.tooLarge' and balance() == 9007199254740000,
+				tostring(overWhy))
+			check('with a sentence in both languages',
+				OPX.Locale.Text('money.tooLarge') ~= 'money.tooLarge')
+			check('a balance set past it is refused too',
+				(character.SetMoney(RICH, 'EDDIES', 1e300)) == false
+					and math.type(balance()) == 'integer', balance())
+			character.SetMoney(RICH, 'EDDIES', 500)
+
 			-- `OPX.Audit` appears nowhere in this suite, and the refusal above is
 			-- one of the few things in the runtime that raises a security entry.
 			-- A refusal nobody can see afterwards is a refusal an operator cannot
@@ -33441,6 +33460,25 @@ do
 			renamed ~= nil and renamed.ok == true
 				and back.PlayerData.charInfo.firstName == 'Jackie',
 			renamed and tostring(renamed.error))
+
+		-- TWO FULL-LENGTH HALVES ARE 65 LETTERS, and the column holds 64: the
+		-- row refused the save, and every save after it.
+		local LONG = OPX.CitizenId.Generate()
+		local first, last = ('É'):rep(32), ('w'):rep(32)
+		standCharacter(env, control, 634, LONG)
+		local long
+		env.CreateThread(function() long = character.RenameCharacter(LONG, first, last) end)
+		settle(control, function() return long ~= nil end, 80)
+		local written = nil
+		for _, call in ipairs(control.database.calls) do
+			if type(call.sql) == 'string' and call.sql:find('UPDATE opx77_characters', 1, true)
+				and type(call.params) == 'table' and call.params.citizen == LONG then
+				written = call.params.name
+			end
+		end
+		check('a rename to two full-length halves saves a name the column holds',
+			long ~= nil and long.ok == true and written ~= nil and utf8.len(written) == 64,
+			written and utf8.len(written) or (long and tostring(long.error)))
 	end
 end
 

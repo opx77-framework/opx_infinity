@@ -463,15 +463,27 @@ function M.GetCharacter(citizenId)
 	return Result.Ok({ entity = fetched.value, offline = true })
 end
 
---- Answers a positive, finite, rounded amount, or nil.
+-- THE MOST AN ACCOUNT HOLDS, either way: 2^53 - 1, the largest integer every
+-- step of the trip survives -- Lua, the JSON column, the client's number. There
+-- was no ceiling at all. `/opx.money <id> EDDIES 9000000000000000000` twice
+-- wrapped the 64-bit sum to about -4.4e17, and `1e308` twice made the balance
+-- `inf`, which no JSON encoder writes: the character stopped saving.
+local MAX_BALANCE = 9007199254740991
+
+--- Answers a positive, finite, rounded amount no larger than an account holds, or nil.
 -- NaN arrives from a client through JSON and passes every comparison, including
 -- the one that would stop the player spending it.
 local function amountOf(value)
 	local n = tonumber(value)
 	if not OPX.Math.IsFinite(n) then return nil end
 	n = math.floor(n + 0.5)
-	if n <= 0 then return nil end
+	if n <= 0 or n > MAX_BALANCE then return nil end
 	return n
+end
+
+--- Whether a balance is one an account may hold.
+local function holdable(balance)
+	return balance <= MAX_BALANCE and balance >= -MAX_BALANCE
 end
 
 --- Whether a Player is still the one in the roster under its connection.
@@ -553,6 +565,8 @@ function M.AddMoney(identifier, moneyType, amount, reason)
 	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
 
 	local money = player.PlayerData.money
+	-- Asked after the hook, on the balance the write will actually move.
+	if not holdable(money[moneyType] + value) then return false, 'money.tooLarge' end
 	money[moneyType] = money[moneyType] + value
 	announceMoney(player, moneyType, value, 'add', reason)
 	return true
@@ -606,6 +620,8 @@ function M.RemoveMoney(identifier, moneyType, amount, reason)
 		and not OPX.Config.SHARED.MONEY.ALLOW_NEGATIVE[moneyType] then
 		return false, 'money.insufficient'
 	end
+	-- Only reachable on a currency allowed to go negative.
+	if not holdable(money[moneyType] - value) then return false, 'money.tooLarge' end
 
 	money[moneyType] = money[moneyType] - value
 	announceMoney(player, moneyType, value, 'remove', reason)
@@ -629,6 +645,7 @@ function M.SetMoney(identifier, moneyType, amount, reason)
 	local n = tonumber(amount)
 	if not OPX.Math.IsFinite(n) then return false, 'money.badAmount' end
 	n = math.floor(n + 0.5)
+	if not holdable(n) then return false, 'money.tooLarge' end
 	if n < 0 and not OPX.Config.SHARED.MONEY.ALLOW_NEGATIVE[moneyType] then
 		return false, 'money.negative'
 	end
