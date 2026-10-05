@@ -22,6 +22,7 @@ local EN = {
 	['dealership.bought'] = 'You bought {model}. Plate {plate}.',
 	['dealership.handOverBlocked'] =
 		'Every spot beside the dealer is taken, so your car is waiting for you in {garage}.',
+	['dealership.handOverFailed'] = 'Your car could not be brought round, so it is waiting for you in {garage}.',
 	['dealership.defaultGarage'] = 'your garage',
 
 	['dealership.noSuchSpot'] = 'There is no dealership here.',
@@ -61,6 +62,7 @@ local EN = {
 	['dealership.buyerGone'] = 'They are no longer here.',
 	['dealership.sellerGone'] = 'The seller is no longer here.',
 	['dealership.commission'] = 'You earned {amount} on the {model}.',
+	['dealership.soldNoCut'] = 'Sale done: {model}. The whole price went to the company.',
 
 	['dealership.menu.title'] = '{dealer}',
 	['dealership.menu.deliver'] = 'Buy the {model}: choose a garage',
@@ -93,6 +95,7 @@ local FR = {
 	['dealership.bought'] = 'Vous avez acheté : {model}. Plaque {plate}.',
 	['dealership.handOverBlocked'] =
 		'Toutes les places près du vendeur sont prises : votre véhicule vous attend dans {garage}.',
+	['dealership.handOverFailed'] = "Votre véhicule n'a pas pu être avancé : il vous attend dans {garage}.",
 	['dealership.defaultGarage'] = 'votre garage',
 
 	['dealership.noSuchSpot'] = "Il n'y a pas de concession ici.",
@@ -130,6 +133,7 @@ local FR = {
 	['dealership.buyerGone'] = "Cette personne n'est plus là.",
 	['dealership.sellerGone'] = "Le vendeur n'est plus là.",
 	['dealership.commission'] = 'Vous avez gagné {amount} sur la vente : {model}.',
+	['dealership.soldNoCut'] = "Vente conclue : {model}. Tout le prix est allé à l'entreprise.",
 
 	['dealership.menu.title'] = '{dealer}',
 	['dealership.menu.deliver'] = 'Acheter : {model} — choisissez un garage',

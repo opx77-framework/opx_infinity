@@ -6886,6 +6886,19 @@ do
 		check('and the refusal has a sentence in both languages',
 			OPX.Locale.Exists('garages.passengers'))
 
+		-- SEATED IN SOMEBODY ELSE'S CAR. The row says "put your vehicle away";
+		-- the key used to fall through to the bring-out half and park one of the
+		-- player's own cars beside them instead.
+		control.Seat(src, { vehicleId = 'not-theirs-777', seat = 'driver' })
+		local createsBefore = #control.vehicleCreates
+		local foreign = contract.Use(src, 'garage_dock')
+		check('in a car that is not theirs, the key brings nothing out',
+			foreign.ok == false and foreign.error == 'garages.notYours'
+				and #control.vehicleCreates == createsBefore,
+			tostring(foreign.error))
+		check('and says why, in both languages', OPX.Locale.Exists('garages.notYours'))
+		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
+
 		created = #control.vehicleCreates
 		removals = #control.vehicleRemoves
 		local wroteVehicles = #vehicleWrites
@@ -9170,6 +9183,26 @@ do
 			seeded ~= nil and seeded.dealer == 'garage1' and seeded.entry == 'hella',
 			seeded and seeded.dealer)
 		Access.PREVIEW_POINTS['from_config'] = nil
+
+		-- ── a refused offer is one toast to the seller ─────────────────────
+		-- The door refused through `OPX.Refuse` AND sent SETTLED, whose handler
+		-- on the seller's client toasts the same refusal: two of everything.
+		control.Pump(40)
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		local offerMark = #control.clientEvents
+		env.source = seller
+		control.netEvents[dealership.Event.OFFER](9999, 'hella')
+		env.source = nil
+		control.Pump(10)
+		local refusedToasts, settled = 0, 0
+		for index = offerMark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.source == seller and event.name == NOTIFY then refusedToasts = refusedToasts + 1 end
+			if event.source == seller and event.name == dealership.Event.SETTLED
+				and type(event[1]) == 'table' and event[1].ok == false then settled = settled + 1 end
+		end
+		check('an offer to nobody is settled as refused for the seller', settled == 1, settled)
+		check('and the server raises no second toast beside it', refusedToasts == 0, refusedToasts)
 	end
 end
 
@@ -20824,6 +20857,48 @@ do
 		check('a crate left lying goes back to its point',
 			props.byId[THIRD].x == thirdHome.x and props.byId[THIRD].y == thirdHome.y,
 			('%.3f, %.3f'):format(props.byId[THIRD].x, props.byId[THIRD].y))
+
+		-- ── a load refused mid-bar leaves a crate that can still be put down ──
+		-- The refusals before the trunk write left the step running, and a drop
+		-- refuses a crate with a step: a truck driven off during the bar left the
+		-- player holding a crate X answered "Not while you are loading it." for.
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.PICKUP, THIRD)
+		at = at + Access.PICKUP_MS + 1
+		fire(12, M.Event.FINISH)
+		check('the third crate is carried again', lastAnswer()[3] == THIRD, tostring(lastAnswer()[2]))
+		vehicles['veh-13'] = { id = 'veh-13', record = 'Vehicle.nothing',
+			position = { x = thirdHome.x + 2.0, y = thirdHome.y, z = thirdHome.z } }
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.LOAD, 'veh-13')
+		vehicles['veh-13'] = nil
+		at = at + Access.LOAD_MS + 1
+		fire(12, M.Event.FINISH)
+		check('a truck gone during the load bar refuses the load',
+			lastAnswer()[2] == 'no_such_vehicle', tostring(lastAnswer()[2]))
+		fire(12, M.Event.DROP, 90.0)
+		check('and the crate can be put down at once, not "busy"',
+			lastAnswer()[1] == true and lastAnswer()[3] == false, tostring(lastAnswer()[2]))
+
+		-- ── a pickup refused at the end of its bar gives the crate back ──────
+		local lying = props.byId[THIRD]
+		positions[12] = { x = lying.x, y = lying.y, z = lying.z, bucket = 0 }
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.PICKUP, THIRD)
+		positions[12] = { x = lying.x + 50.0, y = lying.y, z = lying.z, bucket = 0 }
+		at = at + Access.PICKUP_MS + 1
+		fire(12, M.Event.FINISH)
+		check('a pickup finished from across the yard is refused',
+			lastAnswer()[2] == 'too_far', tostring(lastAnswer()[2]))
+		check('and the player is holding nothing', lastAnswer()[3] == false
+			and OPX.Api.Get('hauling').IsCarrying(12) == false, tostring(lastAnswer()[3]))
+		positions[14] = { x = lying.x, y = lying.y, z = lying.z, bucket = 0 }
+		fire(14, M.Event.HELLO)
+		at = at + 10000
+		fire(14, M.Event.BEGIN, Step.PICKUP, THIRD)
+		check('so somebody else may take that crate straight away',
+			lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		fire(14, M.Event.ABORT, 'cancelled')
 	end
 end
 
@@ -20955,6 +21030,32 @@ do
 			players[name] = function(allow) held[name] = allow == false or nil; return true end
 		end
 		players.resetControls = function() held = {}; return true end
+		-- THE KNEEL IS NOT THE CARRY. The BEGIN of a pickup already answers the
+		-- crate's id, and the hint used to be timed from it: "Press X to put the
+		-- crate down" two and a half seconds into a four-second bar.
+		local function dropsSent()
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == M.Event.DROP then n = n + 1 end
+			end
+			return n
+		end
+		local hints = 0
+		local realLocaleToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, ...)
+			if key == 'hauling.hint.drop' then hints = hints + 1 end
+			return realLocaleToast(key, ...)
+		end
+		control.netEvents[M.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0, z = 18.0,
+			bucket = 0, where = 'claimed' })
+		control.netEvents[M.Event.ANSWER](true, nil, '555')
+		control.Pump(math.ceil(M.LIFT_MS / 100) + 2)
+		local kneeling = dropsSent()
+		drop.pressed()
+		check('during the pickup bar, before the crate is lifted, no hint goes up', hints == 0, hints)
+		check('and X does nothing', dropsSent() == kneeling)
+		control.netEvents[M.Event.CRATE]({ id = '555', site = 'docks', x = 0.0, y = 0.0, z = 18.0,
+			bucket = 0, where = 'carried' })
 		control.netEvents[M.Event.ANSWER](true, nil, '555')
 		check('carrying takes the weapons, the shot and the aim away',
 			held.allowWeapons and held.allowShoot and held.allowAim)
@@ -20977,6 +21078,8 @@ do
 		check('X during the lift does nothing, so the lift is never cut off',
 			drops() == before)
 		control.Pump(math.ceil(M.LIFT_MS / 100) + 2)
+		check('once it is carried, the hint goes up after the lift, once', hints == 1, hints)
+		OPX.Toast.Locale = realLocaleToast
 		-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
 		control.netEvents[M.Event.RUN]({ id = '555', step = 'load', durationMs = 3000 })
 		drop.pressed()

@@ -507,6 +507,13 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 			Open77.log.warn(('[dealership] %s owns %s but the hand-over at %s was refused: %s')
 				:format(tostring(data.citizenId), tostring(plate), safe(dealer.key),
 					tostring(handed.error)))
+			-- SAID, as a blocked spot already was. Any other refusal of the
+			-- spawn was a log line only, and the buyer read "You bought X" with
+			-- no car in front of them and no word of where it went.
+			if spotX ~= nil then
+				OPX.NotifyLocale(source, 'dealership.handOverFailed',
+					{ garage = dest ~= nil and dest.label or locale('dealership.defaultGarage') }, 'info')
+			end
 		end
 	end
 
@@ -1024,8 +1031,15 @@ function M.Accept(buyer, token, yes, destKey)
 		ok = true, entry = offer.entry, model = entry.label,
 		cut = cut, company = company, banked = banked,
 	})
-	OPX.NotifyLocale(offer.seller, 'dealership.commission',
-		{ amount = character.FormatMoney(cut, currency), model = entry.label }, 'success')
+	-- A CUT OF NOTHING IS NOT "YOU EARNED €$0". It is nothing when the seller
+	-- could not be paid (the money went to the company) or the operator set no
+	-- commission; the seller still hears that the sale is done.
+	if (tonumber(cut) or 0) > 0 then
+		OPX.NotifyLocale(offer.seller, 'dealership.commission',
+			{ amount = character.FormatMoney(cut, currency), model = entry.label }, 'success')
+	else
+		OPX.NotifyLocale(offer.seller, 'dealership.soldNoCut', { model = entry.label }, 'success')
+	end
 
 	bought.value.commission = cut
 	bought.value.banked = company
@@ -1257,8 +1271,8 @@ local function onOffered(buyer, entryKey)
 		local offered = M.Offer(src, buyer, entryKey)
 		if not offered.ok then
 			-- No toast from here: the SETTLED handler on the seller's client
-			-- raises one, and this one doubled it.
-			OPX.Refuse(src, offered.error, M.Operation.OFFER)
+			-- raises one. This comment was written over an `OPX.Refuse` that
+			-- was still here, so the seller read every refusal twice.
 			TriggerClientEvent(M.Event.SETTLED, src,
 				{ ok = false, error = offered.error, entry = entryKey })
 			return
