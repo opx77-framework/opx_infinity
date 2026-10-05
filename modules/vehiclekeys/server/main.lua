@@ -351,7 +351,10 @@ local function reaches(source, vehicleId, snapshot)
 		return false
 	end
 	local dx, dy, dz = x - hx, y - hy, z - hz
-	return dx * dx + dy * dy + dz * dz <= M.REACH * M.REACH
+	-- The eye row offers the key out to REACH from where the client stood; this
+	-- measures where the player was last observed, so it allows REACH_SLACK.
+	local reach = OPX.Spots.ServerReach(M.REACH)
+	return dx * dx + dy * dy + dz * dz <= reach * reach
 end
 
 --- Locks or unlocks a vehicle for a connection that holds its key and stands by it.

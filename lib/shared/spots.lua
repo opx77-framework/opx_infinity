@@ -402,12 +402,21 @@ end
 -- @param radius number metres, as the module's own USE_RADIUS
 -- @return number squared metres
 function OPX.Spots.ServerReachSq(radius)
+	local reach = OPX.Spots.ServerReach(radius)
+	return reach * reach
+end
+
+--- The reach the SERVER allows, in metres, for a radius the client draws or the
+--- eye row offers: the radius plus `OPX.Config.SHARED.REACH_SLACK`.
+-- @author dop42
+-- @param radius number metres
+-- @return number metres
+function OPX.Spots.ServerReach(radius)
 	local shared = OPX.Config and OPX.Config.SHARED
 	local slack = type(shared) == 'table' and shared.REACH_SLACK or nil
 	if type(slack) ~= 'number' or slack ~= slack then slack = 1.0 end
 	if slack < 0 then slack = 0 elseif slack > 4 then slack = 4 end
-	local reach = (type(radius) == 'number' and radius == radius and radius or 0) + slack
-	return reach * reach
+	return (type(radius) == 'number' and radius == radius and radius or 0) + slack
 end
 
 --- Answers the spot a point stands on, or nil.

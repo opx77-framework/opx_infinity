@@ -19037,6 +19037,57 @@ do
 	end
 end
 
+-- ── crafting: a bench allows the reach its row was offered at ────────────────
+-- The eye row is offered out to the bench's reach from where the client stood;
+-- the server measures a moment behind, and a press at the edge of the row was
+-- refused as too far. Benches -- the gunsmith's among them -- allow REACH_SLACK.
+section('crafting: half a metre past the reach of a bench is still at the bench')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local contract = OPX.Api.Get('crafting')
+		local registered = contract.RegisterBench('tests:edge', { owner = 'tests', queue = 4, reach = 2.0,
+			position = { x = 0.0, y = 0.0, z = 0.0 },
+			recipes = { { KEY = 'rounds', OUTPUT = 'ammo_handgun', SECONDS = 60,
+				INPUTS = { scrap_metal = 1 } } } })
+		check('the bench registers', registered.ok == true, tostring(registered.error))
+		control.Admit(71, 'account-71')
+		local realInventory, realCharacter = crafting.Contracts.inventory, crafting.Contracts.character
+		crafting.Contracts.inventory = setmetatable({
+			GetItemCount = function() return OPX.Result.Ok(0) end,
+		}, { __index = realInventory })
+		crafting.Contracts.character = setmetatable({
+			GetPlayer = function() return { PlayerData = { citizenId = 'EDGE0001' } } end,
+			GetMoney = function() return { EDDIES = 0 } end,
+		}, { __index = realCharacter })
+
+		local function order()
+			local answer
+			env.CreateThread(function() answer = contract.Order(71, 'tests:edge', 'rounds') end)
+			settle(control, function() return answer ~= nil end, 20)
+			return answer
+		end
+		control.Stand(71, 2.5, 0.0, 0.0)
+		local edge = order()
+		-- Past the reach check, the order fails on what this stub cannot answer;
+		-- the case two metres out below proves the same path reaches the check.
+		check('half a metre past the reach is not refused as too far',
+			edge ~= nil and edge.ok == false and edge.error ~= crafting.Refusal.TOO_FAR
+				and edge.error ~= crafting.Refusal.NO_CHARACTER, edge and tostring(edge.error))
+		control.Pump(20)
+		control.Stand(71, 4.0, 0.0, 0.0)
+		local far = order()
+		check('and two metres past it is',
+			far ~= nil and far.error == crafting.Refusal.TOO_FAR, far and tostring(far.error))
+		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
+		contract.UnregisterBenches('tests')
+	end
+end
+
 -- ── crafting: the statements, and the one that makes a collection exactly-once
 -- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
 -- whether it affected a row, so the bridge is stubbed rather than the storage:
@@ -23015,6 +23066,15 @@ do
 			env.Open77.vehicles.isLocked(CAR) == false)
 		check('and says it was the distance',
 			told ~= nil and told.message == OPX.Locale.Text('vehiclekeys.tooFar'), told and told.message)
+		-- Half a metre past the eye row's own REACH: the server measures a moment
+		-- behind the client that offered the row, and allows REACH_SLACK for it.
+		control.Pump(11)
+		control.Stand(HOLDER, 2.0 + OPX.Modules.Get('vehiclekeys').REACH + 0.5, 0.0, 0.0)
+		toggle(HOLDER, { vehicleId = tostring(CAR) })
+		check('half a metre past the reach of the row, the key still turns the lock',
+			env.Open77.vehicles.isLocked(CAR) == true)
+		control.Pump(11)
+		toggle(HOLDER, { vehicleId = tostring(CAR) })
 		control.Stand(HOLDER, 0.0, 0.0, 0.0)
 		control.Pump(11)
 		told = toggle(HOLDER, { vehicleId = '999999' })
@@ -26509,6 +26569,14 @@ do
 			control.Stand(SHOPPER, COUNTER.x + 100.0, COUNTER.y, COUNTER.z)
 			check('a hundred metres away is too far',
 				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- Half a metre past the configured reach: the eye row is offered from
+			-- where the client stood, and the server allows REACH_SLACK for the
+			-- moment it measures behind.
+			control.Stand(SHOPPER, COUNTER.x + OPX.Config.MODULES.shops.REACH + 0.5, COUNTER.y, COUNTER.z)
+			check('half a metre past the reach is still at the counter, for the server',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil,
 				open('thrift_watson'))
 
 			-- The other side of the city -- which is where the OTHER configured

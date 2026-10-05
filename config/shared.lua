@@ -57,7 +57,8 @@ OPX.Config.SHARED = {
 	AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
 
 	-- Metres the SERVER adds to a place's reach (garages, dealers, fitting
-	-- rooms, teleports, lifts) when it measures a press again. The client shows
+	-- rooms, teleports, lifts, shops, crafting and gunsmith benches, vehicle
+	-- keys) when it measures a press again. The client shows
 	-- the row and sends the press from where IT stands; the server measures
 	-- where it last OBSERVED the player, a moment behind. With no slack a row
 	-- drawn at the edge of a marker was a press refused as "too far" -- the

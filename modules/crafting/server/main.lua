@@ -100,7 +100,9 @@ local function reachOk(player, bench)
 	local dx = at.x - bench.position.x
 	local dy = at.y - bench.position.y
 	local dz = at.z - bench.position.z
-	if math.sqrt(dx * dx + dy * dy + dz * dz) > bench.reach then
+	-- With the server's slack (`REACH_SLACK`), for every bench -- the gunsmith's
+	-- among them: the row was offered from where the client stood.
+	if math.sqrt(dx * dx + dy * dy + dz * dz) > OPX.Spots.ServerReach(bench.reach) then
 		return false, Refusal.TOO_FAR
 	end
 	return true, nil
