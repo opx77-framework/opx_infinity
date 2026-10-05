@@ -80,11 +80,10 @@ useBridge('opx:hud:info', (payload: Payload) => {
   <section v-if="lines.length" class="info" :class="end ? 'to-end' : 'to-start'">
     <div class="inner">
       <div
-        v-for="(line, at) in lines"
+        v-for="line in lines"
         :key="line.id"
         class="line"
         :class="line.tone"
-        :style="`--op-slot: ${at}`"
       >
         <span class="label">{{ t(line.label) }}</span>
         <span v-if="line.value" class="value">{{ line.value }}</span>
@@ -225,7 +224,9 @@ useBridge('opx:hud:info', (payload: Payload) => {
 
 .line {
   animation: line-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
+  /* NO STAGGER, on the owner's word: rows land together, as the menu's buttons and
+     the eye's rows do. A per-row delay read as the rows trickling in. */
+  animation-delay: 40ms;
 }
 
 /* A left-anchored read-out arrives from its own edge. */

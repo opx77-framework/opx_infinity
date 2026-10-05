@@ -155,12 +155,11 @@ onUnmounted(stop)
 <template>
   <div v-if="chips.length" class="strip">
     <span
-      v-for="(chip, at) in chips"
+      v-for="chip in chips"
       :key="chip.id"
       class="chip"
       data-augmented-ui="tr-clip border"
       :class="chip.tone"
-      :style="`--op-slot: ${at}`"
     >
       <span v-if="chip.icon" class="icon">{{ chip.icon }}</span>
       <span class="label">{{ t(chip.label) }}</span>
@@ -181,7 +180,6 @@ onUnmounted(stop)
     <span
       v-if="hidden > 0"
       class="chip overflow"
-      :style="`--op-slot: ${chips.length}`"
     >
       <span class="label">+{{ hidden }}</span>
     </span>
@@ -329,6 +327,7 @@ onUnmounted(stop)
 
 .chip {
   animation: chip-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--op-slot, 0) * 28ms);
+  /* NO STAGGER, on the owner's word: rows land together, as the menu's buttons and
+     the eye's rows do. A per-row delay read as the rows trickling in. */
 }
 </style>

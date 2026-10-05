@@ -471,11 +471,10 @@ function focusField(field: Field): void {
                not re-run under them while they type. -->
           <ul ref="listEl" class="list">
             <li
-              v-for="(field, at) in fields"
+              v-for="field in fields"
               :key="field.id"
               class="slot"
               :data-field="field.id"
-              :style="`--op-slot: ${at}`"
             >
               <div
                 class="field"
@@ -953,7 +952,8 @@ function focusField(field: Field): void {
 .field:hover:not(.on) {
   color: var(--op-red-deep);
   --aug-border-bg: var(--op-red-deep);
-  --aug-border-all: 1.8px;
+  /* The menu's hover weight, as every hover on the surface now is. */
+  --aug-border-all: 1.5px;
 }
 
 .field:hover:not(.on) .entry {
@@ -1103,6 +1103,8 @@ function focusField(field: Field): void {
    `field-in-on` path (0 -> pop+2px -> pop). SpawnView made the same move. */
 .room.open .slot {
   animation: field-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
+  /* NO STAGGER, on the owner's word: rows land together, as the menu's buttons and
+     the eye's rows do. A per-row delay read as the rows trickling in. */
+  animation-delay: 40ms;
 }
 </style>
