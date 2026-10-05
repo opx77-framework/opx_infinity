@@ -1285,6 +1285,16 @@ end
 -- ── the doors ───────────────────────────────────────────────────────────────
 
 --- One purchase off the wire. Rate-limited, then answered either way.
+--- The stock key an answer names back to the client: a row of the stock, or nil.
+---
+--- THE CLIENT'S OWN ARGUMENT WAS ECHOED, whatever it was: an entry key of 48
+--- KiB came back as 48 KiB on every refusal. Only a key that names a row is
+--- one the client can match an answer to.
+local function echoOf(entryKey)
+	if Access.Entry(entryKey) ~= nil then return entryKey end
+	return nil
+end
+
 local function onRequested(dealerKey, entryKey, destKey)
 	local src = tonumber(source)
 	if src == nil then return end
@@ -1305,19 +1315,20 @@ local function onRequested(dealerKey, entryKey, destKey)
 	end
 
 	CreateThread(function()
-		local bought = M.Buy(src, dealerKey, entryKey, destKey)
+		local bought = OPX.Life.Down(src) and Result.Err('error.incapacitated')
+			or M.Buy(src, dealerKey, entryKey, destKey)
 		if not bought.ok then
 			-- The refusal is the toast. A second one through the platform's
 			-- notifications put the same sentence on screen twice.
 			OPX.Refuse(src, bought.error, M.Operation.BUY)
-			TriggerClientEvent(M.Event.ANSWER, src, false, bought.error, entryKey)
+			TriggerClientEvent(M.Event.ANSWER, src, false, bought.error, echoOf(entryKey))
 			Open77.log.info(('[dealership] player %d refused %s: %s'):format(src,
 				safe(entryKey), tostring(bought.error)))
 			return
 		end
 		local value = bought.value
 		toldBought(src, value)
-		TriggerClientEvent(M.Event.ANSWER, src, true, nil, entryKey, value)
+		TriggerClientEvent(M.Event.ANSWER, src, true, nil, echoOf(entryKey), value)
 		Open77.log.info(('[dealership] player %d bought %s'):format(src, safe(value.plate)))
 	end)
 end
@@ -1334,13 +1345,14 @@ local function onOffered(buyer, entryKey)
 	end
 
 	CreateThread(function()
-		local offered = M.Offer(src, buyer, entryKey)
+		local offered = OPX.Life.Down(src) and Result.Err('error.incapacitated')
+			or M.Offer(src, buyer, entryKey)
 		if not offered.ok then
 			-- No toast from here: the SETTLED handler on the seller's client
 			-- raises one. This comment was written over an `OPX.Refuse` that
 			-- was still here, so the seller read every refusal twice.
 			TriggerClientEvent(M.Event.SETTLED, src,
-				{ ok = false, error = offered.error, entry = entryKey })
+				{ ok = false, error = offered.error, entry = echoOf(entryKey) })
 			return
 		end
 		OPX.NotifyLocale(src, 'dealership.offerSent', nil, 'info')
@@ -1356,8 +1368,16 @@ local function onDecided(token, yes, destKey)
 	end
 
 	CreateThread(function()
-		local settled = M.Accept(src, token, yes == true,
-			type(destKey) == 'string' and destKey or nil)
+		-- A YES FROM THE FLOOR IS NOT A YES. The money is the buyer's and the
+		-- down screen is the client's; a no still goes through, so the seller
+		-- is not left waiting on somebody who cannot answer.
+		local settled
+		if yes == true and OPX.Life.Down(src) then
+			settled = Result.Err('error.incapacitated')
+		else
+			settled = M.Accept(src, token, yes == true,
+				type(destKey) == 'string' and destKey or nil)
+		end
 		-- A DECLINE IS THE BUYER'S OWN ANSWER. `Accept` answers it as
 		-- `offerDeclined`, which is the SELLER's sentence -- "They turned the
 		-- offer down." -- and the buyer who said no was shown it as an error,
