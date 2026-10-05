@@ -15125,6 +15125,26 @@ do
 	end
 end
 
+
+-- ── a restart does not reuse a ledger token ────────────────────────────────
+-- The token was the process clock and a counter, both of which start again at
+-- a restart: the first deposit to fail after one could carry the token of a row
+-- still owed from before it, and the ledger's INSERT IGNORE dropped the debt.
+-- Two boots read the SAME clock here, which is the worst case.
+section('dealership: two boots never file a debt under the same token')
+do
+	local function frozen(env) env.GetGameTimer = function() return 5000 end end
+	local envA, _, whyA = boot('server', nil, frozen)
+	local envB, _, whyB = boot('server', nil, frozen)
+	check('both boot', whyA == nil and whyB == nil, whyA or whyB)
+	if whyA == nil and whyB == nil then
+		local first = envA.OPX.Modules.Get('dealership').PendingToken('job', 'fixer')
+		local second = envB.OPX.Modules.Get('dealership').PendingToken('job', 'fixer')
+		check('the same group, the same clock and the same count still make two tokens',
+			first ~= second, first .. ' / ' .. second)
+		check('and a token fits its column', #first <= 96 and #second <= 96)
+	end
+end
 -- ── a world announcement, and the clips around it ───────────────────────────
 -- THE SENTENCE GOES OUT AS THIS MODULE'S OWN EVENT, not through the platform's
 -- notification package, and that is what makes the stingers possible at all: only
