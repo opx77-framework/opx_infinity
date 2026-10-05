@@ -294,19 +294,36 @@ function syncCaret(): void {
   }, undefined)
 }
 
+/** How long a closed form keeps its rows: past the room's fade, with room to spare.
+    They were wiped in the same tick as `open`, so the frame collapsed to its title and
+    faded out like that -- a flicker on every Confirm. Nothing can redraw them meanwhile:
+    the handle is gone, so `mine()` drops any late frame. */
+const WIPE_MS = 240
+let wipe: ReturnType<typeof setTimeout> | undefined
+
+function cancelWipe(): void {
+  if (wipe !== undefined) clearTimeout(wipe)
+  wipe = undefined
+}
+
 function blank(): void {
   open.value = false
   // Nothing in flight survives the form it was typed into: the next form's fields may
   // carry the same ids, and a candidate held over would draw one form's text on another.
   pending.clear()
-  fields.value = []
-  keys.value = []
-  note.value = ''
-  hint.value = ''
-  status.value = ''
-  statusBad.value = false
   const active = document.activeElement
   if (active instanceof HTMLElement) active.blur()
+  cancelWipe()
+  wipe = setTimeout(() => {
+    wipe = undefined
+    if (open.value) return
+    fields.value = []
+    keys.value = []
+    note.value = ''
+    hint.value = ''
+    status.value = ''
+    statusBad.value = false
+  }, WIPE_MS)
 }
 
 let release: (() => void) | undefined
@@ -334,6 +351,7 @@ useBridge('opx:form:open', (payload: Payload) => {
     // Lua cancels the live form when a caller re-opens on the same surface, and the
     // acknowledgements start again from whatever the new form's fields carry.
     pending.clear()
+    cancelWipe()
     handle.value = payload.handle
     readConfig(payload)
     readFrame(payload)
@@ -367,6 +385,7 @@ useBridge('opx:form:close', (payload: Payload) => {
 })
 
 onUnmounted(() => {
+  cancelWipe()
   listen(false)
   release?.()
 })
@@ -491,7 +510,10 @@ function focusField(field: Field): void {
                     <i :style="{ width: fill(field) }" />
                   </span>
                   <span v-if="field.kind !== 'text'" class="value op-value op-truncate">{{ field.value }}</span>
-                  <span v-if="field.kind === 'text' && field.count && field.on" class="count">
+                  <!-- HELD IN THE ROW ON EVERY FIELD, SHOWN ON THE FOCUSED ONE. Mounted only on
+                       focus, it arrived in a cell that packs to the right and shoved the
+                       typed line left by its own width the moment the player tabbed in. -->
+                  <span v-if="field.kind === 'text' && field.count" class="count" :class="{ quiet: !field.on }">
                     {{ field.count }}
                   </span>
                   <!-- LEFT and RIGHT with a mouse. Lua reads both routes as the same
@@ -668,6 +690,15 @@ function focusField(field: Field): void {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* THE BLACK SHADOW, once for the whole surface. A `text-shadow` INHERITS, so this
+     one declaration carries the title, the note, the labels, the typed line, the
+     hint and the caps. It is the honest fix for an unbacked panel: it darkens the
+     two pixels around a letter instead of putting a box behind the row. It sat on
+     `.head` until now, which handed it to the title and to nothing else: every
+     field, value, hint and keycap under the head was drawn without it. */
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8);
 }
 
 /* The interlace. It is over the panel in every frame of the reference and it is
@@ -702,13 +733,6 @@ function focusField(field: Field): void {
   padding: var(--op-space-3) calc(var(--op-space-4) + var(--op-cut-lg))
     var(--op-space-2) calc(var(--op-space-4) + var(--op-rule));
   border-bottom: 1px solid var(--op-red-idle);
-  /* THE BLACK SHADOW, once for the whole surface. A `text-shadow` INHERITS, so this
-     one declaration carries the title, the note, the labels, the typed line, the
-     hint and the caps. It is the honest fix for an unbacked panel: it darkens the
-     two pixels around a letter instead of putting a box behind the row. */
-  text-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.95),
-    0 0 9px rgba(0, 0, 0, 0.8);
 }
 
 /* On a right-anchored form the cut is over the title rather than past it. */
@@ -903,6 +927,10 @@ function focusField(field: Field): void {
   font-variant-numeric: tabular-nums;
 }
 
+.count.quiet {
+  visibility: hidden;
+}
+
 .marks {
   flex: none;
   display: flex;
@@ -1075,6 +1103,6 @@ function focusField(field: Field): void {
    `field-in-on` path (0 -> pop+2px -> pop). SpawnView made the same move. */
 .room.open .slot {
   animation: field-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
+  animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
 }
 </style>
