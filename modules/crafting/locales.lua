@@ -38,6 +38,7 @@ local EN = {
 	['crafting.not_ready'] = 'That is still being made.',
 	['crafting.no_room'] = 'You cannot carry that. Make room and come back.',
 	['crafting.too_fast'] = 'Slow down.',
+	['crafting.downed'] = 'Not from the floor.',
 	['crafting.unavailable'] = 'The bench cannot be reached right now.',
 }
 
@@ -64,6 +65,7 @@ local FR = {
 	['crafting.not_ready'] = 'Ce n\'est pas encore terminé.',
 	['crafting.no_room'] = 'Vous ne pouvez pas porter cela. Faites de la place.',
 	['crafting.too_fast'] = 'Doucement.',
+	['crafting.downed'] = 'Pas pendant que vous êtes à terre.',
 	['crafting.unavailable'] = "L'établi est injoignable pour le moment.",
 }
 

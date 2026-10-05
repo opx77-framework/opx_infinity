@@ -207,6 +207,9 @@ local function shopAt(source, key)
 	end
 
 	if not passes(source, shop.jobs, shop.onDuty) then return nil, 'not_for_you' end
+	-- Asked here so the room and a ready-made look both ask it: the down screen
+	-- is the client's, and a client on the floor still sends the key.
+	if OPX.Life.Down(source) then return nil, 'downed' end
 	return shop
 end
 
@@ -430,6 +433,21 @@ local function citizenOf(source)
 end
 
 --- Sends one player their whole saved list.
+--- The saved look a request names, as the row id it can only be, or nil.
+---
+--- `tonumber` and `math.floor` were the whole check, and neither refuses
+--- anything a JSON number can be: NaN floored is NaN, an infinity floored is an
+--- infinity, and 1e300 is a float no row id is. Each went to the database as a
+--- bound parameter -- three statements per guess, under the outfit window --
+--- where the answer to "which row" should have been "none" before the query
+--- was ever built. An id is a positive whole number the column can hold.
+local MAX_OUTFIT_ID = 2147483647
+local function outfitIdOf(payload)
+	local id = type(payload) == 'table' and math.tointeger(payload.id) or nil
+	if id == nil or id < 1 or id > MAX_OUTFIT_ID then return nil end
+	return id
+end
+
 local function pushList(source, citizen)
 	local listed = M.Storage.List(citizen)
 	if not listed.ok then return refuse(source, 'shops.listFailed') end
@@ -480,10 +498,10 @@ local function onLoad(source, payload)
 	local citizen = citizenOf(source)
 	if citizen == nil then return refuse(source, 'shops.noCharacter') end
 
-	local outfitId = tonumber(type(payload) == 'table' and payload.id or nil)
+	local outfitId = outfitIdOf(payload)
 	if outfitId == nil then return refuse(source, 'shops.noSuchOutfit') end
 
-	local found = M.Storage.Own(citizen, math.floor(outfitId))
+	local found = M.Storage.Own(citizen, outfitId)
 	if not found.ok or type(found.value) ~= 'table' then
 		return refuse(source, 'shops.noSuchOutfit')
 	end
@@ -498,10 +516,10 @@ local function onDelete(source, payload)
 	local citizen = citizenOf(source)
 	if citizen == nil then return refuse(source, 'shops.noCharacter') end
 
-	local outfitId = tonumber(type(payload) == 'table' and payload.id or nil)
+	local outfitId = outfitIdOf(payload)
 	if outfitId == nil then return refuse(source, 'shops.noSuchOutfit') end
 
-	local removed = M.Storage.Delete(citizen, math.floor(outfitId))
+	local removed = M.Storage.Delete(citizen, outfitId)
 	if not removed.ok then return refuse(source, 'shops.deleteFailed') end
 	pushList(source, citizen)
 end
@@ -517,9 +535,8 @@ local function onShare(source, payload)
 	local citizen = citizenOf(source)
 	if citizen == nil then return refuse(source, 'shops.noCharacter') end
 
-	local outfitId = tonumber(type(payload) == 'table' and payload.id or nil)
+	local outfitId = outfitIdOf(payload)
 	if outfitId == nil then return refuse(source, 'shops.noSuchOutfit') end
-	outfitId = math.floor(outfitId)
 
 	local found = M.Storage.Own(citizen, outfitId)
 	if not found.ok or type(found.value) ~= 'table' then

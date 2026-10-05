@@ -423,6 +423,12 @@ local function onToggleRequested(payload)
 	if OPX.Cooling(src, 'vehiclekeys.toggle', TOGGLE_MS) then
 		return OPX.NotifyLocale(src, 'vehiclekeys.tooFast', nil, 'warning')
 	end
+	-- Not from the floor: the lock is a hand on the car, and the down screen is
+	-- the client's. Asked on the net door only -- the contract's callers decide
+	-- for themselves.
+	if OPX.Life.Down(src) then
+		return tell(src, Result.Err('error.incapacitated'))
+	end
 	-- `payload.vehicleId` is the only field read. Anything else in the table --
 	-- a plate, a label, a "locked" -- is a claim and goes nowhere.
 	local vehicleId = resolveId(type(payload) == 'table' and payload.vehicleId or nil)

@@ -17,6 +17,7 @@ OPX.Locale.Register('en', {
 	['error.rpc_failed'] = 'That did not go through.',
 	['error.tooFast'] = 'Slow down.',
 	['error.noPermission'] = 'You may not do that.',
+	['error.incapacitated'] = 'Not while you are down.',
 	['money.amount'] = '{amount} {currency}',
 	['money.separator'] = ',',
 	['money.type.EDDIES'] = '€$',

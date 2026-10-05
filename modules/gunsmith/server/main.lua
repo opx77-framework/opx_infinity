@@ -76,22 +76,28 @@ end
 -- the position handed to it. So this function is the job half of that bargain
 -- and the inventory module is the distance half, and neither duplicates the
 -- other.
+--- The chest key a refusal names back: one that names a chest, or ''. The
+--- client's own argument went back whatever it was, at whatever size.
+local function echo(key)
+	return Access.Chest(key) ~= nil and key or ''
+end
+
 local function openChest(player, key)
 	if inventory == nil then
-		TriggerClientEvent(M.Event.REFUSED, player, tostring(key), 'unavailable')
+		TriggerClientEvent(M.Event.REFUSED, player, echo(key), 'unavailable')
 		return
 	end
 
 	local armoury = Access.Armoury(key)
 	local chest = Access.Chest(key)
 	if armoury == nil or chest == nil then
-		TriggerClientEvent(M.Event.REFUSED, player, tostring(key), 'no_such_chest')
+		TriggerClientEvent(M.Event.REFUSED, player, echo(key), 'no_such_chest')
 		return
 	end
 
 	local allowed, refusal = Access.Evaluate(armoury, jobSnapshot(player), OPX.Now(), nil)
 	if not allowed then
-		TriggerClientEvent(M.Event.REFUSED, player, key, refusal or 'not_for_you')
+		TriggerClientEvent(M.Event.REFUSED, player, echo(key), refusal or 'not_for_you')
 		return
 	end
 
@@ -119,7 +125,7 @@ local function openChest(player, key)
 				:format(key, player, code))
 			code = 'unavailable'
 		end
-		TriggerClientEvent(M.Event.REFUSED, player, key, code)
+		TriggerClientEvent(M.Event.REFUSED, player, echo(key), code)
 		return
 	end
 

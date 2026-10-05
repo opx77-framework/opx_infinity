@@ -42,9 +42,6 @@ local owners
 -- own anything, and every door refuses.
 local character
 
--- Floor between two spawn or store requests from one connection.
-local REQUEST_MS = 3000
-
 -- Plates drawn before the answer is `vehicle.plateExhausted`.
 local PLATE_TRIES = 5
 
@@ -744,63 +741,6 @@ local function removed(id, reason)
 	end
 end
 
---- Spawns one of the connection's own vehicles by plate.
-local function onSpawnRequested(payload)
-	local src = tonumber(source)
-	if not src then return end
-	local operation = M.Operation.SPAWN
-	local plateId = type(payload) == 'table' and payload.plate or nil
-	if type(plateId) ~= 'string' then
-		return OPX.Refuse(src, 'error.badRequest', operation)
-	end
-	if OPX.Cooling(src, 'vehicle.spawn', REQUEST_MS) then
-		return OPX.Refuse(src, 'error.tooFast', operation)
-	end
-
-	CreateThread(function()
-		local spawned = M.Spawn(src, plateId)
-		if not spawned.ok then
-			-- The refusal IS a toast (`core/client/notify.lua` draws every one);
-			-- the second through the platform's notifications doubled it.
-			OPX.Refuse(src, spawned.error, operation)
-			return
-		end
-		OPX.NotifyLocale(src, 'vehicle.spawned', { plate = plateId }, 'success')
-	end)
-end
-
---- Puts away one of the connection's own spawned vehicles by plate.
-local function onStoreRequested(payload)
-	local src = tonumber(source)
-	if not src then return end
-	local operation = M.Operation.STORE
-	local plateId = type(payload) == 'table' and payload.plate or nil
-	if type(plateId) ~= 'string' then
-		return OPX.Refuse(src, 'error.badRequest', operation)
-	end
-	if OPX.Cooling(src, 'vehicle.store', REQUEST_MS) then
-		return OPX.Refuse(src, 'error.tooFast', operation)
-	end
-
-	CreateThread(function()
-		-- Ownership is proved before anything leaves the world: `live` is keyed
-		-- by plate, so a player could otherwise put away someone else's car by
-		-- naming it.
-		local data = characterOf(src)
-		local record = live[plateId]
-		if not data or record == nil or record.citizenId ~= data.citizenId then
-			OPX.Refuse(src, 'vehicle.notFound', operation)
-			return
-		end
-		local put = M.Store(plateId)
-		if not put.ok then
-			OPX.Refuse(src, put.error, operation)
-			return
-		end
-		OPX.NotifyLocale(src, 'vehicle.stored', { plate = plateId }, 'success')
-	end)
-end
-
 -- ── the phases ───────────────────────────────────────────────────────────────
 
 --- Builds the state and contributes this module's table. Never yields.
@@ -832,7 +772,7 @@ function M.Api()
 	})
 end
 
---- Wires the two doors and starts the save loop. Runs on a coroutine.
+--- Wires the host events and starts the save loop. Runs on a coroutine.
 -- @author dop42
 function M.Start()
 	character = OPX.Api.Get('character')
@@ -841,8 +781,14 @@ function M.Start()
 			'so every spawn and every store is refused')
 	end
 
-	RegisterNetEvent(M.Event.SPAWN, onSpawnRequested)
-	RegisterNetEvent(M.Event.STORE, onStoreRequested)
+	-- NO NET DOOR. `opx:net:vehicles:spawn` and `:store` were registered here and
+	-- nothing in this resource ever sent either: every car comes out and goes
+	-- back through `garages` (a marker, its bucket, its exits and its clearance)
+	-- or through staff. What they did was let any client skip all of that. A
+	-- spawn with no place put an owned car beside the player WHEREVER they stood,
+	-- garage or not; a store took the car out of the world from across the map
+	-- with whoever was sitting in it, which `garages` refuses as
+	-- `garages.passengers`. The contract below is unchanged, and is the door.
 	AddEventHandler(OPX.Host.VEHICLE_REMOVED, removed)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 

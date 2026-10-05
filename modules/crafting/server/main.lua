@@ -60,6 +60,16 @@ end
 -- Read through a pcall and proved finite: `Open77.players.position` answers nil
 -- for a slot that has already gone, and a caller that indexed that answer would
 -- raise inside a network handler.
+--- The bench key a refusal names back to the client, or ''.
+---
+--- `tostring(benchKey)` WAS ECHOED, and the key is the client's own argument:
+--- whatever it sent came back, a 48 KiB string as 48 KiB and a table as
+--- `table: 0x...` -- an address in this VM's heap, handed to anybody who asked.
+--- Only a key that could name a bench is worth naming back.
+local function echo(benchKey)
+	return Recipes.Key(benchKey) or ''
+end
+
 local function positionOf(player)
 	local players = Open77.players
 	if type(players) ~= 'table' or type(players.position) ~= 'function' then return nil end
@@ -265,6 +275,9 @@ local function view(player, benchKey)
 
 	local citizenId = citizenOf(player)
 	if citizenId == nil then return Result.Err(Refusal.NO_CHARACTER) end
+	-- No screen from the floor: a bench list is a menu of things to press, and
+	-- the answer is `screen`, so a list already up comes down with it.
+	if OPX.Life.Down(player) then return Result.Err(Refusal.DOWNED) end
 
 	local allowed, refusal = gateOk(bench, player, nil)
 	if not allowed then return Result.Err(refusal) end
@@ -364,6 +377,9 @@ local function order(player, benchKey, recipeKey)
 
 	local citizenId = citizenOf(player)
 	if citizenId == nil then return Result.Err(Refusal.NO_CHARACTER) end
+	-- Not from the floor, for the order as for the screen: the down screen is
+	-- the client's, and a client on it can still send the press.
+	if OPX.Life.Down(player) then return Result.Err(Refusal.DOWNED) end
 
 	-- The bench gate and the recipe gate are two questions and both are asked:
 	-- a consumer may open a workshop to every employee and keep one recipe for
@@ -483,6 +499,7 @@ local function collect(player, orderId)
 
 	local citizenId = citizenOf(player)
 	if citizenId == nil then return Result.Err(Refusal.NO_CHARACTER) end
+	if OPX.Life.Down(player) then return Result.Err(Refusal.DOWNED) end
 
 	local found = M.Storage.Find(citizenId, id)
 	if not found.ok then
@@ -572,11 +589,11 @@ local function answer(player, benchKey, acted)
 		-- the client could only guess from a list of codes, and the job gate's
 		-- (off duty, demoted, fired) were not on it: the stale list stayed up and
 		-- its five-second refresh toasted "You must be on duty" until closed.
-		TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), built.error, true)
+		TriggerClientEvent(M.Event.REFUSED, player, echo(benchKey), built.error, true)
 		return
 	end
 	if acted ~= nil then
-		TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), acted)
+		TriggerClientEvent(M.Event.REFUSED, player, echo(benchKey), acted)
 	end
 	TriggerClientEvent(M.Event.VIEW, player, built.value)
 end
@@ -627,7 +644,7 @@ function M.Start()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
 		if not within(player) then
-			TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), Refusal.TOO_FAST)
+			TriggerClientEvent(M.Event.REFUSED, player, echo(benchKey), Refusal.TOO_FAST)
 			return
 		end
 		CreateThread(function()
@@ -640,7 +657,7 @@ function M.Start()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
 		if not within(player) then
-			TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), Refusal.TOO_FAST)
+			TriggerClientEvent(M.Event.REFUSED, player, echo(benchKey), Refusal.TOO_FAST)
 			return
 		end
 		CreateThread(function()
@@ -659,7 +676,7 @@ function M.Start()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
 		if not within(player) then
-			TriggerClientEvent(M.Event.REFUSED, player, tostring(benchKey), Refusal.TOO_FAST)
+			TriggerClientEvent(M.Event.REFUSED, player, echo(benchKey), Refusal.TOO_FAST)
 			return
 		end
 		CreateThread(function()
