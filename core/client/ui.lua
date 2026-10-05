@@ -100,6 +100,12 @@ local function sendCatalogue(surface)
 		-- budget: the log said `opx:ready raised ... script execution budget
 		-- exceeded` on every join, and no label reached the page at all.
 		local strings = OPX.Locale.CatalogueSliced(CATALOGUE_PART)
+		-- A YIELD BETWEEN THE COPY AND THE KEY LIST. The copy yields every
+		-- CATALOGUE_PART keys and so does the list, but the copy's LAST stretch and
+		-- the list's FIRST shared one resume: up to two parts' worth, depending on
+		-- how many keys the catalogues happen to hold. Fifty new strings moved that
+		-- remainder past the boot budget's check; this keeps each resume to one part.
+		if type(Wait) == 'function' then Wait(0) end
 		local keys, counted = {}, 0
 		for key in pairs(strings) do
 			keys[#keys + 1] = key
