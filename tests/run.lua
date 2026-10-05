@@ -18882,6 +18882,49 @@ end
 -- stops naming the linked commands, the rows vanish for a DIFFERENT reason and
 -- the diagnosis below would be wrong. The second is that the eye now SAYS what
 -- it dropped and which grant would bring it back.
+
+-- ── the eye's control hold is all or nothing ────────────────────────────────
+-- A later step that raised or refused left the earlier ones applied with
+-- nothing to give them back: aim, shooting and interaction off for the session.
+section('target: the control hold is taken whole or not at all')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local target = env.OPX.Modules.Get('target')
+		local players = env.Open77.players
+		local saved = {}
+		local state = {}
+		for _, name in ipairs({ 'allowAim', 'allowShoot', 'allowInteraction', 'freezeRotation' }) do
+			saved[name] = players[name]
+			players[name] = function(value) state[name] = value return true end
+		end
+		local function restore() for name, fn in pairs(saved) do players[name] = fn end end
+
+		check('with all four there the hold is taken', target.HoldControls(true) == true
+			and state.allowAim == false and state.allowShoot == false
+			and state.allowInteraction == false and state.freezeRotation == true)
+
+		state = {}
+		players.freezeRotation = nil
+		check('with one missing it is refused before anything is touched',
+			target.HoldControls(true) == false and next(state) == nil)
+
+		state = {}
+		players.freezeRotation = function() error('not on this build') end
+		check('a step that raises gives back every step before it',
+			target.HoldControls(true) == false and state.allowAim == true
+				and state.allowShoot == true and state.allowInteraction == true)
+
+		state = {}
+		players.freezeRotation = function(value) state.freezeRotation = value return true end
+		players.allowInteraction = function() return false, 'refused' end
+		check('and so does a step the host refuses, without touching the ones after it',
+			target.HoldControls(true) == false and state.allowAim == true
+				and state.allowShoot == true and state.freezeRotation == nil)
+		restore()
+	end
+end
 section('the eye and the grants it does not hold')
 do
 	local senv, scontrol, swhy = boot('server')

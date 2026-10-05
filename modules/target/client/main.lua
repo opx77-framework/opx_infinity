@@ -231,6 +231,22 @@ end
 -- Holds or hands back aim, shooting, interaction and the camera. Every one of
 -- these needs `players.controls`; without the permission the eye refuses to open
 -- rather than opening over live controls.
+--
+-- ALL OR NOTHING. The four were applied in one chain, so a later one that raised
+-- or refused (a build without `freezeRotation`, a host that said no) left the
+-- earlier ones applied -- while `heldControls` stayed false, so `close` never
+-- gave them back: aim, shooting and interaction stayed off for the session,
+-- and every later press of the key took them again. All four are now checked
+-- present before any is touched, and a step that fails undoes the ones before
+-- it, each by its own inverse (never `resetControls`, which would also clear
+-- what another module holds).
+local HOLD_STEPS = {
+	{ name = 'allowAim', take = false, give = true },
+	{ name = 'allowShoot', take = false, give = true },
+	{ name = 'allowInteraction', take = false, give = true },
+	{ name = 'freezeRotation', take = true, give = false },
+}
+
 local function controls(hold)
 	local players = Open77.players
 	if type(players) ~= 'table' then return false end
@@ -238,12 +254,26 @@ local function controls(hold)
 		if type(players.resetControls) == 'function' then pcall(players.resetControls) end
 		return true
 	end
-	local taken = pcall(function()
-		assert(players.allowAim(false) and players.allowShoot(false)
-			and players.allowInteraction(false) and players.freezeRotation(true))
-	end)
-	return taken
+	for index = 1, #HOLD_STEPS do
+		if type(players[HOLD_STEPS[index].name]) ~= 'function' then return false end
+	end
+	for index = 1, #HOLD_STEPS do
+		local step = HOLD_STEPS[index]
+		local called, applied = pcall(players[step.name], step.take)
+		if not called or not applied then
+			for back = index - 1, 1, -1 do
+				local undo = HOLD_STEPS[back]
+				pcall(players[undo.name], undo.give)
+			end
+			return false
+		end
+	end
+	return true
 end
+
+-- The hold on its own, for the suite: opening the eye needs a screen ray, a
+-- cursor and a held key, none of which is what is under test there.
+M.HoldControls = controls
 
 --- Takes the eye down and hands the cursor, camera and weapons back.
 -- @author dop42
