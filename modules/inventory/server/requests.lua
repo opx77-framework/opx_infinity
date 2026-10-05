@@ -96,9 +96,11 @@ local function resolve(source, id)
 end
 
 --- Closes the second container, settling an offline bag a staff search had open.
-local function closeSecondary(source)
+-- `tell` writes the close back to the screen, which is what the page's own Close
+-- button needs: the page waits for that push and clears nothing by itself.
+local function closeSecondary(source, tell)
 	local view = Containers.Viewing(source)
-	Containers.CloseSecondary(source, false)
+	Containers.CloseSecondary(source, tell == true)
 	if not view or not view.staff then return end
 	local container = Containers.Get(view.id)
 	if not container or container.kind ~= KIND.CHARACTER then return end
@@ -140,8 +142,23 @@ handlers.close = function(source)
 	return true
 end
 
--- The page's own close of the second container is the same operation.
-handlers.closeSecondary = handlers.close
+--- The page's own Close on the second container: the same operation, said back.
+-- IT WAS `handlers.close`, which closes quietly because the whole screen is going
+-- away. The page keeps the screen and waits for the server's `secondary` push to
+-- clear the panel, so the trunk stayed drawn, closed on the server, and every
+-- drag into it after that was refused as "That is no longer there".
+handlers.closeSecondary = function(source)
+	closeSecondary(source, true)
+	return true
+end
+
+--- Toasts a refusal the player asked for by hand, and answers it.
+-- The cooldown is the one code left quiet, as it is for a use: it answers a
+-- burst, and a toast per click of a burst is the spam it exists to stop.
+local function refused(source, ok, code, operation)
+	if not ok and code ~= nil and code ~= 'too_fast' then refuse(source, code, operation) end
+	return ok, code
+end
 
 --- Moves, stacks or swaps a slot between containers the player may reach.
 handlers.move = function(source, payload)
@@ -154,8 +171,12 @@ handlers.move = function(source, payload)
 	if not may then return false, refusal end
 	local from = resolve(source, payload.from)
 	local to = resolve(source, payload.to)
-	if not from or not to then return false, 'not_found' end
-	return Containers.Move(from, fromSlot, to, slotOf(payload.toSlot), count)
+	-- EVERY REFUSAL FROM HERE ON IS SAID. A full trunk, a split with no room, a
+	-- weapon being holstered on the way out: the page draws no reason of its own,
+	-- so a move refused without a toast was a drag that snapped back in silence.
+	if not from or not to then return refused(source, false, 'not_found', M.Operation.MOVE) end
+	return refused(source, Containers.Move(from, fromSlot, to, slotOf(payload.toSlot), count),
+		M.Operation.MOVE)
 end
 
 --- Splits part of a stack into the first free slot.
@@ -167,8 +188,8 @@ handlers.split = function(source, payload)
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
 	local container = resolve(source, payload.container)
-	if not container then return false, 'not_found' end
-	return Containers.Split(container, slot, count)
+	if not container then return refused(source, false, 'not_found', M.Operation.MOVE) end
+	return refused(source, Containers.Split(container, slot, count), M.Operation.MOVE)
 end
 
 --- Packs a container the player may reach, by weight or by name.
@@ -177,8 +198,8 @@ handlers.sort = function(source, payload)
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
 	local container = resolve(source, payload.container)
-	if not container then return false, 'not_found' end
-	return Containers.Sort(container, payload.mode)
+	if not container then return refused(source, false, 'not_found', M.Operation.MOVE) end
+	return refused(source, Containers.Sort(container, payload.mode), M.Operation.MOVE)
 end
 
 --- Uses a bag slot, toasting any refusal except the cooldown.
@@ -196,7 +217,12 @@ handlers.drop = function(source, payload)
 	local countValid, count = countOf(payload.count)
 	if not countValid then return false, 'bad_request' end
 	local pile, code = Actions.Drop(source, payload.slot, count, payload.yaw)
-	if not pile then return false, code end
+	-- The cooldown is said here, unlike a burst of moves: a drop is one click, and
+	-- a click that does nothing is the silence this door exists to end.
+	if not pile then
+		refuse(source, code, M.Operation.DROP)
+		return false, code
+	end
 	return true, nil
 end
 

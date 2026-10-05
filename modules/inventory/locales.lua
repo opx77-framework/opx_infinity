@@ -72,7 +72,6 @@ OPX.Locale.Register('en', {
 	['inventory.context.glovebox'] = 'Open the glovebox',
 
 	['inventory.notify.gave'] = 'You handed over {count}x {item}.',
-	['inventory.notify.received'] = 'You were handed {count}x {item}.',
 	['inventory.notify.taken'] = '{count}x {item} was taken from your bag.',
 	['inventory.notify.cleared'] = 'Your bag was emptied.',
 
@@ -442,7 +441,6 @@ OPX.Locale.Register('fr', {
 	['inventory.context.glovebox'] = 'Ouvrir la boîte à gants',
 
 	['inventory.notify.gave'] = 'Vous avez donné {count}x {item}.',
-	['inventory.notify.received'] = 'On vous a donné {count}x {item}.',
 	['inventory.notify.taken'] = '{count}x {item} a été retiré de votre sac.',
 	['inventory.notify.cleared'] = 'Votre sac a été vidé.',
 

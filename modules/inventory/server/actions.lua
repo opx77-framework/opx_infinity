@@ -24,6 +24,16 @@ local usables = {}
 -- When each player's last accepted use was, for the cooldown.
 local lastUse = {}
 
+-- Until when each player is still eating or drinking the last thing they used:
+-- the end of its animation, on the server's clock.
+--
+-- THE COOLDOWN IS 750 MS AND A BITE IS 3 SECONDS. A hotbar key pressed four
+-- times inside one burrito ate four of them -- each use consumed the item and
+-- moved the needs at once, the progress bar refused the second gesture as busy,
+-- and the player saw one animation and lost the stack. A use whose item plays a
+-- timed gesture now holds the next one off until the gesture is over.
+local busyUntil = {}
+
 --- Registers the function to call when an item is used.
 -- The last registration wins, and replacing one somebody else holds is a warning:
 -- two modules fighting over one item is a bug in one of them, and only the
@@ -125,6 +135,7 @@ function Actions.Use(source, slot)
 	if now - (lastUse[source] or -math.huge) < OPX.Tune.Number('INVENTORY_USE_COOLDOWN_MS', 0) then
 		return false, 'too_fast'
 	end
+	if now < (busyUntil[source] or -math.huge) then return false, 'too_fast' end
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
 	-- HANDS FULL. Somebody carrying a hauling crate cannot draw a weapon or use
@@ -194,6 +205,9 @@ function Actions.Use(source, slot)
 		if not consumed then return false, 'not_enough' end
 	end
 
+	local gesture = type(use.animation) == 'table' and tonumber(use.animation.durationMs) or nil
+	if gesture and gesture > 0 then busyUntil[source] = now + gesture end
+
 	TriggerClientEvent(M.Event.USED, source, {
 		name = entry.name,
 		slot = slot,
@@ -252,7 +266,10 @@ function Actions.Give(source, target, slot, count)
 
 	local label = Catalog.Label(name)
 	OPX.NotifyLocale(source, 'inventory.notify.gave', { count = count, item = label }, 'success')
-	OPX.NotifyLocale(target, 'inventory.notify.received', { count = count, item = label }, 'info')
+	-- NOTHING IS SENT TO THE RECEIVER HERE. Their bag push already raises the
+	-- client's own "+2 Water" line (`announce`, client/main.lua) with the screen
+	-- closed, and with it open the stack lands in front of them; a server toast
+	-- on top read "You were handed 2x Water." and "+2 Water" for one hand-over.
 	return true, nil
 end
 
@@ -296,10 +313,12 @@ function Actions.Drop(source, slot, count, yaw)
 	if pile and not Containers.CanCarry(pile, entry.name, count, entry.metadata) then pile = nil end
 	if not pile then
 		local citizenId = Players.Citizen(source)
-		if not citizenId or not World.MayCreateDrop(source, citizenId) then
-			OPX.NotifyLocale(source, 'inventory.error.drop_limit', nil, 'error')
-			return nil, 'drop_limit'
-		end
+		-- The door toasts the refusal (`requests.lua`); toasting it here too was
+		-- the same sentence twice. The cooldown is its own reason: it said "too
+		-- many piles" to a player who had made one a second ago.
+		local may, why = false, 'drop_limit'
+		if citizenId then may, why = World.MayCreateDrop(source, citizenId) end
+		if not may then return nil, why or 'drop_limit' end
 		pile = World.CreateDrop(source, citizenId, position, entry.name)
 	end
 
@@ -487,5 +506,6 @@ end
 -- @param source Source
 function Actions.Forget(source)
 	lastUse[source] = nil
+	busyUntil[source] = nil
 	World.Forget(source)
 end

@@ -26197,6 +26197,170 @@ do
 	end
 end
 
+-- ── inventory papercuts: every refusal said once, a Close that closes ────────
+-- What a player met at the screen: the trunk's Close button left the trunk
+-- drawn (the server closed it quietly and the page waited for a push that never
+-- came), a full trunk or a split with no room snapped back with only the page's
+-- "That did not work.", a refused drop toasted twice, a hand-over announced
+-- itself twice to the receiver, a hotbar key ate four burritos in one bite, and
+-- an owner locking the car shut the trunk with no word.
+section('inventory papercuts: refusals are said once, and the trunk Close closes')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		local Containers, Players, Options, KIND, World =
+			inventory.Containers, inventory.Players, inventory.Options, inventory.KIND, inventory.World
+		local REQUEST, ANSWER, SECONDARY = inventory.Event.REQUEST, inventory.Event.ANSWER,
+			inventory.Event.SECONDARY
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+		local function seat(player, citizen)
+			control.Admit(player, 'account-' .. player)
+			control.Stand(player, 10.0, 20.0, 30.0)
+			character.Players[player] = {
+				PlayerData = { citizenId = citizen, source = player,
+					userId = 'account-' .. player, money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizen] = player
+			character.Registry.byUserId['account-' .. player] = player
+			local bag = Containers.Transient(KIND.CHARACTER, citizen, Options.BAG_SLOTS,
+				Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(player)
+			return bag
+		end
+		local PLAYER, OTHER = 811, 812
+		local bag = seat(PLAYER, 'citizen-papercut')
+		seat(OTHER, 'citizen-papercut-2')
+
+		local nextId = 0
+		local function ask(action, payload)
+			nextId = nextId + 1
+			local id, mark = nextId, #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[REQUEST](id, action, payload)
+			env.source = nil
+			control.Pump(20)
+			local reply, toasts, secondary = nil, {}, {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER and event[1] == id then
+					reply = { ok = event[2], code = event[3] }
+				elseif event.name == NOTIFY then
+					toasts[#toasts + 1] = { source = event.source, code = event[1] and event[1].code }
+				elseif event.name == SECONDARY and event.source == PLAYER then
+					secondary[#secondary + 1] = event[1]
+				end
+			end
+			return reply, toasts, secondary
+		end
+		local function mine(toasts, code)
+			local count = 0
+			for _, toast in ipairs(toasts) do
+				if toast.source == PLAYER and (code == nil or toast.code == code) then count = count + 1 end
+			end
+			return count
+		end
+		local function waterSlot()
+			for index, entry in pairs(bag.items) do if entry.name == 'water' then return index end end
+		end
+		local function waterLeft()
+			local total = 0
+			for _, entry in pairs(bag.items) do if entry.name == 'water' then total = total + entry.count end end
+			return total
+		end
+
+		-- The trunk's Close is said back to the screen.
+		local trunk = Containers.Transient(KIND.TRUNK, 'PAPER1', 10, 50000)
+		trunk.vehicleId = 4242
+		Containers.View(PLAYER, trunk)
+		local closed, _, pushes = ask('closeSecondary', {})
+		check('the Close on a trunk panel is answered', closed ~= nil and closed.ok == true)
+		check('and the close is pushed back, so the panel comes down',
+			#pushes == 1 and pushes[1] == false, #pushes)
+		check('and the server no longer counts it open', Containers.Viewing(PLAYER) == nil)
+		Containers.View(PLAYER, trunk)
+		local _, _, quiet = ask('close', {})
+		check('while closing the whole screen still closes it quietly', #quiet == 0, #quiet)
+
+		-- A move that cannot happen says why, once.
+		local moved, toasts = ask('move', { from = bag.id, to = bag.id, fromSlot = 3, toSlot = 4 })
+		check('a move from an empty slot is refused', moved ~= nil and moved.ok == false,
+			moved and moved.code)
+		check('and the refusal is one toast naming why',
+			mine(toasts) == 1 and type(toasts[1].code) == 'string'
+				and toasts[1].code:find('^inventory%.error%.') ~= nil,
+			mine(toasts) .. ' ' .. tostring(toasts[1] and toasts[1].code))
+		local gone, goneToasts = ask('split', { container = 99999, slot = 1, count = 1 })
+		check('a split in a container no longer open is said',
+			gone ~= nil and gone.ok == false and mine(goneToasts, 'inventory.error.not_found') == 1,
+			gone and gone.code)
+
+		-- A drop refused: one toast.
+		local dropped, dropToasts = ask('drop', { slot = 7, count = 1 })
+		check('a drop from an empty slot is refused with one toast',
+			dropped ~= nil and dropped.ok == false and mine(dropToasts) == 1, mine(dropToasts))
+		local first = World.MayCreateDrop(PLAYER, 'citizen-papercut')
+		World.CreateDrop(PLAYER, 'citizen-papercut', { x = 10, y = 20, z = 30, bucket = 0 }, 'water')
+		local may, reason = World.MayCreateDrop(PLAYER, 'citizen-papercut')
+		check('the pile cooldown has its own reason, not "too many piles"',
+			first == true and may == false and reason == 'too_fast', tostring(reason))
+
+		-- A hand-over is announced once to the receiver: by their own bag push.
+		Containers.Add(bag, 'water', 3)
+		local mark = #control.clientEvents
+		local given = ask('give', { target = OTHER, slot = waterSlot(), count = 1 })
+		local toReceiver = 0
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == NOTIFY and event.source == OTHER then toReceiver = toReceiver + 1 end
+		end
+		check('a give goes through', given ~= nil and given.ok == true, given and given.code)
+		check('and the receiver is not toasted by the server on top of their bag push',
+			toReceiver == 0, toReceiver)
+
+		-- A bite is not four bites.
+		local used = ask('use', { slot = waterSlot() })
+		check('a drink is used', used ~= nil and used.ok == true, used and used.code)
+		local afterFirst = waterLeft()
+		local again, againToasts = ask('use', { slot = waterSlot() })
+		check('a second press while the first drink is still going is held off',
+			again ~= nil and again.ok == false and again.code == 'too_fast', again and again.code)
+		check('without a toast, so a held key does not spam', mine(againToasts) == 0, mine(againToasts))
+		check('and costs nothing', waterLeft() == afterFirst, waterLeft())
+		control.Pump(20)
+		local later = ask('use', { slot = waterSlot() })
+		check('once the gesture is over the next one goes', later ~= nil and later.ok == true,
+			later and later.code)
+
+		-- A trunk shut by its lock says so.
+		local realReach, realLocked = World.WithinReach, World.TrunkLocked
+		World.WithinReach = function() return false end
+		World.TrunkLocked = function() return true end
+		Containers.View(PLAYER, trunk)
+		local lockMark = #control.clientEvents
+		World.SweepReach()
+		World.WithinReach, World.TrunkLocked = realReach, realLocked
+		local lockedToasts, closedPushes = 0, 0
+		for index = lockMark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == NOTIFY and event.source == PLAYER and event[1].code == 'inventory.error.locked' then
+				lockedToasts = lockedToasts + 1
+			elseif event.name == SECONDARY and event.source == PLAYER and event[1] == false then
+				closedPushes = closedPushes + 1
+			end
+		end
+		check('a trunk the owner locks closes', closedPushes == 1, closedPushes)
+		check('and says it was locked', lockedToasts == 1, lockedToasts)
+	end
+end
+
 -- ── reach and the routing bucket, on the server ──────────────────────────────
 -- `Open77.players.position` answered `{0,0,0,bucket=0}` for every id forever,
 -- with no way to move it, so every reach check in this runtime compared the
