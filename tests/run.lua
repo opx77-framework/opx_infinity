@@ -1670,6 +1670,32 @@ do
 		OPX.Locale.Set('fr')
 		check('in French too', OPX.Locale.Exists('character.nameLength'))
 		OPX.Locale.Set('en')
+
+		-- INVISIBLE AND TEXT-TURNING CODE POINTS. Any two- or three-byte
+		-- sequence passed the letter class, so a name could be nothing anybody
+		-- can read, or reverse whatever is drawn after it.
+		local hidden = {
+			zeroWidth = 'Jo\u{200B}hn', rlo = 'Ja\u{202E}ck', lro = 'Ja\u{202D}ck',
+			lineSeparator = 'Ja\u{2028}ck', c1 = 'Ja\u{85}ck', bom = 'Ja\u{FEFF}ck',
+			wordJoiner = 'Ja\u{2060}ck', hangulFiller = 'Ja\u{3164}ck', nbsp = 'Ja\u{A0}ck',
+		}
+		for label, name in pairs(hidden) do
+			local checked = character.ValidateName(name)
+			check(('a name holding a %s is refused'):format(label),
+				checked.ok == false and character.NameRefusal(checked) == 'character.nameInvisible',
+				checked.ok and 'accepted' or tostring(checked.error))
+		end
+		check('while accents and other alphabets are still letters',
+			character.ValidateName('Éloïse').ok and character.ValidateName('Zoë-Anne').ok
+				and character.ValidateName('Ваня').ok and character.ValidateName("O'Neil").ok)
+		check('and the refusal has its sentence in both languages',
+			OPX.Locale.Text('character.nameInvisible') ~= 'character.nameInvisible'
+				and (function()
+					OPX.Locale.Set('fr')
+					local said = OPX.Locale.Text('character.nameInvisible')
+					OPX.Locale.Set('en')
+					return said ~= 'character.nameInvisible' and said:find('caractères', 1, true) ~= nil
+				end)())
 	end
 end
 
