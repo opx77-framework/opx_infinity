@@ -97,7 +97,7 @@ M.Event = {
 
 	-- The public SERVER bus, for other resources: a delivery was sold and paid.
 	-- Raised by the server only, `(player, { ... })`; see
-	-- `core/server/publish.lua` and README.md "For creators".
+	-- `core/server/publish.lua` and docs/MANUAL.md "For creators".
 	ON_SOLD = OPX.Event(LOCAL, 'hauling', 'sold'),
 }
 

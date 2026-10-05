@@ -10,7 +10,7 @@
 -- name to a minimum grade), the `items` that turn it (`name`, `metadata`,
 -- `remove`), the `characters` that turn it, a `passcode`, `lockSound` /
 -- `unlockSound`, `hideUi` and `holdOpen`. What a field means is what it means in
--- ox; where Night City cannot do the same thing the README says so ("Door locks").
+-- ox; where Night City cannot do the same thing docs/MANUAL.md says so ("Door locks").
 --
 -- A DOOR IS IDENTIFIED BY A NUMBER, as in ox: the row id of `opx77_doorlocks`,
 -- given when the door is created and never reused. `/opx.doorlock.list` prints

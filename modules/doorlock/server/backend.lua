@@ -19,7 +19,7 @@
 -- server runs today: `open77_doors` depends on `open77_elevators`, and that
 -- package would take the cabins away from the job-gated `elevators` module.
 -- The lock is then each client's, which is a weaker promise -- a modified
--- client can open its own copy of a door -- and the README says so.
+-- client can open its own copy of a door -- and docs/MANUAL.md says so.
 --
 -- Every call into the service is an export through `Open77.exports.call`, so it
 -- yields: everything here runs on a thread.

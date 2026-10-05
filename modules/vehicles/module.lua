@@ -28,7 +28,7 @@ M.Event = {
 
 	-- The public server bus, for OTHER resources: a vehicle came out of storage
 	-- or went back into it. `(source|nil, { citizenId, plate, ... })`; see
-	-- `core/server/publish.lua` and README.md "For creators".
+	-- `core/server/publish.lua` and docs/MANUAL.md "For creators".
 	ON_SPAWNED = OPX.Event(OPX.Channel.LOCAL, 'vehicles', 'spawned'),
 	ON_STORED = OPX.Event(OPX.Channel.LOCAL, 'vehicles', 'stored'),
 	-- A vehicle row made for a character (bought, given, a reward), and one moved
