@@ -302,7 +302,11 @@ function M.Start()
 
 		local point = pointOf(player)
 		if point == nil then return end
-		local here = Access.Nearest(Access.InBucket(spots, point.bucket), point.x, point.y)
+		-- With the server's slack (`REACH_SLACK`): the room went up from where
+		-- the client stood, and a save refused for a metre of latency is a save
+		-- the player never hears was refused.
+		local here = Access.Nearest(Access.InBucket(spots, point.bucket), point.x, point.y,
+			OPX.Spots.ServerReachSq(Access.USE_RADIUS))
 		if here == nil then
 			Open77.log.debug(('[clothing] player %d asked for a store they are not standing on')
 				:format(player))

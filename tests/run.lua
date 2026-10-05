@@ -6968,6 +6968,24 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
 
+		-- THE ROW AND THE SERVER AGREE AT THE EDGE. The client draws the row out to
+		-- USE_RADIUS from where IT stands; the server measures where it last saw
+		-- the player, a moment behind, and allows REACH_SLACK for it. Half a metre
+		-- past the drawn edge used to be refused as too far.
+		local edge = garages.Access.USE_RADIUS + 0.5
+		place('edge_dock', {
+			KIND = 'garage', LABEL = 'EDGE',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = edge, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = edge, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.netEvents[garages.Event.REQUEST]('edge_dock')
+		control.Pump(8)
+		check('half a metre past the drawn edge is not refused as too far',
+			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] ~= 'garages.tooFar',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
 		place('other_bucket', {
 			KIND = 'garage', LABEL = 'ELSEWHERE',
 			LOCATIONS = { { BUCKET = 7,
@@ -17480,6 +17498,12 @@ do
 			(Access.AtEntrance(at, 100.0, 200.0, 10.0, 0)) == true)
 		check('a body across the street is not',
 			select(2, Access.AtEntrance(at, 140.0, 200.0, 10.0, 0)) == 'too_far')
+		-- The server measures a moment behind the client that drew the row, and
+		-- allows REACH_SLACK for it: the edge of the drawn row is still a press.
+		check('half a metre past the drawn radius is still standing on it, for the server',
+			(Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 0.5, 200.0, 10.0, 0)) == true)
+		check('and a metre and a half past it is not',
+			select(2, Access.AtEntrance(at, 100.0 + Access.USE_RADIUS + 1.5, 200.0, 10.0, 0)) == 'too_far')
 		check('nor is one in another routing bucket standing in the same spot',
 			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0, 7)) == 'wrong_bucket')
 		-- THE VERTICAL BAND, which is the measurement the elevators deliberately
