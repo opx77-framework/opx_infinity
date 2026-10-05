@@ -282,7 +282,9 @@ local function screenFor(current)
 		end
 		items[#items + 1] = { separator = true, label = '' }
 		items[#items + 1] = { id = 'close', label = locale('dealership.close'), close = true }
-		return locale('dealership.menu.sell', { player = tostring(arg.name or arg.buyer) }), items,
+		-- The buyer's server id, never a name: `arg.name` was the eye's
+		-- `displayName`, the account gamertag. Never a name to a stranger.
+		return locale('dealership.menu.sell', { id = tostring(arg.buyer) }), items,
 			{ status = locale('dealership.menu.sellHint') }
 	end
 
@@ -300,8 +302,7 @@ local function screenFor(current)
 			{ id = 'yes', label = locale('dealership.offerAccept'), value = tostring(offer.text),
 				submenu = true, data = { decide = true } },
 			{ id = 'no', label = locale('dealership.offerDecline'), data = { decide = false } },
-		}, { status = locale('dealership.menu.offerHint', {
-			seller = tostring(offer.seller), price = tostring(offer.text) }) }
+		}, { status = locale('dealership.menu.offerHint', { price = tostring(offer.text) }) }
 	end
 
 	-- THE BUYER'S GARAGE, under a salesperson's offer. The counter's own
@@ -681,9 +682,8 @@ end
 -- has a company to bank into and that the buyer has the money, before it so much
 -- as records an offer.
 -- @param buyer integer the player id the eye resolved
--- @param name string|nil what to call them on the screen
 -- @return table
-function Runtime.Sell(buyer, name)
+function Runtime.Sell(buyer)
 	local result = { source = 'target' }
 	buyer = tonumber(buyer)
 	if buyer == nil then
@@ -705,7 +705,7 @@ function Runtime.Sell(buyer, name)
 	end
 
 	takeDown()
-	stack = { { screen = 'sell', arg = { buyer = buyer, name = name } } }
+	stack = { { screen = 'sell', arg = { buyer = buyer } } }
 	if not draw() then
 		result.ok, result.error = false, 'dealership.noList'
 		publish(result)
@@ -821,8 +821,7 @@ local function sellRow()
 			local target = type(context) == 'table' and context.target or nil
 			local id = type(target) == 'table' and math.tointeger(target.playerId) or nil
 			if id == nil or id < 1 then return false end
-			local answer = Runtime.Sell(id, type(target.displayName) == 'string'
-				and target.displayName or nil)
+			local answer = Runtime.Sell(id)
 			return answer.ok == true
 		end,
 	}
@@ -1031,7 +1030,7 @@ function Runtime.Start()
 		if handle ~= nil and not offerOnScreen() then
 			offerWaiting = true
 			return say('info', locale('dealership.offerWaiting',
-				{ seller = tostring(payload.seller or '?'), model = tostring(payload.model or '?') }))
+				{ model = tostring(payload.model or '?') }))
 		end
 		showOffer()
 	end)

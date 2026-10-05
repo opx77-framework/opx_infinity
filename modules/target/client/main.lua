@@ -1097,9 +1097,11 @@ end
 -- the short version is that `character` cannot depend on `target` without
 -- closing a cycle through `downed`, and the graph refuses a cycle by name.
 --
--- BOTH VALUES ARE ALREADY ON THIS CLIENT. The character id is replicated on the
--- player's own state bag -- it is what draws their nameplate -- so this row reads
--- what is here rather than asking the server for something about somebody else.
+-- THE SERVER ID ONLY. The character id was the second half of the answer, read
+-- off the player's replicated state bag; never a name to a stranger is the
+-- owner's decision (#91), a citizen id names a person as surely as their name
+-- does, and the bag no longer carries it. The server id is what a report to
+-- staff needs, and the eye already holds it.
 local IDENTIFY_OWNER = 'target'
 
 -- The player id the eye's context names, as a number.
@@ -1109,19 +1111,6 @@ local function identifyTarget(context)
 	local id = tonumber(subject.playerId)
 	if id == nil or id <= 0 or id % 1 ~= 0 then return nil end
 	return id
-end
-
--- The character id replicated for one player, or nil when the bag has not
--- arrived. A player whose bag is silent is a player this row cannot answer
--- about, which is the honest answer rather than a blank line.
-local function citizenOf(playerId)
-	local character = OPX.Api.Get('character')
-	if type(character) ~= 'table' or type(character.GetPlayerIdentity) ~= 'function' then
-		return nil
-	end
-	local read, identity = pcall(character.GetPlayerIdentity, playerId)
-	if not read or type(identity) ~= 'table' then return nil end
-	return identity.citizenId
 end
 
 -- Puts one line on the clipboard, and answers whether it went. A host with no
@@ -1169,33 +1158,22 @@ function M.IdentifyRow(reach)
 			icon = 'tag',
 			order = 5,
 			distance = reach,
-			-- Offered only when there is something to answer with. A row that
-			-- appears and then says "unknown" teaches a player the feature is
-			-- broken; one that is simply absent teaches them the bag has not
-			-- arrived yet, which is what is true.
+			-- Offered on any player the eye resolved to an id.
 			canInteract = function(context)
-				local who = identifyTarget(context)
-				return who ~= nil and citizenOf(who) ~= nil
+				return identifyTarget(context) ~= nil
 			end,
 			onSelect = function(context)
 				local who = identifyTarget(context)
 				if who == nil then return false end
-				local citizen = citizenOf(who)
-				if citizen == nil then return false end
 
-				local line = ('%d / %s'):format(who, citizen)
-				local copied = copy(line)
+				local copied = copy(tostring(who))
 				OPX.Toast.Show({
 					id = 'opx.target.identify',
 					kind = 'info',
 					title = OPX.Locale.Text('target.identify.title'),
-					-- BOTH NUMBERS, NAMED. "id serveur est id perso": they are
-					-- different things with different lifetimes, and a toast that
-					-- printed two bare values would leave the reader guessing
-					-- which was which.
 					message = OPX.Locale.Text(
 						copied and 'target.identify.copied' or 'target.identify.shown',
-						{ server = tostring(who), citizen = citizen }),
+						{ server = tostring(who) }),
 					durationMs = 8000,
 				})
 				return true

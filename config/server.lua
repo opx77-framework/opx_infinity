@@ -14,9 +14,11 @@ OPX.Config.SERVER = {
 	-- written to the audit log with the name it came from.
 	--
 	--   READ     who may ASK: GetPlayerData, GetMoney, HasJob, HasItem, IsStaff
-	--            and the other reads. '*' is every resource on the host -- the
-	--            answers are what the player state bag already publishes, plus a
-	--            balance and a bag count -- or a set: { my_hud = true }.
+	--            and the other reads. '*' is every resource on the host, or a
+	--            set: { my_hud = true }. The answers name characters, jobs, gangs
+	--            and balances: a resource that hands them on to clients hands
+	--            them to strangers, and never a name to a stranger is the owner's
+	--            rule -- the state bag stopped carrying any of it for that reason.
 	--   WRITERS  who may CHANGE something: money, items, stashes, chat lines,
 	--            keys, a vehicle's state, a job, a gang, duty, a revive, the
 	--            caller's own character metadata, a runtime item or use handler,
