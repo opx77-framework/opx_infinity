@@ -53,6 +53,13 @@ const cancelKey = ref('')
     before the transition begins -- set in the same frame, it would jump. */
 const filled = ref(false)
 
+/** One per `show`, and the bar's key. A show arriving while a bar is still up -- one
+    action straight after another -- used to keep the element: its "empty" was a
+    transition back from wherever the last bar stood, reversed 32ms later, so the
+    new bar started at (nearly) full and stayed there. A new key is a new element,
+    and a new element starts at zero. */
+const run = ref(0)
+
 /** The transition's own duration, in milliseconds. */
 const span = shallowRef(0)
 
@@ -71,6 +78,7 @@ useBridge('opx:progress:show', (payload: Payload) => {
   cancelable.value = bool(payload.cancelable) && cancelKey.value !== ''
   span.value = Math.max(0, num(payload.durationMs))
   filled.value = false
+  run.value += 1
   open.value = true
   // ONE FRAME AT ZERO. A transition started in the frame the element mounts in
   // has no "from" to interpolate out of, so the bar snaps full and then sits
@@ -94,6 +102,7 @@ onUnmounted(clearRaise)
 
       <span class="track op-frame" data-augmented-ui="tr-clip border">
         <span
+          :key="run"
           class="bar"
           :style="{
             transform: filled ? 'scaleX(1)' : 'scaleX(0)',
