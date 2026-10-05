@@ -19565,8 +19565,22 @@ do
 			GetPlayer = function() return { PlayerData = { citizenId = 'ABC12345' } } end,
 			GetMoney = function() return { EDDIES = purse } end,
 			RemoveMoney = function(_, _, amount) purse = purse - amount return true end,
-			AddMoney = function(_, _, amount) purse = purse + amount return true end,
+			-- THE CONNECTION IS GONE by the time the refund is due, as it is
+			-- when the player leaves during the insert: by connection, the
+			-- refund is refused, and the answer used to be ignored.
+			AddMoney = function() return false, 'error.notLoggedIn' end,
+			AddMoneyOffline = function(citizenId, _, amount)
+				if citizenId ~= 'ABC12345' then return OPX.Result.Err('character.notFound') end
+				purse = purse + amount
+				return OPX.Result.Ok({ balance = purse, offline = true })
+			end,
 		}, { __index = realCharacter })
+		local inventoryTargets = {}
+		local fakeAdd = crafting.Contracts.inventory.AddItem
+		rawset(crafting.Contracts.inventory, 'AddItem', function(target, name, count)
+			inventoryTargets[#inventoryTargets + 1] = target
+			return fakeAdd(target, name, count)
+		end)
 
 		-- The shelf read says there is room; by the time the row is filed,
 		-- another order has taken it.
@@ -19586,7 +19600,10 @@ do
 			answer and tostring(answer.error))
 		check('the bench\'s cap travels with the insert', queued == 1, tostring(queued))
 		check('the materials come back', bag.scrap_metal == 2, bag.scrap_metal)
-		check('and so does the fee', purse == 100, purse)
+		check('and so does the fee, to the character, whether or not the connection is still there',
+			purse == 100, purse)
+		check('the materials go back to the bag of the character, not to whoever holds the connection',
+			#inventoryTargets > 0 and inventoryTargets[1] == 'ABC12345', tostring(inventoryTargets[1]))
 
 		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
 		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
@@ -36621,6 +36638,13 @@ do
 			and contract.GetFromName('Great Hall').ok and contract.Get(made.value).value.name == 'Great Hall')
 		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
 		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
+		local huge = made.ok and contract.Edit(made.value, { passcode = 1e20 }, 'ext:test')
+		check('a numeric code past 2^63 is refused, never stored as the word "nil"',
+			huge and huge.ok == false and huge.error == 'doorlock.error.bad_passcode',
+			huge and tostring(huge.error))
+		local numeric = made.ok and contract.Edit(made.value, { passcode = 4321 }, 'ext:test')
+		check('while an ordinary numeric code is still taken as its digits',
+			numeric and numeric.ok == true, numeric and tostring(numeric.error))
 		check('with a code that has a sentence, naming the field in the detail',
 			wrong and wrong.error == 'doorlock.error.bad_field' and wrong.detail == 'autolock'
 				and OPX.Locale.Text(wrong.error) ~= wrong.error, wrong and tostring(wrong.error))
