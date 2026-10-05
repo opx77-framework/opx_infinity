@@ -27,9 +27,24 @@ end
 -- length (240) instead.
 local MAX_AUTHOR = 64
 
+-- The three settings every line reads, resolved once in Init from the config.
+--
+-- READ BOUNDED, WITH A DEFAULT. They were read raw on every line, so a config
+-- block missing MAX_LENGTH raised on every message (`maximum * 4` on nil) and
+-- one missing RATE_MS raised comparing against nil: the chat went silent for
+-- everybody, with a stack trace per line as the only clue. `MAX_LENGTH = 0`
+-- turned every message into "...".
+local tuning = {}
+
+local function bounded(value, low, high, default)
+	local number = OPX.Math.Finite(value)
+	if number == nil or number < low or number > high then return default end
+	return math.floor(number)
+end
+
 --- Cleans display text to MAX_LENGTH characters, never nil.
 local function clean(value)
-	return OPX.Text.Clean(value, M.Settings.MAX_LENGTH, '...') or ''
+	return OPX.Text.Clean(value, tuning.maxLength, '...') or ''
 end
 
 --- Relays a player's message to everyone, attributed to its connection.
@@ -43,7 +58,7 @@ local function onSaid(text)
 	-- advance it, and pay for a bounded walk every time.
 	local at = nowMs()
 	local previous = lastSaidMs[player]
-	if previous ~= nil and at - previous < M.Settings.RATE_MS then
+	if previous ~= nil and at - previous < tuning.rateMs then
 		-- SAID, ONCE A BURST. The box has already closed and cleared on the
 		-- client, so a second line typed quickly simply never appeared for
 		-- anyone. The toast is cooled itself: a flood earns one, not one each.
@@ -78,7 +93,7 @@ end
 local function onReady()
 	local player = tonumber(source) or 0
 	if player <= 0 then return end
-	if OPX.Cooling(player, 'chat.ready', M.Settings.READY_MS) then return end
+	if OPX.Cooling(player, 'chat.ready', tuning.readyMs) then return end
 
 	-- Core owns the list, and with it the rule that a restricted command is only
 	-- offered to a player the ACL would let run it.
@@ -245,6 +260,12 @@ end
 -- @author dop42
 function M.Init()
 	lastSaidMs = {}
+	local settings = type(OPX.Config.MODULES.chat) == 'table' and OPX.Config.MODULES.chat or {}
+	tuning = {
+		maxLength = bounded(settings.MAX_LENGTH, 1, 2000, 240),
+		rateMs = bounded(settings.RATE_MS, 0, 60000, 800),
+		readyMs = bounded(settings.READY_MS, 0, 600000, 5000),
+	}
 end
 
 --- Publishes the server's voice: one line to one player, or to many.

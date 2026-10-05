@@ -29449,6 +29449,49 @@ do
 	end
 end
 
+-- A chat block an operator trimmed: no MAX_LENGTH, no RATE_MS, no READY_MS.
+-- Every line used to raise on the missing number, and the chat went silent.
+section('chat: a config block missing its numbers still relays')
+do
+	local env, control, why = boot('server', nil, nil, function(e, file)
+		if file ~= 'config/chat.lua' then return end
+		local block = e.OPX.Config.MODULES.chat
+		block.MAX_LENGTH, block.RATE_MS, block.READY_MS = nil, nil, nil
+	end)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local chat = OPX.Modules.Get('chat')
+		control.Admit(33, 'account-trimmed')
+		OPX.EnsureSession(33)
+		local before = #control.clientEvents
+		local errors = #control.log.error
+		env.source = 33
+		local ran = pcall(control.netEvents[chat.Event.SAY], 'still here')
+		control.Pump(4)
+		local relayed = nil
+		for index = before + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then relayed = sent[1] end
+		end
+		check('a line is relayed at the default length, not raised on',
+			ran and relayed ~= nil and relayed.text == 'still here' and #control.log.error == errors,
+			relayed and relayed.text or 'nothing relayed')
+		local long = ('a'):rep(300)
+		control.Pump(20)
+		env.source = 33
+		control.netEvents[chat.Event.SAY](long)
+		control.Pump(4)
+		local cut = nil
+		for index = #control.clientEvents, 1, -1 do
+			local sent = control.clientEvents[index]
+			if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then cut = sent[1] break end
+		end
+		check('and a long one is cut at the shipped default',
+			cut ~= nil and #cut.text == 240 + 3, cut and #cut.text)
+	end
+end
+
 -- The chat line goes to EVERY client on the server. It was signed with the
 -- character's name, else the account's gamertag, else the first eight characters
 -- of the durable account id. Never a name to a stranger (the owner, after #91):
