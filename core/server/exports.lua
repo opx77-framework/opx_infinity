@@ -609,6 +609,47 @@ publish('Revive', 'write', function(caller, source, reason)
 	return answered(downed.Revive(id, caller, reason))
 end)
 
+-- ── needs ────────────────────────────────────────────────────────────────────
+-- The server owns them (the owner's ruling, 2026-10), so these are the creator's
+-- door to them: through the `needs` contract, bounded and clamped there, and
+-- announced on `opx:on:needs:changed` like any other move. The reason a write
+-- names is what the client and the bus are told moved the needs.
+
+--- A needs patch: a table of plain number values under plain names, or nil.
+local function needsPatch(value)
+	if type(value) ~= 'table' then return nil end
+	local count = 0
+	for key, number in pairs(value) do
+		count = count + 1
+		if count > 16 or type(key) ~= 'string' or #key > 32 or type(number) ~= 'number' then
+			return nil
+		end
+	end
+	return count > 0 and value or nil
+end
+
+publish('GetNeeds', 'read', function(_, source)
+	local needs = OPX.Api.Get('needs')
+	if needs == nil then return refuse('error.unavailable') end
+	local id = playerOf(source)
+	if id == nil then return refuse('export.badArgument') end
+	return answered(needs.GetNeeds(id))
+end, true)
+
+--- The two needs writes share everything but the verb.
+local function needsDoor(verb)
+	return function(caller, source, patch)
+		local needs = OPX.Api.Get('needs')
+		if needs == nil then return refuse('error.unavailable') end
+		local id = playerOf(source)
+		local values = needsPatch(patch)
+		if id == nil or values == nil then return refuse('export.badArgument') end
+		return answered(needs[verb](id, values, 'ext:' .. caller))
+	end
+end
+publish('AddNeeds', 'write', needsDoor('AddNeeds'), true)
+publish('SetNeeds', 'write', needsDoor('SetNeeds'), true)
+
 -- ── items ────────────────────────────────────────────────────────────────────
 
 --- The inventory contract, or nil.

@@ -17,6 +17,7 @@ OPX.Locale.Register('en', {
 	['chat.key.escape'] = 'Esc',
 	['chat.messageNotSent'] = 'The message could not be sent.',
 	['chat.tooFast'] = 'That message was not sent: wait a moment between two.',
+	['chat.notLoaded'] = 'That message was not sent: you speak once your character is in the city.',
 
 	['chat.command.unknown'] = '/{command} is not a command on this server.',
 	['chat.command.denied'] = 'You are not allowed to run /{command}.',
@@ -54,6 +55,7 @@ OPX.Locale.Register('fr', {
 	['chat.key.escape'] = 'Échap',
 	['chat.messageNotSent'] = "Le message n'a pas pu être envoyé.",
 	['chat.tooFast'] = "Ce message n'a pas été envoyé : attendez un instant entre deux.",
+	['chat.notLoaded'] = "Ce message n'a pas été envoyé : vous parlez une fois votre personnage en ville.",
 
 	['chat.command.unknown'] = "/{command} n'est pas une commande de ce serveur.",
 	['chat.command.denied'] = "Vous n'avez pas le droit de lancer /{command}.",

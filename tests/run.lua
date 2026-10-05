@@ -16954,47 +16954,6 @@ do
 		if character ~= nil then character.GetPlayer = getPlayer end
 	end
 end
--- ── the last needs push of a disconnect ────────────────────────────────────
--- `needs not pushed: session_not_active` was written to the client log on EVERY
--- disconnect: the unload and `Stop` push one last time over a session that is
--- already closed. Harmless -- the server writes the last push it holds when the
--- player departs -- so it is not a warning. Any other refusal still is.
-section('the last needs push of a disconnect')
-do
-	local env, control, why = boot('client')
-	check('the client boots for the needs push', why == nil, why)
-	if why == nil then
-		local OPX = env.OPX
-		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
-		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-1' })
-		local onValues = control.netEvents[VALUES]
-		if onValues then onValues('CIT-NEED-1', { hunger = 40, thirst = 40 }) end
-		local needs = OPX.Api.Get('needs')
-		check('the needs are loaded', needs ~= nil and needs.GetNeeds().ok == true)
-
-		local function warnedPush()
-			for _, line in ipairs(control.log.warn) do
-				if tostring(line):find('needs not pushed', 1, true) then return true end
-			end
-			return false
-		end
-		local send = env.TriggerServerEvent
-		env.TriggerServerEvent = function() return false, 'session_not_active' end
-		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
-		check('A PUSH OVER A CLOSED SESSION IS NOT A WARNING', not warnedPush(),
-			table.concat(control.log.warn, ' | '))
-
-		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-2' })
-		env.TriggerServerEvent = send
-		onValues = control.netEvents[VALUES]
-		if onValues then onValues('CIT-NEED-2', { hunger = 40, thirst = 40 }) end
-		env.TriggerServerEvent = function() return false, 'network_payload_too_large' end
-		needs.AddNeeds({ hunger = 30 })
-		check('but any other refusal still is', warnedPush(), table.concat(control.log.warn, ' | '))
-		env.TriggerServerEvent = send
-	end
-end
-
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
@@ -17932,8 +17891,21 @@ do
 		end
 
 		local gave, giveWhy = Actions.Give(ALICE, BOB, slot, 120)
-		check('a stack of eddies hands over like any other item', gave == true,
+		check('a stack of eddies is offered like any other item', gave == true,
 			tostring(giveWhy))
+		-- A GIVE ASKS FIRST (the owner, 2026-10): nothing moves until Bob says yes.
+		check('and nothing has moved before the receiver answers',
+			Currency.CountIn(aliceBag) == 300, tostring(Currency.CountIn(aliceBag)))
+		local offerToken
+		for index = #control.clientEvents, 1, -1 do
+			local sent = control.clientEvents[index]
+			if sent.name == inventory.Event.GIVE_OFFER and sent.source == BOB then
+				offerToken = sent[1]
+				break
+			end
+		end
+		local took, tookWhy = Actions.AnswerGive(BOB, offerToken, true)
+		check('the receiver accepts it', took == true, tostring(tookWhy))
 		check('the giver is down the notes', Currency.CountIn(aliceBag) == 180,
 			tostring(Currency.CountIn(aliceBag)))
 		check('the taker has them', Currency.CountIn(bobBag) == 120,
@@ -27969,6 +27941,19 @@ do
 			Containers.Add(bag, currency, 500)
 			local mark = #control.notices
 			local given = ask('give', { target = OTHER, slot = slotOf(currency), count = 200 })
+			-- The receiver says yes, through the door their client uses.
+			local token
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == inventory.Event.GIVE_OFFER and sent.source == OTHER then
+					token = sent[1]
+					break
+				end
+			end
+			env.source = OTHER
+			control.netEvents[inventory.Event.GIVE_ANSWER](token, true)
+			env.source = nil
+			control.Pump(4)
 			local toReceiver
 			for index = mark + 1, #control.notices do
 				if control.notices[index].playerId == OTHER then toReceiver = control.notices[index].message end
@@ -28294,13 +28279,19 @@ do
 		local shops = env.OPX.Modules.Get('shops')
 		local GUESSER = 913
 		control.Admit(GUESSER, 'account-913')
+		-- A code is redeemed only at a shop's counter with its room open (the
+		-- owner, 2026-10), so the guesser stands at one with the room up.
+		control.Stand(GUESSER, -1180.0, 1550.0, 25.0)
+		env.OPX.Api.Get('appearance').OpenWardrobe(GUESSER,
+			{ owner = 'shops:thrift_watson', charge = function() return true end })
 		local redeem = control.netEvents[shops.Event.REDEEM]
 		check('the redeem door is wired', type(redeem) == 'function')
 		if type(redeem) == 'function' then
 			local before = lookups
 			for attempt = 1, 20 do
 				env.source = GUESSER
-				redeem({ code = 'ABCDEFG' .. ('23456789ABCDEFGHJKLM'):sub(attempt, attempt) })
+				redeem({ shop = 'thrift_watson',
+					code = 'ABCDEFG' .. ('23456789ABCDEFGHJKLM'):sub(attempt, attempt) })
 				env.source = nil
 			end
 			control.Pump(10)
@@ -28308,7 +28299,7 @@ do
 				lookups - before == 1, lookups - before)
 			control.Pump(25)
 			env.source = GUESSER
-			redeem({ code = 'ABCD9999' })
+			redeem({ shop = 'thrift_watson', code = 'ABCD9999' })
 			env.source = nil
 			control.Pump(10)
 			check('and the door opens again once the window has passed',
@@ -30286,6 +30277,9 @@ do
 		local chat = OPX.Modules.Get('chat')
 		control.Admit(33, 'account-trimmed')
 		OPX.EnsureSession(33)
+		-- A loaded character: a connection with none does not speak to the server.
+		OPX.Modules.Get('character').Players[33] =
+			{ PlayerData = { source = 33, citizenId = 'CIT-TRIM-33' } }
 		local before = #control.clientEvents
 		local errors = #control.log.error
 		env.source = 33
@@ -30341,13 +30335,34 @@ do
 				return nil
 			end
 
+			-- NO CHARACTER, NO LINE (the owner, 2026-10). A slot on the character
+			-- screen used to reach the whole server; it is refused, and told so.
 			control.Admit(31, 'account-id-31-durable')
 			OPX.EnsureSession(31)
+			local before = #control.clientEvents
+			env.source = 31
+			control.netEvents[said]('hello')
+			control.Pump(4)
+			local relayed, refused = false, nil
+			local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+			for index = before + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == chat.Event.MESSAGE then relayed = true end
+				if sent.name == NOTIFY and sent.source == 31 and type(sent[1]) == 'table' then
+					refused = sent[1].code
+				end
+			end
+			check('with no character loaded nothing is relayed', not relayed)
+			check('and the speaker is told why, in words of their own', refused == 'chat.notLoaded'
+				and OPX.Locale.Exists('chat.notLoaded'), tostring(refused))
+			-- Staff still may: they are who a player stuck on that screen needs.
+			control.Allow(31, 'command.opx.admin')
+			control.Advance(5000)
 			env.source = 31
 			control.netEvents[said]('hello')
 			control.Pump(4)
 			local line = lastLine() or {}
-			check('with no character loaded the line is signed with the server id',
+			check('staff with no character still speak, signed with the server id',
 				tostring(line.author):find('#31', 1, true) ~= nil, tostring(line.author))
 			local wire = env.json.encode(line)
 			check('and carries neither the account name nor the account id',
@@ -33800,6 +33815,405 @@ local function standCharacter(env, control, source, citizenId, money)
 	character.Registry.byCitizenId[citizenId] = source
 	character.Registry.byUserId['account-' .. source] = source
 	return character.Players[source]
+end
+
+-- ── needs are the server's ──────────────────────────────────────────────────
+-- THE OWNER, 2026-10: needs are SERVER-AUTHORITATIVE. The client used to decay
+-- its own hunger and thirst and push them here, so a client that pushed 100 was
+-- never hungry. The server now decays them on its own clock, raises them only
+-- through an item used, a staff command or a creator export, and sends them to
+-- a client that draws what it is sent. (This replaces "the last needs push of a
+-- disconnect": there is no push left to warn about.)
+section('needs: the server decays, raises and sends them; a client cannot')
+do
+	local stored = {}
+	local bridge = Host.Database({
+		query = function() return {} end,
+		single = function(sql, params)
+			if sql:find('opx77_character_status', 1, true) and params and stored[params.citizen] then
+				return { needs = stored[params.citizen] }
+			end
+			return nil
+		end,
+		scalar = function() return 0 end,
+		insert = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('opx77_character_status', 1, true) and params and params.citizen then
+				stored[params.citizen] = params.needs
+			end
+			return 1
+		end,
+		transaction = function() return true end,
+	})
+	local env, control, why = boot('server', bridge)
+	check('the server boots for the needs', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local P = 451
+		local citizen = OPX.CitizenId.Generate()
+		standCharacter(env, control, P, citizen)
+		stored[citizen] = env.json.encode({ hunger = 50, thirst = 80, stamina = 100, streetCred = 0 })
+		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
+		local function lastValues()
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == VALUES and sent.source == P then return sent end
+			end
+		end
+
+		check('nothing answers a needs push any more',
+			control.netEvents['opx:net:needs:push'] == nil)
+		check('the pull is still a door: a client asks what to draw',
+			type(control.netEvents['opx:net:needs:pull']) == 'function')
+
+		-- The server's own word that a character arrived loads the row.
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), P,
+			OPX.Modules.Get('character').Players[P].PlayerData)
+		control.Pump(6)
+		local sent
+		for index = 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == VALUES and event.source == P and event[3] == 'loaded' then sent = event end
+		end
+		check('a loaded character\'s needs are read and sent without being asked',
+			sent ~= nil and sent[1] == citizen and type(sent[2]) == 'table'
+				and sent[2].hunger == 50 and sent[3] == 'loaded', sent and tostring(sent[3]))
+
+		local needs = OPX.Api.Get('needs')
+		check('the server publishes the contract every mover goes through',
+			needs ~= nil and type(needs.AddNeeds) == 'function'
+				and type(needs.SetNeeds) == 'function' and type(needs.GetNeeds) == 'function')
+
+		-- DECAY, on the server's clock: hunger 0.20 a minute, thirst 0.28.
+		local mark = #control.clientEvents
+		control.Advance(10 * 60000)
+		control.Pump(3)
+		local now = needs.GetNeeds(P)
+		check('ten minutes later the server has charged the decay itself',
+			now.ok and math.abs(now.value.values.hunger - 48) < 0.01
+				and math.abs(now.value.values.thirst - 77.2) < 0.01,
+			now.ok and ('%s / %s'):format(now.value.values.hunger, now.value.values.thirst))
+		sent = lastValues()
+		check('and told the client, naming the decay', #control.clientEvents > mark
+			and sent ~= nil and sent[3] == 'decay', sent and tostring(sent[3]))
+
+		-- A CLIENT'S VALUES LAND NOWHERE. The old push, fired as a hostile client
+		-- would: there is no handler, and the held value is untouched.
+		local push = control.netEvents['opx:net:needs:push']
+		if push ~= nil then
+			env.source = P
+			push(citizen, { hunger = 100, thirst = 100 })
+			env.source = nil
+		end
+		check('a client claiming to be full is not believed',
+			math.abs(needs.GetNeeds(P).value.values.hunger - 48) < 0.01)
+
+		-- An item used: the server consumes it and adds its STATUS.
+		local added = needs.AddNeeds(P, { hunger = 35 }, 'use')
+		check('a use raises the need on the server, clamped',
+			added.ok and math.abs(added.value.values.hunger - 83) < 0.01, added.error)
+		sent = lastValues()
+		check('and the client is told why it moved', sent ~= nil and sent[3] == 'use')
+		check('a need nobody declared is refused, not invented',
+			needs.AddNeeds(P, { courage = 5 }).error == 'unknown_need')
+		check('and so is a value that is not a finite number',
+			needs.SetNeeds(P, { hunger = 0 / 0 }).error == 'invalid_need_value')
+
+		-- The inventory moves needs on the server now, not through the client.
+		local actions = io.open('modules/inventory/server/actions.lua', 'r')
+		local text = actions and actions:read('a') or ''
+		if actions then actions:close() end
+		check('the inventory adds an item\'s status on the server, after consuming it',
+			text:find("needs.AddNeeds(source, use.status, 'use')", 1, true) ~= nil)
+
+		-- Staff: one ACL-gated command.
+		local command = control.commands['opx.needs.set']
+		check('staff set a need through one restricted command',
+			command ~= nil and command.restricted == true)
+		if command ~= nil then
+			command.run(0, { tostring(P), 'thirst', '12' })
+			control.Pump(4)
+			check('and it lands', math.abs(needs.GetNeeds(P).value.values.thirst - 12) < 0.01)
+		end
+
+		-- Creators: GetNeeds, AddNeeds, SetNeeds, behind the export gates.
+		check('the creator surface has the three needs exports',
+			type(control.exports.GetNeeds) == 'function' and type(control.exports.AddNeeds) == 'function'
+				and type(control.exports.SetNeeds) == 'function')
+		local denied = control.CallExport('some_resource', 'AddNeeds', P, { hunger = 10 })
+		check('a needs write from a resource nobody admitted is refused',
+			denied ~= nil and denied.ok == false and denied.error == 'export.callerDenied',
+			denied and tostring(denied.error))
+
+		-- Departure writes what the server holds.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, P)
+		control.Pump(4)
+		local row = stored[citizen] and env.json.decode(stored[citizen]) or {}
+		check('a departure saves the server\'s values', math.abs((row.thirst or -1) - 12) < 0.01,
+			stored[citizen])
+	end
+
+	local cenv, ccontrol, cwhy = boot('client')
+	check('the client boots for the needs', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
+		local seen = {}
+		cenv.AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'needs', 'changed'), function(payload)
+			seen[#seen + 1] = payload
+		end)
+		ccontrol.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-1' })
+		ccontrol.netEvents[VALUES]('CIT-NEED-1', { hunger = 40, thirst = 60 }, 'loaded')
+		ccontrol.netEvents[VALUES]('CIT-NEED-1', { hunger = 39.8, thirst = 60 }, 'decay')
+		local needs = OPX.Api.Get('needs')
+		check('the client reads what the server sent',
+			needs.GetNeeds().ok and needs.GetNeeds().value.values.hunger == 39.8)
+		check('and publishes each move with the server\'s reason, for the HUD and creators',
+			#seen == 2 and seen[1].source == 'loaded' and seen[2].source == 'decay'
+				and seen[2].changed[1] == 'hunger' and #seen[2].changed == 1)
+		check('it has nothing that writes a need any more',
+			needs.SetNeeds == nil and needs.AddNeeds == nil)
+		local pushed = 0
+		for _, event in ipairs(ccontrol.serverEvents) do
+			if event.name == 'opx:net:needs:push' then pushed = pushed + 1 end
+		end
+		ccontrol.Pump(40)
+		for _, event in ipairs(ccontrol.serverEvents) do
+			if event.name == 'opx:net:needs:push' then pushed = pushed + 1 end
+		end
+		check('and never sends one', pushed == 0, pushed)
+	end
+end
+
+-- ── a give asks the receiver ────────────────────────────────────────────────
+-- THE OWNER, 2026-10: giving an item asks the receiver first. It used to move
+-- the stack on the giver's press alone, so anybody in reach could fill a
+-- stranger's bag. The receiver is shown the item, the count and where the giver
+-- stands -- never who -- and has fifteen seconds; the server holds the token and
+-- checks reach and room again on the yes.
+section('inventory: a give is an offer the receiver accepts or refuses')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the give offer', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		local Containers, Players, Options, KIND, Actions =
+			inventory.Containers, inventory.Players, inventory.Options, inventory.KIND, inventory.Actions
+		local function seat(player, citizen)
+			control.Admit(player, 'account-' .. player)
+			control.Stand(player, 10.0, 20.0, 30.0)
+			character.Players[player] = {
+				PlayerData = { citizenId = citizen, source = player, userId = 'account-' .. player,
+					charInfo = { firstName = 'Secret', lastName = 'Giver' },
+					money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizen] = player
+			character.Registry.byUserId['account-' .. player] = player
+			local bag = Containers.Transient(KIND.CHARACTER, citizen, Options.BAG_SLOTS,
+				Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(player)
+			return bag
+		end
+		local GIVER, TAKER, THIRD = 861, 862, 863
+		local giverBag = seat(GIVER, 'citizen-giver')
+		local takerBag = seat(TAKER, 'citizen-taker')
+		seat(THIRD, 'citizen-third')
+		local item = 'bandage'
+		Containers.Add(giverBag, item, 5)
+		local function slotOf(bag, name)
+			for index, entry in pairs(bag.items) do if entry.name == name then return index end end
+		end
+		local function countIn(bag, name)
+			local total = 0
+			for _, entry in pairs(bag.items) do if entry.name == name then total = total + entry.count end end
+			return total
+		end
+		local function lastOffer(to)
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == inventory.Event.GIVE_OFFER and sent.source == to then return sent end
+			end
+		end
+		local function answer(from, token, yes)
+			env.source = from
+			control.netEvents[inventory.Event.GIVE_ANSWER](token, yes)
+			env.source = nil
+			control.Pump(2)
+		end
+		local function noticesTo(player, from)
+			local out = {}
+			for index = from + 1, #control.notices do
+				if control.notices[index].playerId == player then out[#out + 1] = control.notices[index].message end
+			end
+			return table.concat(out, ' | ')
+		end
+
+		-- The offer: nothing moves, and the card carries no name.
+		local gave, why1 = Actions.Give(GIVER, TAKER, slotOf(giverBag, item), 2)
+		check('a give raises an offer', gave == true, tostring(why1))
+		check('and nothing has moved', countIn(giverBag, item) == 5 and countIn(takerBag, item) == 0)
+		local offer = lastOffer(TAKER)
+		check('the receiver is asked, with the item and the count',
+			offer ~= nil and type(offer[1]) == 'number' and type(offer[2]) == 'table'
+				and offer[2].count == 2 and type(offer[2].item) == 'string')
+		check('and how far away the giver stands', offer ~= nil and offer[2].distance == 0)
+		local wire = offer and env.json.encode(offer[2]) or ''
+		check('NEVER A NAME: nothing on the card says who', wire:find('Secret', 1, true) == nil
+			and wire:find('Giver', 1, true) == nil and wire:find('citizen%-giver') == nil
+			and wire:find('861', 1, true) == nil, wire)
+		check('the card\'s words exist in both languages',
+			OPX.Locale.Exists('inventory.offer.title') and OPX.Locale.Exists('inventory.offer.accept')
+				and OPX.Locale.Exists('inventory.offer.refuse'))
+
+		-- Rate-limited: one out per giver, one in per receiver, a floor between.
+		local again, againWhy = Actions.Give(GIVER, THIRD, slotOf(giverBag, item), 1)
+		check('a giver with an offer out cannot raise a second', again == false
+			and againWhy == 'give_pending', tostring(againWhy))
+		local crowd, crowdWhy = Actions.Give(THIRD, TAKER, 1, 1)
+		check('nor can a receiver be handed a second card on top of the first',
+			crowd == false and (crowdWhy == 'give_busy' or crowdWhy == 'empty_slot'), tostring(crowdWhy))
+
+		-- Only the receiver answers it.
+		answer(THIRD, offer[1], true)
+		check('somebody else answering the token moves nothing',
+			countIn(giverBag, item) == 5 and countIn(takerBag, item) == 0)
+
+		-- A yes from out of reach is refused, and nothing moves.
+		control.Stand(TAKER, 200.0, 20.0, 30.0)
+		local mark = #control.notices
+		answer(TAKER, offer[1], true)
+		check('a yes from out of reach moves nothing', countIn(giverBag, item) == 5
+			and countIn(takerBag, item) == 0)
+		check('and the giver is told it could not be handed over',
+			noticesTo(GIVER, mark):find(OPX.Locale.Text('inventory.notify.giveFailed',
+				{ count = 2, item = inventory.Catalog.Label(item) }), 1, true) ~= nil, noticesTo(GIVER, mark))
+		control.Stand(TAKER, 10.0, 20.0, 30.0)
+
+		-- A refusal.
+		control.Advance(5000)
+		Actions.Give(GIVER, TAKER, slotOf(giverBag, item), 2)
+		offer = lastOffer(TAKER)
+		mark = #control.notices
+		answer(TAKER, offer[1], false)
+		check('a no moves nothing', countIn(takerBag, item) == 0)
+		check('and the giver is told, without a name', noticesTo(GIVER, mark):find(
+			OPX.Locale.Text('inventory.notify.giveDeclined',
+				{ count = 2, item = inventory.Catalog.Label(item) }), 1, true) ~= nil)
+
+		-- An offer nobody answers is withdrawn after fifteen seconds.
+		control.Advance(5000)
+		Actions.Give(GIVER, TAKER, slotOf(giverBag, item), 2)
+		offer = lastOffer(TAKER)
+		mark = #control.clientEvents
+		control.Advance(16000)
+		control.Pump(15)
+		local withdrawn = false
+		for index = mark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == inventory.Event.GIVE_WITHDRAWN and sent.source == TAKER
+				and sent[1] == offer[1] then withdrawn = true end
+		end
+		check('an unanswered offer is withdrawn from the receiver\'s screen', withdrawn)
+		answer(TAKER, offer[1], true)
+		check('and a late yes to it moves nothing', countIn(takerBag, item) == 0)
+
+		-- A yes, and the room is checked again: a full bag refuses.
+		control.Advance(5000)
+		Actions.Give(GIVER, TAKER, slotOf(giverBag, item), 2)
+		offer = lastOffer(TAKER)
+		local realCarry = Containers.CanCarry
+		Containers.CanCarry = function() return false, 'no_room' end
+		answer(TAKER, offer[1], true)
+		Containers.CanCarry = realCarry
+		check('a yes into a bag with no room moves nothing', countIn(takerBag, item) == 0)
+
+		control.Advance(5000)
+		Actions.Give(GIVER, TAKER, slotOf(giverBag, item), 2)
+		offer = lastOffer(TAKER)
+		answer(TAKER, offer[1], true)
+		check('a yes in reach with room hands it over', countIn(giverBag, item) == 3
+			and countIn(takerBag, item) == 2)
+		answer(TAKER, offer[1], true)
+		check('and the same token replayed hands nothing more', countIn(takerBag, item) == 2)
+	end
+end
+
+-- ── a share code is worn in a shop's room, at its prices ────────────────────
+-- THE OWNER, 2026-10: a share code is redeemed only inside a shop's fitting
+-- room, and what it puts on is billed at that shop's prices by the room's own
+-- server-side charge. It used to dress the player free, from anywhere.
+section('shops: a share code is redeemed in a shop\'s room and billed there')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 0 end,
+		query = function() return {} end,
+		single = function(sql)
+			if sql:find('share_code', 1, true) then
+				return { name = 'Borrowed', look = '{"equipment":{"Head":"Items.Hat_Shared"}}' }
+			end
+			return nil
+		end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots for the share codes', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local shops = OPX.Modules.Get('shops')
+		local appearance = OPX.Api.Get('appearance')
+		local P = 871
+		standCharacter(env, control, P, OPX.CitizenId.Generate())
+		local granted = 0
+		local realAllow = appearance.AllowClothingSave
+		appearance.AllowClothingSave = function(id, owner, options)
+			if owner == 'shops' then granted = granted + 1 end
+			return realAllow(id, owner, options)
+		end
+		local function redeem(payload)
+			control.Advance(60000)
+			local mark, noticed = #control.clientEvents, #control.notices
+			env.source = P
+			control.netEvents[shops.Event.REDEEM](payload)
+			env.source = nil
+			control.Pump(10)
+			local putOn, told
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == shops.Event.PUT_ON and sent.source == P then putOn = sent[1] end
+			end
+			for index = noticed + 1, #control.notices do
+				if control.notices[index].playerId == P then told = control.notices[index].message end
+			end
+			return putOn, told
+		end
+
+		control.Stand(P, 0.0, 0.0, 0.0)
+		local worn, told = redeem({ shop = 'thrift_watson', code = 'ABCD2345' })
+		check('a code away from any counter puts nothing on', worn == nil, told)
+		control.Stand(P, -1180.0, 1550.0, 25.0)
+		worn, told = redeem({ shop = 'thrift_watson', code = 'ABCD2345' })
+		check('at the counter with no room open, nothing either', worn == nil)
+		check('and the player is told to open the room', told == OPX.Locale.Text('shops.redeemInRoom'),
+			told)
+		appearance.OpenWardrobe(P, { owner = 'shops:some_other_shop', charge = function() return true end })
+		worn = redeem({ shop = 'thrift_watson', code = 'ABCD2345' })
+		check('another shop\'s room is not this shop\'s room', worn == nil)
+
+		appearance.OpenWardrobe(P, { owner = 'shops:thrift_watson', charge = function() return true end })
+		worn = redeem({ shop = 'thrift_watson', code = 'ABCD2345' })
+		check('inside this shop\'s room the look goes on', type(worn) == 'table'
+			and type(worn.wear) == 'table' and worn.wear.Head ~= nil)
+		check('with no free grant of its own: the room\'s charge is what admits the save',
+			granted == 0, granted)
+		check('and the room is still the shop\'s, priced',
+			appearance.PricedRoom(P) == 'shops:thrift_watson')
+		appearance.AllowClothingSave = realAllow
+	end
 end
 
 section('creator exports: the server surface and its three gates')

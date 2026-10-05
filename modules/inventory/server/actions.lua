@@ -262,6 +262,23 @@ function Actions.Use(source, slot)
 		if not consumed then return false, 'not_enough' end
 	end
 
+	-- THE NEEDS MOVE HERE, ON THE SERVER, and only after the unit is gone. The
+	-- client used to add `use.status` to its own copy and push it, which is the
+	-- door the owner closed (2026-10): a client could have "eaten" anything. The
+	-- contract is optional -- with none the item is still consumed and only what
+	-- it would have moved is lost -- and a need the operator has not declared
+	-- costs the move, not the use.
+	if type(use.status) == 'table' and next(use.status) ~= nil then
+		local needs = OPX.Api.Get('needs')
+		if needs ~= nil and type(needs.AddNeeds) == 'function' then
+			local moved = needs.AddNeeds(source, use.status, 'use')
+			if type(moved) == 'table' and moved.ok ~= true then
+				Open77.log.debug(('[inventory] the needs of a use were refused: %s')
+					:format(tostring(moved.error)))
+			end
+		end
+	end
+
 	local gesture = type(use.animation) == 'table' and tonumber(use.animation.durationMs) or nil
 	if gesture and gesture > 0 then busyUntil[source] = now + gesture end
 
@@ -286,7 +303,63 @@ function Actions.Use(source, slot)
 	return true, nil
 end
 
---- Hands a stack from one player's bag to a nearby player's.
+-- ── giving: an offer, and the receiver's yes ───────────────────────────────
+--
+-- A GIVE ASKS FIRST (the owner's ruling, 2026-10). It used to move the stack on
+-- the giver's press alone: anybody in reach could fill a stranger's bag with
+-- whatever they liked -- contraband before a search, a hundred stones, a dead
+-- weight that pins them under their limit. Now the press raises an OFFER, the
+-- receiver is asked -- the item and the count, and where the giver stands, never
+-- who -- and nothing moves until they say yes. The yes is checked again from
+-- scratch: both still able to act, still in reach, the same stack still in the
+-- giver's slot, and room in the receiver's bag.
+
+-- How long an offer stands, and the floor between two offers from one giver.
+local GIVE_TTL_MS = 15000
+local GIVE_FLOOR_MS = 3000
+
+-- token -> the offer; and the one token each player is giving and being given.
+local offers, offerFrom, offerTo = {}, {}, {}
+local offerSeq = 0
+
+--- The largest token a client may name back.
+local MAX_TOKEN = 2147483647
+
+--- Forgets an offer on both sides.
+local function dropOffer(offer)
+	offers[offer.token] = nil
+	if offerFrom[offer.from] == offer.token then offerFrom[offer.from] = nil end
+	if offerTo[offer.to] == offer.token then offerTo[offer.to] = nil end
+end
+
+-- A player's facing in degrees, or nil on a host that cannot say. Read off the
+-- rich player snapshot, the way the staff position capture reads it.
+local function headingOf(source)
+	local api = Open77.players
+	if type(api) ~= 'table' or type(api.get) ~= 'function' then return nil end
+	local read, snapshot = pcall(api.get, source)
+	if not read or type(snapshot) ~= 'table' then return nil end
+	local yaw = tonumber(snapshot.heading) or tonumber(snapshot.yaw)
+	if not OPX.Math.IsFinite(yaw) then return nil end
+	return yaw
+end
+
+-- Which side of `here`, facing `yaw`, `there` stands: 'ahead', 'behind', 'left'
+-- or 'right' -- the #91 wording the give list and the give offer both use -- or
+-- nil without a facing. A yaw of 0 faces +Y and turns towards -X (see
+-- `World.Ahead`), so forward is (-sin, cos) and right is (cos, sin).
+local function sideOf(here, there, yaw)
+	if yaw == nil then return nil end
+	local radians = math.rad(yaw)
+	local dx, dy = there.x - here.x, there.y - here.y
+	local along = -math.sin(radians) * dx + math.cos(radians) * dy
+	local across = math.cos(radians) * dx + math.sin(radians) * dy
+	if math.abs(along) >= math.abs(across) then return along >= 0 and 'ahead' or 'behind' end
+	return across >= 0 and 'right' or 'left'
+end
+
+--- Raises an offer of a stack from one player's bag to a nearby player.
+--- Nothing moves: the receiver answers through `Actions.AnswerGive`.
 -- @author dop42
 -- @param source Source
 -- @param target any
@@ -301,13 +374,6 @@ function Actions.Give(source, target, slot, count)
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
 
-	-- REACH FIRST, AND THE SAME ANSWER FOR EVERY ID OUT OF IT. The target's gate
-	-- and bag were asked before the distance, so any server id answered
-	-- `not_ready`, `target_unavailable` or `too_far` -- whether that slot was
-	-- connected, still joining, or had a character loaded -- to a client walking
-	-- ids 1..N from anywhere on the map. Somebody out of reach is `too_far`,
-	-- whoever they are and whether or not they exist; what is left to learn is
-	-- about the person standing in front of you.
 	local here, there = World.Position(source), World.Position(target)
 	if not World.InReach(here, there) then return false, 'too_far' end
 	if not Players.GateOpen(target) then return false, 'not_ready' end
@@ -322,32 +388,115 @@ function Actions.Give(source, target, slot, count)
 	count = count == nil and entry.count or Common.Integer(count, 1, entry.count)
 	if not count then return false, 'bad_count' end
 
-	-- Loading the bags yielded, and either body may have moved meanwhile.
-	here, there = World.Position(source), World.Position(target)
-	if not World.InReach(here, there) then return false, 'too_far' end
-	-- Loading the second bag yielded, so the source stack is read again.
-	if from.items[slot] ~= entry or entry.count < count then return false, 'empty_slot' end
+	-- One offer out per giver and one in per receiver: a second press is not a
+	-- second card on somebody's screen, and nobody is buried under offers.
+	if offerFrom[source] ~= nil then return false, 'give_pending' end
+	if offerTo[target] ~= nil then return false, 'give_busy' end
+	if OPX.Cooling(source, 'inventory.giveOffer', GIVE_FLOOR_MS) then return false, 'too_fast' end
+	if not Containers.CanCarry(to, entry.name, count, entry.metadata) then return false, 'no_room' end
 
-	local name = entry.name
-	local moved, refusal = Containers.Move(from, slot, to, nil, count)
-	if not moved then return false, refusal end
+	offerSeq = offerSeq % MAX_TOKEN + 1
+	local now = OPX.Now()
+	local offer = {
+		token = offerSeq, from = source, to = target, slot = slot, entry = entry,
+		name = entry.name, count = count, expiresAt = now + GIVE_TTL_MS,
+	}
+	offers[offer.token], offerFrom[source], offerTo[target] = offer, offer.token, offer.token
 
-	-- MONEY IS SAID AS MONEY, AND BY THE SERVER ALONE. The client leaves the
-	-- notes out of its own "+N" line (`announce`), so a withdraw is one toast;
-	-- the price is that a hand-over of notes is told to both sides here.
-	if name == Options.CURRENCY_ITEM and Options.CURRENCY_MONEY_TYPE ~= nil then
-		local amount = OPX.Locale.Money(count, Options.CURRENCY_MONEY_TYPE)
-		OPX.NotifyLocale(source, 'inventory.notify.gaveMoney', { amount = amount }, 'success')
-		OPX.NotifyLocale(target, 'inventory.notify.receivedMoney', { amount = amount }, 'info')
+	local label = Catalog.Label(entry.name)
+	if entry.name == Options.CURRENCY_ITEM and Options.CURRENCY_MONEY_TYPE ~= nil then
+		label = OPX.Locale.Money(count, Options.CURRENCY_MONEY_TYPE)
+	end
+	local gap = World.Distance(there, here)
+	TriggerClientEvent(M.Event.GIVE_OFFER, target, offer.token, {
+		item = label,
+		count = count,
+		-- Where the GIVER stands, seen from the receiver: the receiver's facing.
+		side = sideOf(there, here, headingOf(target)),
+		distance = math.floor(gap * 10 + 0.5) / 10,
+		expiresInMs = GIVE_TTL_MS,
+	})
+	OPX.NotifyLocale(source, 'inventory.notify.giveOffered', { count = count, item = label }, 'info')
+	return true, nil
+end
+
+--- The receiver's answer to an offer. Only the receiver it was made to may
+--- answer it, and a yes is checked again before anything moves.
+-- @author dop42
+-- @param source Source the answering receiver
+-- @param token any
+-- @param accepted any
+-- @return boolean
+-- @return string|nil
+function Actions.AnswerGive(source, token, accepted)
+	token = Common.Integer(token, 1, MAX_TOKEN)
+	local offer = token and offers[token] or nil
+	if offer == nil or offer.to ~= source then return false, 'give_gone' end
+	dropOffer(offer)
+
+	local giver, label = offer.from, Catalog.Label(offer.name)
+	local said = { count = offer.count, item = label }
+	if OPX.Now() > offer.expiresAt then
+		OPX.NotifyLocale(giver, 'inventory.notify.giveExpired', said, 'info')
+		return false, 'give_gone'
+	end
+	if accepted ~= true then
+		OPX.NotifyLocale(giver, 'inventory.notify.giveDeclined', said, 'info')
 		return true, nil
 	end
-	local label = Catalog.Label(name)
-	OPX.NotifyLocale(source, 'inventory.notify.gave', { count = count, item = label }, 'success')
-	-- NOTHING IS SENT TO THE RECEIVER HERE. Their bag push already raises the
-	-- client's own "+2 Water" line (`announce`, client/main.lua) with the screen
-	-- closed, and with it open the stack lands in front of them; a server toast
-	-- on top read "You were handed 2x Water." and "+2 Water" for one hand-over.
+
+	local function fail(code)
+		OPX.NotifyLocale(giver, 'inventory.notify.giveFailed', said, 'warning')
+		return false, code
+	end
+	if not Players.MayAct(giver) or not Players.MayAct(source) then return fail('not_ready') end
+	if not World.InReach(World.Position(giver), World.Position(source)) then return fail('too_far') end
+	local from = Players.Bag(giver)
+	local to = Players.Bag(source)
+	if not from or not to then return fail('target_unavailable') end
+	local entry = from.items[offer.slot]
+	if entry ~= offer.entry or entry.count < offer.count then return fail('give_changed') end
+	if not Containers.CanCarry(to, entry.name, offer.count, entry.metadata) then return fail('no_room') end
+
+	local moved, refusal = Containers.Move(from, offer.slot, to, nil, offer.count)
+	if not moved then return fail(refusal) end
+
+	if offer.name == Options.CURRENCY_ITEM and Options.CURRENCY_MONEY_TYPE ~= nil then
+		local amount = OPX.Locale.Money(offer.count, Options.CURRENCY_MONEY_TYPE)
+		OPX.NotifyLocale(giver, 'inventory.notify.gaveMoney', { amount = amount }, 'success')
+		OPX.NotifyLocale(source, 'inventory.notify.receivedMoney', { amount = amount }, 'info')
+		return true, nil
+	end
+	OPX.NotifyLocale(giver, 'inventory.notify.gave', said, 'success')
+	OPX.NotifyLocale(source, 'inventory.notify.received', said, 'info')
 	return true, nil
+end
+
+--- Withdraws every offer past its deadline, telling both sides.
+-- @author dop42
+function Actions.SweepOffers()
+	local now = OPX.Now()
+	for _, offer in pairs(offers) do
+		if now > offer.expiresAt then
+			dropOffer(offer)
+			TriggerClientEvent(M.Event.GIVE_WITHDRAWN, offer.to, offer.token)
+			OPX.NotifyLocale(offer.from, 'inventory.notify.giveExpired',
+				{ count = offer.count, item = Catalog.Label(offer.name) }, 'info')
+		end
+	end
+end
+
+--- Withdraws whatever a departing player was giving or being given.
+local function forgetOffers(source)
+	for _, token in ipairs({ offerFrom[source], offerTo[source] }) do
+		local offer = offers[token]
+		if offer ~= nil then
+			dropOffer(offer)
+			if offer.from == source then
+				TriggerClientEvent(M.Event.GIVE_WITHDRAWN, offer.to, offer.token)
+			end
+		end
+	end
 end
 
 --- Drops a stack onto the nearest pile that will take it, or onto a new one.
@@ -515,31 +664,6 @@ function Actions.OpenVehicle(source, kind, vehicleId)
 	return container, nil
 end
 
--- The giver's facing in degrees, or nil on a host that cannot say. Read off the
--- rich player snapshot, the way the staff position capture reads it.
-local function headingOf(source)
-	local api = Open77.players
-	if type(api) ~= 'table' or type(api.get) ~= 'function' then return nil end
-	local read, snapshot = pcall(api.get, source)
-	if not read or type(snapshot) ~= 'table' then return nil end
-	local yaw = tonumber(snapshot.heading) or tonumber(snapshot.yaw)
-	if not OPX.Math.IsFinite(yaw) then return nil end
-	return yaw
-end
-
--- Which side of the giver another player stands on: 'ahead', 'behind', 'left' or
--- 'right', or nil without a facing. A yaw of 0 faces +Y and turns towards -X (see
--- `World.Ahead`), so forward is (-sin, cos) and right is (cos, sin).
-local function sideOf(here, there, yaw)
-	if yaw == nil then return nil end
-	local radians = math.rad(yaw)
-	local dx, dy = there.x - here.x, there.y - here.y
-	local along = -math.sin(radians) * dx + math.cos(radians) * dy
-	local across = math.cos(radians) * dx + math.sin(radians) * dy
-	if math.abs(along) >= math.abs(across) then return along >= 0 and 'ahead' or 'behind' end
-	return across >= 0 and 'right' or 'left'
-end
-
 --- The players in reach, nearest first: id, rounded distance and which side of
 --- the giver they stand on. NEVER A NAME.
 -- @author dop42
@@ -582,6 +706,7 @@ end
 -- @author dop42
 -- @param source Source
 function Actions.Forget(source)
+	forgetOffers(source)
 	lastUse[source] = nil
 	busyUntil[source] = nil
 	World.Forget(source)

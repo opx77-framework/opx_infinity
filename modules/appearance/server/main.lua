@@ -1332,6 +1332,22 @@ function M.Api()
 		return true
 	end
 
+	--- The owner of the priced room a player holds right now, or nil.
+	--
+	-- A READ OF THE GRANT, not of the screen: this half never hears that a room
+	-- closed, so an unexpired priced grant is the best answer there is to "is
+	-- this player in a shop's room". What it guards is a door that puts clothes
+	-- on INSIDE that room, so the room's own charge bills them -- `shops`'s share
+	-- codes, which used to dress a player free from anywhere.
+	-- @param playerId integer
+	-- @return string|nil the owner the room was opened under
+	function M.PricedRoom(playerId)
+		local id = tonumber(playerId)
+		if id == nil or id <= 0 then return nil end
+		local held = grantsOf(id)
+		return held ~= nil and held.priced ~= nil and held.priced.owner or nil
+	end
+
 	--- Asks one player's client to put the fitting room up.
 	--
 	-- WHOEVER CALLS THIS HAS ALREADY DECIDED THEY MAY. This module holds no
@@ -1378,6 +1394,7 @@ function M.Api()
 		SaveClothing = M.SaveClothing,
 		OpenWardrobe = M.OpenWardrobe,
 		AllowClothingSave = M.AllowClothingSave,
+		PricedRoom = M.PricedRoom,
 	})
 end
 
