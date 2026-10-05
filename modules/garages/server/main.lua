@@ -515,6 +515,14 @@ local function othersAboard(vehicleId, source)
 	return false
 end
 
+--- Whether the host has this connection in any vehicle seat at all.
+local function seatedAnywhere(source)
+	local players = Open77.players
+	if type(players) ~= 'table' or type(players.getVehicleSeat) ~= 'function' then return false end
+	local read, assignment = pcall(players.getVehicleSeat, source)
+	return read and type(assignment) == 'table' and assignment.vehicleId ~= nil
+end
+
 --- The marker's one door: PUT AWAY when the connection is sitting in its own
 --- vehicle, and BRING OUT otherwise.
 -- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
@@ -563,6 +571,17 @@ function M.Use(source, key, wanted)
 			plate = seated.value.plate,
 			stored = true,
 		})
+	end
+
+	-- SEATED IN A CAR THAT IS NOT THEIRS. `Occupied` answers nothing for a
+	-- friend's car, a staff spawn or a ride, and this fell through to the
+	-- bring-out half: the row said "Put your vehicle away", the key brought one
+	-- of the player's own cars out beside them instead (or answered that every
+	-- exit was blocked, by the car they were sitting in). The host's seat is
+	-- read here only to tell those two apart; what may be stored is still
+	-- decided by `Occupied` alone.
+	if seated ~= nil and seated.ok and seatedAnywhere(source) then
+		return Result.Err('garages.notYours')
 	end
 
 	return M.Bring(source, key, wanted)

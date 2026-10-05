@@ -399,8 +399,9 @@ const shown = computed<Row[]>(() => contacts.value)
              third person being asked to join is withdrawn here, while the live
              row's button above still ends the call itself. -->
         <div v-if="outgoing !== null" class="live-row">
+          <!-- A contact offer is not a call: it read "Calling {name}..." here. -->
           <p class="waiting op-eyebrow">
-            {{ t('calls.holo.calling', { name: calleeName }) }}
+            {{ dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.offering') }}
           </p>
           <button class="act no op-eyebrow" type="button" @click="withdraw">
             {{ t('calls.holo.withdraw') }}

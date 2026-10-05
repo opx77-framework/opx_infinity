@@ -534,7 +534,11 @@ local function pickEnd(player, payload)
 	if success then
 		local wanted = live.state == 1 and 0 or 1
 		setState(door, wanted, 'lockpick:' .. tostring(player), player)
-		return answer(player, true, wanted == 1 and 'locked' or 'picked', door,
+		-- A PICK THAT OPENED THE LOCK AND BROKE says both. It said "You picked
+		-- the lock" while the pick left the bag without a word; only a failed
+		-- pick that broke was ever told so.
+		local code = wanted == 1 and 'locked' or (broke and 'picked_broke' or 'picked')
+		return answer(player, true, code, door,
 			{ state = wanted, how = 'lockpick', broke = broke or nil })
 	end
 	return answer(player, false, broke and 'pick_broke' or 'pick_failed', door)

@@ -290,16 +290,18 @@ end
 -- @param source Source
 -- @param citizenId CitizenId
 -- @return boolean
+-- @return string|nil why not: `too_fast` for the cooldown, `drop_limit` for a cap
 function World.MayCreateDrop(source, citizenId)
 	if OPX.Now() - (lastDrop[source] or -math.huge) < Options.DROP_COOLDOWN_MS then
-		return false
+		return false, 'too_fast'
 	end
 	local total, own = 0, 0
 	for _, drop in pairs(drops) do
 		total = total + 1
 		if drop.citizenId == citizenId then own = own + 1 end
 	end
-	return total < Options.DROP_MAX and own < Options.DROP_MAX_PER_CHARACTER
+	if total < Options.DROP_MAX and own < Options.DROP_MAX_PER_CHARACTER then return true end
+	return false, 'drop_limit'
 end
 
 --- How long a pile lives, in milliseconds. Read at the moment of use.
@@ -576,6 +578,14 @@ function World.SweepReach()
 		local container = Containers.Get(view.id)
 		if not container or (not view.staff and not World.WithinReach(view.source, container)) then
 			Containers.CloseSecondary(view.source, true)
+			-- A LOCK IS SAID. Walking off or getting in closes a trunk the player
+			-- can see they left; the owner locking the car shut it under their
+			-- hands, and a panel that just vanished read as a bug. Once: the view
+			-- is gone, so the next sweep does not find it again.
+			if container and container.kind == KIND.TRUNK and container.vehicleId
+				and World.TrunkLocked(container.vehicleId) then
+				OPX.Refuse(view.source, 'inventory.error.locked', M.Operation.VEHICLE)
+			end
 		end
 	end
 end

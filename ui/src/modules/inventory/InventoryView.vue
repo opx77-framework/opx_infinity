@@ -214,12 +214,18 @@ async function ask(action: string, payload: Payload = {}): Promise<Payload | nul
       { timeoutMs: TIMEOUT_MS }
     )
   } catch (error) {
-    // Every refusal the SERVER makes is already a toast Lua raised, so the page
+    // Every refusal the SERVER makes is a toast Lua raised, so the page
     // does not render one: it only says that the round trip failed or never came
     // back, in words the open spec carried in the player's language. A raw code
     // is never put on screen.
-    const timedOut = error instanceof BridgeError && error.localeKey === 'error.rpc_timeout'
-    status.value = label(timedOut ? 'timeout' : 'failed')
+    // AN ANSWERED REFUSAL IS NOT ONE OF THOSE. It carries the server's own code,
+    // and the server has toasted its sentence: drawing "That did not work." under
+    // it as well was the same refusal said twice, the second time with no reason,
+    // and it stayed on screen through every action that succeeded after it.
+    const key = error instanceof BridgeError ? error.localeKey : ''
+    const timedOut = key === 'error.rpc_timeout' || key === 'timeout'
+    const unanswered = key === '' || key === 'error.rpc_failed'
+    if (timedOut || unanswered) status.value = label(timedOut ? 'timeout' : 'failed')
     return null
   } finally {
     busy.value = false

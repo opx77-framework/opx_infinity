@@ -769,6 +769,14 @@ function M.Start()
 		if holoOpen then M.CloseHolo() end
 	end)
 
+	-- GOING DOWN CLOSES THE PANEL, as it closes the chat box. The down screen
+	-- takes the keyboard, so none of the panel's own ways out could reach it,
+	-- and after the revive it was still open and still holding the cursor. A
+	-- call itself is not touched: the server decides who stays on one.
+	AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), function(payload)
+		if type(payload) == 'table' and payload.down == true and holoOpen then M.CloseHolo() end
+	end)
+
 	-- THE ONE ROW ON THE EYE. `target` is optional to this module, so its absence
 	-- is a runtime with no way to hand somebody a contact face to face rather
 	-- than a fault: the calls themselves are all behind the key above.

@@ -671,10 +671,31 @@ local function onInvite(rawTarget, rawKind)
 	if invite.kind == 'contact' then
 		-- The sender's own name: offering a contact is choosing to be known.
 		tell(target, 'calls.contact.offered', { name = nameOf(playerId) or '?' })
+		-- The offerer is told too, without the other's name: pressing the eye row
+		-- did nothing visible, and a stranger's name is not theirs to read yet.
+		tell(playerId, 'calls.contact.sent')
 	else
 		tell(target, 'calls.ringing', { name = labelFor(target, playerId) })
 		tell(playerId, 'calls.placed', { name = labelFor(playerId, target) })
 	end
+end
+
+--- Says that an invite rang out, to both sides, and files it on both.
+-- The sweep's words, kept in one place because an answer that arrives in the
+-- gap between the invite expiring and the next sweep rings it out too.
+local function rangOut(invite)
+	if invite.kind == 'contact' then
+		tell(invite.from, 'calls.contact.unanswered')
+		return
+	end
+	tell(invite.from, 'calls.expired', { name = labelFor(invite.from, invite.to) })
+	-- BOTH SIDES, AND NOT THE SAME ROW. `unanswered` is what the caller
+	-- reads; `missed` is what the person who never looked at their screen
+	-- reads, and it is the one that makes the feature worth having.
+	fileRecent(invite.from, 'unanswered', labelFor(invite.from, invite.to), citizenOf(invite.to))
+	fileRecent(invite.to, 'missed', labelFor(invite.to, invite.from), citizenOf(invite.from))
+	audit('calls.unanswered', invite.from, true,
+		('%s did not pick up'):format(tostring(nameOf(invite.to) or invite.to)))
 end
 
 local function onAccept(rawInvite)
@@ -689,6 +710,7 @@ local function onAccept(rawInvite)
 		return refuse(playerId, 'tooFast', M.Operation.ANSWER)
 	end
 
+	local pending = registry.IncomingOf(playerId)
 	local outcome, reason = registry.Accept(playerId, rawInvite)
 	if outcome == nil then
 		-- The state goes back with the refusal: an invite refused because it
@@ -696,6 +718,14 @@ local function onAccept(rawInvite)
 		-- "that already rang out" while the card sits there is being told the
 		-- screen is lying.
 		push(playerId)
+		-- AND TO THE CALLER, WHEN THE REFUSAL DROPPED THE INVITE. Expired in the
+		-- gap before the sweep, or a caller who went down while ringing: the
+		-- model drops the invite and the sweep can no longer find it, so the
+		-- caller's sphere said "Calling..." with no end and nothing filed.
+		if pending ~= nil and registry.OutgoingOf(pending.from) == nil then
+			push(pending.from)
+			if reason == 'expired' then rangOut(pending) end
+		end
 		return refuse(playerId, reason, M.Operation.ANSWER)
 	end
 
@@ -745,6 +775,7 @@ local function onDecline(rawInvite)
 	audit('calls.decline', playerId, true, tostring(outcome.kind))
 	push(playerId)
 	push(outcome.from)
+	if outcome.kind == 'contact' then tell(outcome.from, 'calls.contact.declined') end
 	if outcome.kind ~= 'contact' then
 		tell(outcome.from, 'calls.declined', { name = labelFor(outcome.from, playerId) })
 		-- The refusal, on both sides and named honestly on each: the caller was
@@ -894,6 +925,18 @@ end
 local function departed(rawPlayerId)
 	local playerId = Model.PlayerId(rawPlayerId)
 	if playerId == nil then return end
+	-- Read before the registry forgets the slot: the row filed below names them,
+	-- to a viewer who has them as a contact and to nobody else (`labelFor`'s
+	-- rule, applied by hand because the leaver may be unloading already).
+	local leaverName, leaverCitizen = nameOf(playerId), citizenOf(playerId)
+	local function leaverLabel(viewer)
+		if leaverCitizen ~= nil then
+			for _, row in ipairs(contactsOf(viewer)) do
+				if row.citizenId == leaverCitizen then return leaverName or row.name end
+			end
+		end
+		return locale('calls.unknown')
+	end
 	local left, dropped = registry.Forget(playerId)
 	-- Both directions: what this player offered, and what was offered to the
 	-- slot, which the next holder of the id must not inherit.
@@ -910,6 +953,15 @@ local function departed(rawPlayerId)
 		local invite = dropped[index]
 		local other = invite.from == playerId and invite.to or invite.from
 		push(other)
+		-- A RING CUT BY A DISCONNECT IS SAID, AND FILED. The other screen just
+		-- went quiet: a caller who quit left no missed call, and a callee who
+		-- quit left the caller's dial tone stopping with no word.
+		if invite.kind ~= 'contact' and invite.from == playerId then
+			fileRecent(invite.to, 'missed', leaverLabel(invite.to), leaverCitizen)
+		elseif invite.kind ~= 'contact' then
+			tell(invite.from, 'calls.cutOff')
+			fileRecent(invite.from, 'unanswered', leaverLabel(invite.from), leaverCitizen)
+		end
 	end
 	if left ~= nil then
 		callEnded(left)
@@ -926,16 +978,7 @@ local function scan()
 	for _, invite in ipairs(registry.Expire()) do
 		push(invite.from)
 		push(invite.to)
-		if invite.kind ~= 'contact' then
-			tell(invite.from, 'calls.expired', { name = labelFor(invite.from, invite.to) })
-			-- BOTH SIDES, AND NOT THE SAME ROW. `unanswered` is what the caller
-			-- reads; `missed` is what the person who never looked at their screen
-			-- reads, and it is the one that makes the feature worth having.
-			fileRecent(invite.from, 'unanswered', labelFor(invite.from, invite.to), citizenOf(invite.to))
-			fileRecent(invite.to, 'missed', labelFor(invite.to, invite.from), citizenOf(invite.from))
-			audit('calls.unanswered', invite.from, true,
-				('%s did not pick up'):format(tostring(nameOf(invite.to) or invite.to)))
-		end
+		rangOut(invite)
 	end
 
 	-- A PARTICIPANT WHO CAN NO LONGER TAKE A CALL IS TAKEN OFF IT, and this is

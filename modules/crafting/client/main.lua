@@ -330,7 +330,7 @@ function M.Start()
 		draw(payload)
 	end)
 
-	RegisterNetEvent(M.Event.REFUSED, function(benchKey, code)
+	RegisterNetEvent(M.Event.REFUSED, function(benchKey, code, screen)
 		if type(code) ~= 'string' then return end
 		OPX.Toast.Show({ kind = 'error', message = sentenceFor(code, true) })
 
@@ -339,7 +339,7 @@ function M.Start()
 		-- list open is the case that matters: the refresh that follows is refused
 		-- `too_far`, and leaving the list up would leave a screen the player can
 		-- still press rows on from across the street.
-		if code == Refusal.TOO_FAR or code == Refusal.NO_SUCH_BENCH
+		if screen == true or code == Refusal.TOO_FAR or code == Refusal.NO_SUCH_BENCH
 			or code == Refusal.NO_CHARACTER or code == Refusal.NOT_FOR_YOU
 			or code == Refusal.NO_POSITION then
 			shut(code)

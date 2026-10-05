@@ -1236,19 +1236,30 @@ local function complete(player)
 	local step = crate.step
 
 	if step == Step.PICKUP then
+		-- A REFUSED PICKUP GIVES THE CRATE BACK, as a refused attach already did.
+		-- Kept claimed, the crate sat in nobody's hands for up to a minute and a
+		-- half: the player's hands blocked, "Load the crate" offered on every
+		-- car, every other crate answering "Your hands are full", and at the end
+		-- "You took too long" for a pickup that had been refused at once.
+		local function giveBack(code)
+			dropPose(crate)
+			Claim.Release(crates, crate.id, player)
+			announce(crate)
+			return false, code
+		end
 		local carry = Access.Carry(crate.site)
-		if carry == nil then return false, 'no_carry_config' end
+		if carry == nil then return giveBack('no_carry_config') end
 		-- The reach is checked AGAIN, because the bar took seconds and the player
-		-- could have walked away during it. The claim is theirs either way; what
-		-- this refuses is finishing a pickup from across the yard.
+		-- could have walked away during it. What this refuses is finishing a
+		-- pickup from across the yard.
 		local here = standing(player)
-		if here == nil then return false, 'no_position' end
+		if here == nil then return giveBack('no_position') end
 		-- And the bucket, which BEGIN checks: a player moved to another instance
 		-- during the bar is not standing beside this crate, however close the
 		-- coordinates are.
-		if here.bucket ~= crate.bucket then return false, 'wrong_bucket' end
+		if here.bucket ~= crate.bucket then return giveBack('wrong_bucket') end
 		local gap = Access.GapSquared(here, crate)
-		if gap == nil or gap > Access.REACH_SQ then return false, 'too_far' end
+		if gap == nil or gap > Access.REACH_SQ then return giveBack('too_far') end
 
 		-- THE COMPARE-AND-SWAP. `expectedRevision` is the revision read one line
 		-- above the claim: a prop something else re-bound while the bar ran is
@@ -1294,16 +1305,25 @@ local function complete(player)
 	end
 
 	if step == Step.LOAD then
+		-- A REFUSED LOAD ENDS THE STEP, and the crate stays in their hands. These
+		-- returns used to leave the step on, and `dropCrate` refuses a crate with
+		-- a step running: a truck driven off during the bar left the player
+		-- holding a crate X could not put down ("Not while you are loading it.")
+		-- until they found another vehicle.
+		local function stopLoading(code)
+			crate.step, crate.claimedAtMs, crate.pendingVehicle = nil, nil, nil
+			return false, code
+		end
 		local vehicleId = crate.pendingVehicle
 		local vehicle = vehicleAt(vehicleId)
-		if vehicle == nil then return false, 'no_such_vehicle' end
+		if vehicle == nil then return stopLoading('no_such_vehicle') end
 		local here = standing(player)
-		if here == nil then return false, 'no_position' end
-		if here.bucket ~= vehicle.bucket then return false, 'wrong_bucket' end
+		if here == nil then return stopLoading('no_position') end
+		if here.bucket ~= vehicle.bucket then return stopLoading('wrong_bucket') end
 		local gap = Access.GapSquared(here, vehicle)
-		if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
+		if gap == nil or gap > Access.VEHICLE_REACH_SQ then return stopLoading('too_far') end
 		local inventory = inventoryApi()
-		if inventory == nil then return false, 'no_inventory' end
+		if inventory == nil then return stopLoading('no_inventory') end
 
 		-- THE CRATE BECOMES AN ITEM IN THE TRUNK. The owner: "des qu'il pose dans
 		-- le vehicule cela deviens un item".

@@ -43,7 +43,13 @@ local function onSaid(text)
 	-- advance it, and pay for a bounded walk every time.
 	local at = nowMs()
 	local previous = lastSaidMs[player]
-	if previous ~= nil and at - previous < M.Settings.RATE_MS then return end
+	if previous ~= nil and at - previous < M.Settings.RATE_MS then
+		-- SAID, ONCE A BURST. The box has already closed and cleared on the
+		-- client, so a second line typed quickly simply never appeared for
+		-- anyone. The toast is cooled itself: a flood earns one, not one each.
+		if not OPX.Cooling(player, 'chat:tooFast', 2000) then OPX.Refuse(player, 'chat.tooFast') end
+		return
+	end
 	lastSaidMs[player] = at
 
 	local said = clean(text)

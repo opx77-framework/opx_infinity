@@ -68,6 +68,7 @@ local EN = {
 	-- different moments here: the server writes down what a character IS wearing,
 	-- and inside an open fitting room that is still the look they walked in with.
 	['shops.save.queued'] = 'It will be saved as {name} when you finish here.',
+	['shops.save.dropped'] = 'You left without keeping the look, so {name} was not saved.',
 
 	['shops.code.title'] = 'Wear a shared outfit',
 	['shops.code.field'] = 'Code',
@@ -129,6 +130,7 @@ local FR = {
 	['shops.save.title'] = 'Enregistrer votre tenue actuelle',
 	['shops.save.field'] = 'Nom',
 	['shops.save.queued'] = 'Elle sera enregistrée sous {name} quand vous aurez fini.',
+	['shops.save.dropped'] = "La tenue n'a pas été gardée : {name} n'a pas été enregistrée.",
 
 	['shops.code.title'] = 'Porter une tenue partagée',
 	['shops.code.field'] = 'Code',

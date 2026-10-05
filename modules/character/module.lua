@@ -130,6 +130,22 @@ function M.ValidateName(value)
 	})
 end
 
+--- The sentence for a name `ValidateName` refused, and the bounds it names.
+-- A name that was too short read "Use letters only (spaces, hyphens and
+-- apostrophes allowed)." -- wrong, for a name of letters -- and nothing on the
+-- form says how short is too short. Length and spelling are told apart.
+-- @author dop42
+-- @param checked table the Result `ValidateName` answered
+-- @return string the locale key
+-- @return table the `{min}` and `{max}` the length sentence names
+function M.NameRefusal(checked)
+	local bounds = M.Settings.CHARACTERS.NAME
+	local reason = type(checked) == 'table' and checked.error or nil
+	local key = (reason == 'too-short' or reason == 'too-long') and 'character.nameLength'
+		or 'character.badName'
+	return key, { min = tonumber(bounds.MIN) or 1, max = tonumber(bounds.MAX) or 1 }
+end
+
 --- The two ways `opx.select` can move an account onto another character.
 -- @author dop42
 --
