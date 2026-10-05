@@ -704,7 +704,11 @@ function M.OpenStash(playerId, name, options)
 	if configured ~= nil then
 		size = { slots = configured.slots, maxWeight = configured.maxWeight }
 	end
-	if not Players.GateOpen(playerId) then return Result.Err('not_ready') end
+	-- `MayAct`, not `GateOpen` alone: the one door `Players.MayAct` was written
+	-- to close -- "a player on the floor could empty their bag into a boot" --
+	-- stayed open here, through the armoury chests and every creator stash.
+	local may, refusal = Players.MayAct(playerId)
+	if not may then return Result.Err(refusal) end
 	if not Players.Bag(playerId) then return Result.Err('not_loaded') end
 
 	-- ANOTHER RESOURCE OPENS ONLY WHAT IT MAY NAME: a stash the operator listed,

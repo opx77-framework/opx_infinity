@@ -10,13 +10,14 @@ local M = OPX.Modules.Get('shops')
 local EN = {
 	['shops.row'] = 'Open fitting room',
 
-	-- Refusals. `no_such_shop`, `too_far`, `position_unknown` and `not_for_you`
-	-- are the four `shopAt` can answer and are prefixed with `shops.` by the
+	-- Refusals. `no_such_shop`, `too_far`, `position_unknown`, `not_for_you` and `downed`
+	-- are the five `shopAt` can answer and are prefixed with `shops.` by the
 	-- caller, so their keys read oddly on purpose -- they are machine names.
 	['shops.no_such_shop'] = 'There is no shop here.',
 	['shops.too_far'] = 'You are not close enough to the counter.',
 	['shops.position_unknown'] = 'Your position could not be read.',
 	['shops.not_for_you'] = 'This shop does not serve you.',
+	['shops.downed'] = 'Nobody serves you from the floor.',
 
 	['shops.unavailable'] = 'The fitting room is not available right now.',
 	['shops.cannotDress'] = 'Those clothes would not go on.',
@@ -86,6 +87,7 @@ local FR = {
 	['shops.too_far'] = 'Vous êtes trop loin du comptoir.',
 	['shops.position_unknown'] = "Votre position n'a pas pu être lue.",
 	['shops.not_for_you'] = 'Cette boutique ne vous est pas ouverte.',
+	['shops.downed'] = 'Personne ne vous sert tant que vous êtes à terre.',
 
 	['shops.unavailable'] = "La cabine d'essayage n'est pas disponible pour le moment.",
 	['shops.cannotDress'] = "Impossible d'enfiler ces vêtements.",

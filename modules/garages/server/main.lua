@@ -624,6 +624,18 @@ local function vehicleLabel(value)
 end
 
 --- One request off the wire. Rate-limited, then answered either way.
+--- The key an answer names back to the client: one this server knows, or nil.
+---
+--- THE CLIENT'S OWN ARGUMENT WAS ECHOED, whatever it was: a 48 KiB string came
+--- back as 48 KiB on every refusal, rate-limited ones included. The client
+--- matches an answer to the marker it pressed, and only a key naming a spot or
+--- a garage can be that.
+local function echoOf(key)
+	if type(key) ~= 'string' then return nil end
+	if Access.Spot(spots, key) ~= nil or garages[key] ~= nil then return key end
+	return nil
+end
+
 local function onRequested(key, plate)
 	local src = tonumber(source)
 	if src == nil then return end
@@ -642,15 +654,21 @@ local function onRequested(key, plate)
 	-- the caller that can drive it, and the floor its own config already asked
 	-- for is what stops it being driven.
 	if Access.COOLDOWN_MS > 0 and OPX.Cooling(src, 'garages.bring', Access.COOLDOWN_MS) then
-		TriggerClientEvent(M.Event.ANSWER, src, key, false, 'garages.rateLimited')
+		TriggerClientEvent(M.Event.ANSWER, src, echoOf(key), false, 'garages.rateLimited')
 		return
 	end
 	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
-		TriggerClientEvent(M.Event.ANSWER, src, key, false, 'garages.rateLimited')
+		TriggerClientEvent(M.Event.ANSWER, src, echoOf(key), false, 'garages.rateLimited')
 		return
 	end
 
 	CreateThread(function()
+		-- From the floor nothing comes out and nothing goes in: the down screen
+		-- is drawn by the client, and a client on it still sends the key.
+		if OPX.Life.Down(src) then
+			TriggerClientEvent(M.Event.ANSWER, src, echoOf(key), false, 'error.incapacitated')
+			return
+		end
 		local used = M.Use(src, key, plate)
 		if not used.ok then
 			-- ONE DOOR, AND IT CARRIES THE GARAGE'S NAME. This sent the refusal, a
@@ -659,7 +677,7 @@ local function onRequested(key, plate)
 			-- at {garage} is blocked` because a refusal carries no params. The
 			-- answer is the one the client was already reading; it now carries
 			-- the detail the sentence names.
-			TriggerClientEvent(M.Event.ANSWER, src, key, false, used.error, nil, nil,
+			TriggerClientEvent(M.Event.ANSWER, src, echoOf(key), false, used.error, nil, nil,
 				safe(used.detail))
 			Open77.log.info(('[garages] player %d refused %s: %s'):format(src, safe(key),
 				tostring(used.error)))
@@ -682,7 +700,7 @@ local function onRequested(key, plate)
 		else
 			OPX.NotifyLocale(src, 'garages.broughtOut', { vehicle = vehicle }, 'success')
 		end
-		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
+		TriggerClientEvent(M.Event.ANSWER, src, echoOf(key), true, nil, value.plate, action)
 		Open77.log.info(('[garages] player %d %s %s at %s%s'):format(src,
 			action == 'stored' and 'put away' or (action == 'recalled' and 'moved' or 'brought out'),
 			safe(value.plate), safe(value.garage),
@@ -706,7 +724,7 @@ local function onListed(key)
 		if not listed.ok then
 			-- Only the list answer, which the client toasts: the refusal beside it
 			-- put the same sentence up twice.
-			TriggerClientEvent(M.Event.VEHICLES, src, { spot = key, error = listed.error })
+			TriggerClientEvent(M.Event.VEHICLES, src, { spot = echoOf(key), error = listed.error })
 			return
 		end
 		TriggerClientEvent(M.Event.VEHICLES, src, listed.value)

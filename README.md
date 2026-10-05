@@ -216,8 +216,8 @@ what a player found and reported by pressing the key six times in one session. T
 `vehicles` contract recalls it instead: put away first, which writes its condition
 back, then created again on the marker and facing the marker's own heading. It refuses
 with `vehicle.occupied` when somebody is sitting in it, because the occupant is not
-necessarily the player who asked. A request that names no place — the module's own
-spawn event, and the nearby-the-player path — keeps the old answer: moving a car for
+necessarily the player who asked. A request that names no place — the contract's
+nearby-the-player path, which no client can reach — keeps the old answer: moving a car for
 "somewhere near me" would be a surprise rather than a service.
 
 A **garage is a key, and a key may be in several places.** Each of its locations has

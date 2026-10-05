@@ -1151,8 +1151,13 @@ function M.Start()
 		end
 		local id = type(payload) == 'table' and Access.Id(payload.id) or nil
 		-- Floored per question: the panel asks for the list and for one door in
-		-- the same breath, and one must not swallow the other.
-		if OPX.Cooling(player, 'doorlock.staffAsk:' .. tostring(id or '*'), 250) then return end
+		-- the same breath, and one must not swallow the other. Per KIND of
+		-- question, not per door: the key was built from the id the client sent,
+		-- so every door number asked for left one more key in this player's
+		-- cooldowns for the rest of the session -- up to `MAX_ID` of them.
+		if OPX.Cooling(player, 'doorlock.staffAsk:' .. (id ~= nil and 'door' or 'list'), 250) then
+			return
+		end
 		staffList(player, id)
 	end)
 

@@ -143,6 +143,8 @@ M.Refusal = {
 	NO_ROOM = 'no_room',
 	-- Too many requests in the window.
 	TOO_FAST = 'too_fast',
+	-- The player is down. The down screen is the client's; this is the server's.
+	DOWNED = 'downed',
 	-- The database would not answer. Nothing was taken and nothing was placed.
 	UNAVAILABLE = 'unavailable',
 }
