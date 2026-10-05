@@ -26919,6 +26919,183 @@ end
 -- "That did not work.", a refused drop toasted twice, a hand-over announced
 -- itself twice to the receiver, a hotbar key ate four burritos in one bite, and
 -- an owner locking the car shut the trunk with no word.
+-- ── inventory papercuts, second pass: the owner's decisions ─────────────────
+-- Medical items heal (they were destroyed and did nothing); drawing a weapon
+-- closes the screen as food does; notes are told once, by the server, as money.
+section('inventory: medical items heal, a drawn weapon closes the screen, notes are money')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		local Containers, Players, Options, KIND, Catalog =
+			inventory.Containers, inventory.Players, inventory.Options, inventory.KIND, inventory.Catalog
+		local REQUEST, ANSWER, USED = inventory.Event.REQUEST, inventory.Event.ANSWER, inventory.Event.USED
+		control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+		local function seat(player, citizen)
+			control.Admit(player, 'account-' .. player)
+			control.Stand(player, 10.0, 20.0, 30.0)
+			character.Players[player] = {
+				PlayerData = { citizenId = citizen, source = player,
+					userId = 'account-' .. player, money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizen] = player
+			character.Registry.byUserId['account-' .. player] = player
+			local bag = Containers.Transient(KIND.CHARACTER, citizen, Options.BAG_SLOTS,
+				Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(player)
+			return bag
+		end
+		local PLAYER, OTHER = 831, 832
+		local bag = seat(PLAYER, 'citizen-medic')
+		seat(OTHER, 'citizen-medic-2')
+
+		local nextId = 0
+		local function ask(action, payload)
+			nextId = nextId + 1
+			local id, mark = nextId, #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[REQUEST](id, action, payload)
+			env.source = nil
+			control.Pump(20)
+			local reply, used = nil, nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER and event[1] == id then
+					reply = { ok = event[2], code = event[3] }
+				elseif event.name == USED and event.source == PLAYER then
+					used = event[1]
+				end
+			end
+			return reply, used
+		end
+		local function slotOf(name)
+			for index, entry in pairs(bag.items) do if entry.name == name then return index end end
+		end
+		local function countOf(name)
+			local total = 0
+			for _, entry in pairs(bag.items) do if entry.name == name then total = total + entry.count end end
+			return total
+		end
+
+		-- ── a bandage heals ──────────────────────────────────────────────────
+		check('the shipped medical items are configured to heal',
+			Options.HEALING.bandage ~= nil and Options.HEALING.bounce_back ~= nil
+				and Options.HEALING.maxdoc ~= nil
+				and Options.HEALING.bandage < Options.HEALING.bounce_back
+				and Options.HEALING.bounce_back < Options.HEALING.maxdoc)
+		local health, set = { health = 50, maxHealth = 200 }, {}
+		local players = env.Open77.players
+		local realGet, realSet = players.getHealth, players.setHealth
+		players.getHealth = function() return { health = health.health, maxHealth = health.maxHealth } end
+		players.setHealth = function(id, value)
+			set[#set + 1] = { id = id, value = value }
+			health.health = value
+			return true
+		end
+		Containers.Add(bag, 'bandage', 2)
+		local healed = ask('use', { slot = slotOf('bandage') })
+		check('a bandage is used', healed ~= nil and healed.ok == true, healed and healed.code)
+		check('and heals by its share of the maximum, on the server',
+			#set == 1 and set[1].id == PLAYER
+				and math.abs(set[1].value - (50 + 200 * Options.HEALING.bandage / 100)) < 1e-6,
+			set[1] and set[1].value)
+		check('and costs one bandage', countOf('bandage') == 1, countOf('bandage'))
+
+		health.health = 200
+		local full = ask('use', { slot = slotOf('bandage') })
+		check('at full health it is refused, in words',
+			full ~= nil and full.ok == false and full.code == 'full_health'
+				and OPX.Locale.Exists('inventory.error.full_health'), full and full.code)
+		check('and nothing is spent', countOf('bandage') == 1 and #set == 1)
+
+		health.health = 20
+		local downed = OPX.Api.Get('downed')
+		local realDown = downed and downed.IsDown
+		if downed then downed.IsDown = function() return OPX.Result.Ok({ down = true, waiting = false }) end end
+		local down = ask('use', { slot = slotOf('bandage') })
+		if downed then downed.IsDown = realDown end
+		check('down, a bandage revives nobody and is not spent',
+			downed ~= nil and down ~= nil and down.ok == false and countOf('bandage') == 1 and #set == 1,
+			down and down.code)
+		players.getHealth, players.setHealth = realGet, realSet
+
+		-- ── a drawn weapon closes the screen ─────────────────────────────────
+		local weaponName
+		for _, name in ipairs(Catalog.Names()) do
+			if Catalog.Get(name).weapon then weaponName = name break end
+		end
+		local sequence = 0
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() sequence = sequence + 1; return sequence end,
+			remove = function() sequence = sequence + 1; return sequence end,
+			setAmmo = function() sequence = sequence + 1; return sequence end,
+			requestSnapshot = function() sequence = sequence + 1; return sequence end,
+			get = function() return { fresh = true, drawn = true } end,
+		}
+		Containers.Add(bag, weaponName, 1)
+		local drew, used = ask('use', { slot = slotOf(weaponName) })
+		check('a weapon is drawn from the bag', drew ~= nil and drew.ok == true, drew and drew.code)
+		check('and the screen is told to close, as it is for food',
+			used ~= nil and used.close == true and used.weapon == true)
+		env.Open77.weapons = realWeapons
+
+		-- ── notes handed over are told as money, to both sides ───────────────
+		local currency = Options.CURRENCY_ITEM
+		if currency ~= nil and Options.CURRENCY_MONEY_TYPE ~= nil then
+			Containers.Add(bag, currency, 500)
+			local mark = #control.notices
+			local given = ask('give', { target = OTHER, slot = slotOf(currency), count = 200 })
+			local toReceiver
+			for index = mark + 1, #control.notices do
+				if control.notices[index].playerId == OTHER then toReceiver = control.notices[index].message end
+			end
+			check('notes handed over go through', given ~= nil and given.ok == true, given and given.code)
+			check('and the receiver is told the amount, as money',
+				toReceiver ~= nil and toReceiver:find(OPX.Locale.Money(200, Options.CURRENCY_MONEY_TYPE), 1, true) ~= nil,
+				toReceiver)
+		end
+	end
+end
+
+-- The client leaves the notes out of its own "+N" line: the server tells them.
+section('inventory: the client does not announce notes a second time')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local currency = inventory.Options.CURRENCY_ITEM
+		local lines = {}
+		local realShow = OPX.Toast.Show
+		OPX.Toast.Show = function(spec)
+			if type(spec) == 'table' and spec.id == 'inventory.change' then lines[#lines + 1] = spec.message end
+			return realShow(spec)
+		end
+		local OWN = inventory.Event.OWN
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 1 } } })
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 1 }, { name = currency, count = 1000 } } })
+		check('a withdraw of notes raises no "+1000" line', #lines == 0, table.concat(lines, ' | '))
+		control.netEvents[OWN]({ id = 7, items = { { name = 'water', count = 3 }, { name = currency, count = 1000 } } })
+		check('while anything else still does', #lines == 1, table.concat(lines, ' | '))
+		OPX.Toast.Show = realShow
+		-- The page asks for the give list again whenever a bag slot's card opens.
+		local file = io.open('ui/src/modules/inventory/InventoryView.vue', 'r')
+		local source = file and file:read('a') or ''
+		if file then file:close() end
+		local body = source:match('function openMenu%(.-\n}\n') or ''
+		check('the slot card asks who is near every time it opens',
+			body:find("tell('nearby')", 1, true) ~= nil)
+	end
+end
+
 section('inventory papercuts: refusals are said once, and the trunk Close closes')
 do
 	local env, control, why = boot('server')

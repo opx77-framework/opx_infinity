@@ -73,6 +73,8 @@ OPX.Locale.Register('en', {
 	['inventory.context.glovebox'] = 'Open the glovebox',
 
 	['inventory.notify.gave'] = 'You handed over {count}x {item}.',
+	['inventory.notify.gaveMoney'] = 'You handed over {amount}.',
+	['inventory.notify.receivedMoney'] = 'You were handed {amount}.',
 	['inventory.notify.taken'] = '{count}x {item} was taken from your bag.',
 	['inventory.notify.cleared'] = 'Your bag was emptied.',
 
@@ -95,6 +97,7 @@ OPX.Locale.Register('en', {
 	['inventory.error.not_usable'] = 'That cannot be used.',
 	['inventory.error.unknown_item'] = 'No such item.',
 	['inventory.error.use_refused'] = 'You cannot use that now.',
+	['inventory.error.full_health'] = 'You are already at full health.',
 	['inventory.error.handler_failed'] = 'That could not be used right now.',
 	['inventory.error.handler_timeout'] = 'That took too long to use. Try again.',
 	['inventory.error.too_far'] = 'You are too far away.',
@@ -443,6 +446,8 @@ OPX.Locale.Register('fr', {
 	['inventory.context.glovebox'] = 'Ouvrir la boîte à gants',
 
 	['inventory.notify.gave'] = 'Vous avez donné {count}x {item}.',
+	['inventory.notify.gaveMoney'] = 'Vous avez donné {amount}.',
+	['inventory.notify.receivedMoney'] = 'On vous a donné {amount}.',
 	['inventory.notify.taken'] = '{count}x {item} a été retiré de votre sac.',
 	['inventory.notify.cleared'] = 'Votre sac a été vidé.',
 
@@ -465,6 +470,7 @@ OPX.Locale.Register('fr', {
 	['inventory.error.not_usable'] = "Ça ne s'utilise pas.",
 	['inventory.error.unknown_item'] = "Cet objet n'existe pas.",
 	['inventory.error.use_refused'] = 'Vous ne pouvez pas utiliser ça maintenant.',
+	['inventory.error.full_health'] = 'Vous êtes déjà en pleine santé.',
 	['inventory.error.handler_failed'] = "Ça n'a pas pu être utilisé pour le moment.",
 	['inventory.error.handler_timeout'] = "L'utilisation a pris trop de temps. Réessayez.",
 	['inventory.error.too_far'] = 'Vous êtes trop loin.',

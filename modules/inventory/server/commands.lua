@@ -141,6 +141,12 @@ function Commands.Register()
 			local label = Catalog.Label(item.name)
 			-- The receiver hears it from their own bag push ("+2 Water"), as a
 			-- player's hand-over does; a server toast as well said it twice.
+			-- Notes are the exception: the client's line leaves them out.
+			if item.name == Options.CURRENCY_ITEM and Options.CURRENCY_MONEY_TYPE ~= nil
+				and target.source and target.source ~= source then
+				OPX.NotifyLocale(target.source, 'inventory.notify.receivedMoney',
+					{ amount = OPX.Locale.Money(count, Options.CURRENCY_MONEY_TYPE) }, 'info')
+			end
 			reply(source, raw, true, 'inventory.command.done.given',
 				{ count = count, item = label, citizenId = target.citizenId })
 		end)

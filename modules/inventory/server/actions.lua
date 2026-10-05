@@ -121,6 +121,41 @@ local function ask(entry, source, info)
 	return answer, nil
 end
 
+--- Heals a player by a share of their maximum health, through the host.
+-- THE MEDICAL ITEMS DID NOTHING. They carried `USE = { CONSUME = 1 }` and no
+-- handler, so a use destroyed one and healed nobody. The heal is the server's,
+-- read and written through `Open77.players.getHealth` / `setHealth`, and it is
+-- refused -- before anything is consumed -- for a player who is down (none of
+-- these revives) or already at full health.
+-- @param source Source
+-- @param percent number
+-- @return boolean
+-- @return string|nil
+local function heal(source, percent)
+	local downed = OPX.Api.Get('downed')
+	if downed ~= nil and type(downed.IsDown) == 'function' then
+		local read, answer = pcall(downed.IsDown, source)
+		if read and type(answer) == 'table' and answer.ok and type(answer.value) == 'table'
+			and answer.value.down == true then
+			return false, 'dead'
+		end
+	end
+	local players = Open77.players
+	if type(players) ~= 'table' or type(players.getHealth) ~= 'function'
+		or type(players.setHealth) ~= 'function' then
+		return false, 'use_refused'
+	end
+	local read, health = pcall(players.getHealth, source)
+	if not read or type(health) ~= 'table' then return false, 'use_refused' end
+	local current, maximum = tonumber(health.health), tonumber(health.maxHealth)
+	if current == nil or maximum == nil or maximum <= 0 then return false, 'use_refused' end
+	if current >= maximum then return false, 'full_health' end
+	local wanted = math.min(maximum, current + maximum * percent / 100)
+	local called, ok = pcall(players.setHealth, source, wanted)
+	if not called or ok ~= true then return false, 'use_refused' end
+	return true
+end
+
 --- Uses the item in a bag slot: draws a weapon, loads rounds, or consumes.
 -- @author dop42
 -- @param source Source
@@ -155,7 +190,20 @@ function Actions.Use(source, slot)
 
 	if item.weapon then
 		lastUse[source] = now
-		return M.Weapons.Use(source, bag, slot, item)
+		local drawn, why = M.Weapons.Use(source, bag, slot, item)
+		-- A DRAWN WEAPON CLOSES THE SCREEN, as food does. It returned before the
+		-- `used` event, so the inventory stayed over the gun the player had just
+		-- asked to hold. Only a draw: putting one away leaves the screen up.
+		if drawn and M.Weapons.Held(source) ~= nil then
+			TriggerClientEvent(M.Event.USED, source, {
+				name = entry.name,
+				slot = slot,
+				label = Catalog.Label(entry.name),
+				close = true,
+				weapon = true,
+			})
+		end
+		return drawn, why
 	end
 	if item.ammo then
 		lastUse[source] = now
@@ -168,6 +216,15 @@ function Actions.Use(source, slot)
 
 	local use = item.use or {}
 	local consume = use.consume or 0
+	local healing = Options.HEALING[entry.name]
+	if healing ~= nil and not handler then
+		-- The slot is held across the host calls, as it is for a handler: the
+		-- heal lands first and the unit it costs is taken after it.
+		if not Containers.Hold(bag, slot) then return false, 'in_use' end
+		local healed, why = heal(source, healing)
+		Containers.Release(bag, slot)
+		if not healed then return false, why end
+	end
 	if handler then
 		-- THE SLOT IS HELD FOR AS LONG AS THE HANDLER RUNS, because the handler
 		-- yields -- `ask` waits on it in 25 ms steps at the very least -- and the
@@ -275,6 +332,15 @@ function Actions.Give(source, target, slot, count)
 	local moved, refusal = Containers.Move(from, slot, to, nil, count)
 	if not moved then return false, refusal end
 
+	-- MONEY IS SAID AS MONEY, AND BY THE SERVER ALONE. The client leaves the
+	-- notes out of its own "+N" line (`announce`), so a withdraw is one toast;
+	-- the price is that a hand-over of notes is told to both sides here.
+	if name == Options.CURRENCY_ITEM and Options.CURRENCY_MONEY_TYPE ~= nil then
+		local amount = OPX.Locale.Money(count, Options.CURRENCY_MONEY_TYPE)
+		OPX.NotifyLocale(source, 'inventory.notify.gaveMoney', { amount = amount }, 'success')
+		OPX.NotifyLocale(target, 'inventory.notify.receivedMoney', { amount = amount }, 'info')
+		return true, nil
+	end
 	local label = Catalog.Label(name)
 	OPX.NotifyLocale(source, 'inventory.notify.gave', { count = count, item = label }, 'success')
 	-- NOTHING IS SENT TO THE RECEIVER HERE. Their bag push already raises the

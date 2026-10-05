@@ -544,6 +544,12 @@ function openMenu(containerId: number, slot: number, native: MouseEvent): void {
   menu.x = native.clientX
   menu.y = native.clientY
   menu.open = true
+  // THE GIVE LIST IS ASKED FOR AGAIN EVERY TIME THE CARD OPENS. It was asked
+  // once, when the inventory opened: somebody who walked up afterwards was
+  // never on it, and somebody who had left stayed on it until a give to them
+  // was refused. The answer is the next `nearby` push, a frame or two later.
+  // Only for the bag: a trunk's card has no give list.
+  if (containerId === primary.value?.id) tell('nearby')
   // Placed roughly here straight away and refined once the card has a measured
   // size. Without this the first frame renders it at 0,0, because `placeCard`
   // cannot flip a box it has not measured yet.
