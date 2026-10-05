@@ -195,6 +195,10 @@ local CORE_NAMESPACE = {
 	-- Whether a TweakDB record flies, in `lib/shared/vehicle.lua`. A fact about
 	-- the record, so it cannot be the three answers it was.
 	Vehicle = true,
+	-- Whether a player is on the floor, in `lib/server/life.lua`. On `OPX`
+	-- because eight doors had to ask it and three had grown their own copy:
+	-- the doors that had none were the ones a downed player walked through.
+	Life = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,

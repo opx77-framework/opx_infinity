@@ -171,6 +171,7 @@ shared_script "lib/shared/citizenid.lua"
 
 server_script "lib/server/storage.lua"
 server_script "lib/server/audit.lua"
+server_script "lib/server/life.lua"
 
 -- FIRST in the core server block, because it is the far end of a wire the client
 -- half wants available before anything else: `core/client/note.lua` says why a

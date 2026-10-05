@@ -9,6 +9,7 @@ OPX.Locale.Register('fr', {
 	['error.rpc_failed'] = "Cela n'a pas abouti.",
 	['error.tooFast'] = 'Doucement.',
 	['error.noPermission'] = 'Vous ne pouvez pas faire cela.',
+	['error.incapacitated'] = 'Pas pendant que vous êtes à terre.',
 	['money.amount'] = '{amount} {currency}',
 	['money.separator'] = ' ',
 	['money.type.EDDIES'] = '€$',
