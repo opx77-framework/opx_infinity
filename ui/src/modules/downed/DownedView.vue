@@ -455,7 +455,11 @@ onUnmounted(() => {
           <!-- A refusal, in the player's language, decided and worded by the
                server. It is a line of type and not a frame, for the same reason
                the readouts are not. -->
-          <p v-if="notice" class="notice op-copy">{{ notice }}</p>
+          <!-- ALWAYS IN THE LAYOUT, one line tall, and empty when there is nothing to
+               say. Mounted only for a refusal, it grew a vertically centred bay by its
+               own height: the whole panel, the button under the cursor with it, rose
+               ~15px and dropped back five seconds later. -->
+          <p class="notice op-copy" :aria-hidden="!notice">{{ notice }}</p>
         </div>
       </div>
     </div>
@@ -719,6 +723,8 @@ onUnmounted(() => {
    ========================================================================== */
 .notice {
   margin: 0;
+  /* The line is reserved whether or not it is spoken in: see the template. */
+  min-height: 1.4em;
   padding: 0 calc(var(--op-space-5) + var(--op-cut-lg)) var(--op-space-4)
     calc(var(--op-space-5) + var(--op-rule));
   color: var(--op-alarm);
