@@ -6,6 +6,7 @@ import { acquireFocus } from '@/bridge/focus'
 import { list, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
+import { useLocale } from '@/composables/useLocale'
 import { setInputHeight, setInputOpen } from './state'
 
 /**
@@ -40,6 +41,8 @@ const ANCHORS: Record<string, string> = {
   'top-left': 'anchor-top-left',
   'top-center': 'anchor-top-center'
 }
+
+const { t } = useLocale()
 
 const open = ref(false)
 const draft = ref('')
@@ -588,9 +591,9 @@ onUnmounted(() => {
            `212/240`: a budget is read when it starts to bind, not before. -->
       <span v-if="crowded" class="chat-count">{{ maxLength - draft.length }}</span>
       <span class="chat-hints">
-        <kbd v-if="matches.length > 0" class="cap op-cap" data-augmented-ui="tr-clip border">Tab</kbd>
-        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">Enter</kbd>
-        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">Esc</kbd>
+        <kbd v-if="matches.length > 0" class="cap op-cap" data-augmented-ui="tr-clip border">{{ t('chat.key.tab') }}</kbd>
+        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">{{ t('chat.key.enter') }}</kbd>
+        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">{{ t('chat.key.escape') }}</kbd>
       </span>
     </div>
   </div>

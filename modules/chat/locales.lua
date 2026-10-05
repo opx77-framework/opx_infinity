@@ -11,6 +11,10 @@ OPX.Locale.Register('en', {
 	['chat.commandExpected'] = "Enter a command after '/'.",
 
 	['chat.commandNotSent'] = 'The command could not be sent.',
+	-- The keycaps on the input line: the words printed on the player's own keyboard.
+	['chat.key.tab'] = 'Tab',
+	['chat.key.enter'] = 'Enter',
+	['chat.key.escape'] = 'Esc',
 	['chat.messageNotSent'] = 'The message could not be sent.',
 	['chat.tooFast'] = 'That message was not sent: wait a moment between two.',
 
@@ -45,6 +49,9 @@ OPX.Locale.Register('fr', {
 	['chat.commandExpected'] = "Saisissez une commande après le '/'.",
 
 	['chat.commandNotSent'] = "La commande n'a pas pu être envoyée.",
+	['chat.key.tab'] = 'Tab',
+	['chat.key.enter'] = 'Entrée',
+	['chat.key.escape'] = 'Échap',
 	['chat.messageNotSent'] = "Le message n'a pas pu être envoyé.",
 	['chat.tooFast'] = "Ce message n'a pas été envoyé : attendez un instant entre deux.",
 
