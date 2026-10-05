@@ -2375,12 +2375,31 @@ function Host.Environment(side, database)
 		tunables = tunables,
 		handlers = handlers,
 
+		--- Moves the clock on without resuming anything, so a test can step past
+		--- every rate window at once without paying for the frames in between.
+		Advance = function(ms) clock = clock + (tonumber(ms) or 0) end,
+
 		--- Resumes every queued thread up to `rounds` times, so a `while true`
 		--- loop in the runtime cannot hang the test.
 		Pump = function(rounds)
 			for _ = 1, rounds or 40 do
 				clock = clock + 100
 				local alive = false
+				-- A finished thread is dropped from the list, as the host drops a
+				-- finished task. Kept, it is memory the RUNTIME never holds, and a
+				-- check measuring what a flood of requests leaves behind would be
+				-- measuring the harness.
+				local live = 0
+				for index = 1, #threads do
+					local thread = threads[index]
+					threads[index] = nil
+					if coroutine.status(thread) ~= 'dead' then
+						live = live + 1
+						threads[live] = thread
+					else
+						threadOrigins[thread] = nil
+					end
+				end
 				for _, thread in ipairs(threads) do
 					if coroutine.status(thread) == 'suspended' then
 						alive = true
