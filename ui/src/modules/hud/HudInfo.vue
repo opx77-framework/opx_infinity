@@ -225,7 +225,7 @@ useBridge('opx:hud:info', (payload: Payload) => {
 
 .line {
   animation: line-in var(--op-enter-ms) var(--op-stutter) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
+  animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
 }
 
 /* A left-anchored read-out arrives from its own edge. */

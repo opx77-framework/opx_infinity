@@ -373,6 +373,11 @@ const gearClass = computed(() => {
   align-items: center;
   justify-content: center;
   gap: var(--op-space-2);
+  /* THE LINE KEEPS THE AIRBORNE CHIP'S HEIGHT WHETHER OR NOT IT IS UP. The block is
+     anchored by its bottom edge, so this line growing by the chip (its 10px type plus
+     4px above and below) pushed the whole dial up 7px every time the car left the
+     ground, and dropped it back on landing. */
+  min-height: calc(var(--op-fs-label) + 8px);
   /* NO GROUND. A plate went under this line and came straight back off on the
      owner's word, with the rest of the HUD's; the padding went with it, because
      it was only ever there to keep the plate off the glyphs. */
