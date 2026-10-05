@@ -314,6 +314,17 @@ function Requests.Wire()
 		end)
 	end)
 
+	-- The receiver's yes or no to a give. In the same window as every request:
+	-- the answer is cheap, but a loop of them is still a loop.
+	RegisterNetEvent(M.Event.GIVE_ANSWER, function(token, accepted)
+		local player = tonumber(source) or 0
+		if player <= 0 then return end
+		if not within(player) then return end
+		local ok, code = Actions.AnswerGive(player, token, accepted == true)
+		if not ok and code ~= 'give_gone' then refuse(player, code, M.Operation.GIVE) end
+	end)
+	OPX.Scheduler.Every('inventory:give-offers', 1000, Actions.SweepOffers)
+
 	RegisterNetEvent(M.Event.HELLO, function()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end

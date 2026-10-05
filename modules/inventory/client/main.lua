@@ -533,9 +533,120 @@ local function receiveCatalog(part)
 	if taken > 0 and pageReady then queueCatalog() end
 end
 
+-- ── a give offered to this player ──────────────────────────────────────────
+-- A GIVE ASKS FIRST (the owner's ruling, 2026-10): somebody in reach pressed
+-- give, and the server asks this player before anything moves. What is shown is
+-- the item, the count and where the giver stands -- in the #91 words the give
+-- list uses, "To your left · 1.2 m" -- and never who. The answer goes back as a
+-- token the server minted; it re-checks everything on a yes. An offer nobody
+-- answers is withdrawn by the server after fifteen seconds.
+
+local GIVE_MENU_OWNER = 'inventory'
+local GIVE_MENU_ID = 'inventory.giveOffer'
+
+-- The offer on screen: its token and the menu handle, or nil.
+local offered = nil
+
+-- Calls one function of the menu contract, answering its value or nil.
+local function menuCall(name, ...)
+	local api = OPX.Api.Get('menu')
+	if api == nil or type(api[name]) ~= 'function' then return nil end
+	local ran, answer = pcall(api[name], ...)
+	if not ran or type(answer) ~= 'table' or answer.ok ~= true then return nil end
+	return answer.value or answer
+end
+
+-- Takes the offer's menu down, if it is up.
+local function closeOffer()
+	local shown = offered and offered.handle or nil
+	if offered ~= nil then offered.handle = nil end
+	if shown ~= nil then menuCall('Close', shown, 'offer') end
+end
+
+-- Sends the answer once and forgets the offer.
+local function answerOffer(accepted)
+	if offered == nil then return end
+	local token = offered.token
+	closeOffer()
+	offered = nil
+	TriggerServerEvent(M.Event.GIVE_ANSWER, token, accepted == true)
+end
+
+-- The menu's rows. Shape-checked: the menu raises every action on its bus too.
+local function onOfferMenu(payload)
+	if type(payload) ~= 'table' or payload.owner ~= GIVE_MENU_OWNER or payload.menu ~= GIVE_MENU_ID then
+		return
+	end
+	if offered == nil or payload.handle ~= offered.handle then return end
+	if payload.action == 'close' then
+		-- Closed without a choice is a no: the giver is not left waiting on a
+		-- card nobody can see any more.
+		offered.handle = nil
+		return answerOffer(false)
+	end
+	if payload.action ~= 'select' or type(payload.data) ~= 'table' then return end
+	answerOffer(payload.data.accept == true)
+end
+
+local SIDE_KEYS = {
+	ahead = 'inventory.ui.sideAhead', behind = 'inventory.ui.sideBehind',
+	left = 'inventory.ui.sideLeft', right = 'inventory.ui.sideRight',
+}
+
+-- Puts an offer in front of the player. The server's words only: nothing here
+-- is read off a name.
+local function onGiveOffer(token, info)
+	token = math.tointeger(tonumber(token))
+	if token == nil or token < 1 or type(info) ~= 'table' then return end
+	local item = type(info.item) == 'string' and OPX.Text.Clean(info.item, 64, '...') or nil
+	local count = math.tointeger(tonumber(info.count))
+	if item == nil or count == nil or count < 1 then return end
+	local distance = tonumber(info.distance)
+	distance = OPX.Math.IsFinite(distance) and distance or 0
+	local where = SIDE_KEYS[info.side] ~= nil
+		and locale('inventory.offer.where', { side = locale(SIDE_KEYS[info.side]),
+			distance = ('%.1f'):format(distance) })
+		or locale('inventory.offer.nearby', { distance = ('%.1f'):format(distance) })
+
+	-- A newer offer replaces an unanswered one; the server withdrew it.
+	closeOffer()
+	offered = { token = token }
+	OPX.Toast.Show({ id = 'inventory.offer', kind = 'info',
+		message = locale('inventory.offer.toast', { count = count, item = item }) })
+	local opened = menuCall('Open', {
+		owner = GIVE_MENU_OWNER,
+		id = GIVE_MENU_ID,
+		title = locale('inventory.offer.title'),
+		on = onOfferMenu,
+		cursor = 'accept',
+		items = {
+			{ id = 'what', label = locale('inventory.offer.what', { count = count, item = item }),
+				icon = 'box', disabled = true, description = where },
+			{ id = 'accept', label = locale('inventory.offer.accept'), icon = 'plus',
+				data = { accept = true } },
+			{ id = 'refuse', label = locale('inventory.offer.refuse'), icon = 'ban',
+				data = { accept = false } },
+		},
+	})
+	if opened ~= nil and offered ~= nil and offered.token == token then
+		offered.handle = opened.handle
+	end
+end
+
+-- The server withdrew the offer: it expired, or the giver left.
+local function onGiveWithdrawn(token)
+	token = math.tointeger(tonumber(token))
+	if offered == nil or offered.token ~= token then return end
+	closeOffer()
+	offered = nil
+	OPX.Toast.Show({ id = 'inventory.offer', kind = 'info', message = locale('inventory.offer.withdrawn') })
+end
+
 --- Registers the handlers the server pushes to.
 local function registerEvents()
 	RegisterNetEvent(M.Event.CATALOG, receiveCatalog)
+	RegisterNetEvent(M.Event.GIVE_OFFER, onGiveOffer)
+	RegisterNetEvent(M.Event.GIVE_WITHDRAWN, onGiveWithdrawn)
 	RegisterNetEvent(M.Event.ANSWER, function(requestId, ok, code, data)
 		local entry = waiting[requestId]
 		if not entry then return end
@@ -594,18 +705,9 @@ local function registerEvents()
 		if type(payload) ~= 'table' then return end
 		if payload.close ~= false then Screen.Close() end
 
-		-- The needs contract is optional: with none the item is still consumed and
-		-- the animation still plays, and only what it would have moved is lost.
-		local needs = M.Contracts.needs
-		if needs and type(payload.status) == 'table' and next(payload.status) ~= nil then
-			local moved = needs.AddNeeds(payload.status)
-			if moved ~= nil and moved.ok ~= true then
-				-- A need this item names that the operator has not declared is the
-				-- ordinary case; it costs the move, not the use.
-				Open77.log.debug('[inventory] the needs of a use were refused: '
-					.. tostring(moved.error))
-			end
-		end
+		-- NO NEEDS ARE MOVED HERE. The server adds the item's status when it
+		-- consumes the unit and sends the new values to the needs module; this
+		-- half only plays the gesture.
 
 		local animation = payload.animation
 		if type(animation) == 'table' and type(animation.name) == 'string' then
@@ -822,7 +924,6 @@ end
 -- @author dop42
 function M.Start()
 	M.Contracts.downed = OPX.Api.Get('downed')
-	M.Contracts.needs = OPX.Api.Get('needs')
 	M.Contracts.target = OPX.Api.Get('target')
 
 	registerEvents()
@@ -868,6 +969,8 @@ end
 -- is worse than any state this module could be leaving behind.
 -- @author dop42
 function M.Stop()
+	closeOffer()
+	offered = nil
 	open = false
 	pageReady = false
 	handle = nil
