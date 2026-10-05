@@ -1099,6 +1099,7 @@ local function Open(spec)
 
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle
+	built.openedAtMs = OPX.Now()
 	record = built
 	announce()
 	-- Set BEFORE the page is told to open: the page announces `focus:set` during
@@ -1634,7 +1635,13 @@ function M.Start()
 	-- and `menu:dismiss` never arrives. A menu its owner declared unclosable is
 	-- left alone here for the same reason the page withholds its Escape handler --
 	-- otherwise `closable = false` would hold against one key and not the other.
+	--
+	-- ONLY AS THE TOP LAYER (`OPX.Spots.Key.Layer`): a menu under a form or a
+	-- panel opened after it stays. An unclosable menu still takes the press when
+	-- it is on top -- and does nothing with it, so what is under it stays too.
+	local layer = OPX.Spots.Key.Layer('menu', function() return record and record.openedAtMs end)
 	AddEventHandler(M.Host.PAUSE_KEY, function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
 		if record ~= nil and record.closable then closeNow(record.handle, 'pause') end
 	end)
 

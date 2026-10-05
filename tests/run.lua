@@ -35839,6 +35839,59 @@ do
 	end
 end
 
+-- ── Escape closes the top layer, and only the top layer ─────────────────────
+-- `open77:pauseKey` reaches every listener, and every open layer closed itself
+-- on it: a menu opened over the call hologram took the hologram down with it.
+section('Escape closes the newest layer and leaves the ones under it')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the layered Escape', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Modules.Get('calls')
+		local menu, form = OPX.Api.Get('menu'), OPX.Api.Get('form')
+		local function menuOpen()
+			local state = menu.State()
+			return state.ok and state.value.open == true
+		end
+		local function formOpen()
+			local state = form.State()
+			return state.ok and state.value.open == true
+		end
+
+		calls.OpenHolo()
+		control.Pump(2)
+		local opened = menu.Open({ owner = 'test', id = 'test.top', title = 'TOP',
+			items = { { id = 'a', label = 'A' } }, on = function() end })
+		control.Pump(2)
+		check('the hologram and a menu over it are both open', calls.HoloOpen() and menuOpen(),
+			tostring(opened and opened.error))
+
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('Escape closes the menu on top', not menuOpen())
+		check('and leaves the hologram under it', calls.HoloOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('the next Escape closes the hologram', not calls.HoloOpen())
+
+		-- A form over a menu: the form goes first.
+		menu.Open({ owner = 'test', id = 'test.under', title = 'UNDER',
+			items = { { id = 'a', label = 'A' } }, on = function() end })
+		control.Pump(2)
+		form.Open({ owner = 'test', id = 'test.form', title = 'FORM',
+			fields = { { id = 'x', label = 'X' } }, on = function() end })
+		control.Pump(2)
+		check('a form over a menu: both open', menuOpen() and formOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('Escape cancels the form and keeps the menu', not formOpen() and menuOpen())
+		control.Fire('open77:pauseKey')
+		control.Pump(1)
+		check('and the next one closes the menu', not menuOpen())
+	end
+end
+
 section('doorlock, client side: E is silent away from a door, and a lock is a lock')
 do
 	local native = { calls = {}, list = {} }

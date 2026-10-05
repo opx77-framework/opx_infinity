@@ -246,6 +246,9 @@ function OPX.Spots.Key.Register(options)
 	if type(options.wants) == 'function' then
 		OPX.Spots.Key.Contend({ tag = tag, id = declared.ID, default = declared.DEFAULT,
 			wants = options.wants })
+		-- The key the host just answered with is the binding, so the row's
+		-- claim starts with it and makes no host read at all until a rebind.
+		OPX.Spots.Key.Prime(declared.ID, effective)
 	end
 	return true
 end
@@ -338,9 +341,6 @@ function OPX.Spots.Key.Contend(options)
 	contenders[options.id] = { id = options.id, default = options.default, wants = options.wants,
 		tag = tostring(options.tag or 'spots') }
 	decisions, claims = {}, {}
-	-- Read once here, at registration, rather than in the first scan that asks:
-	-- a row's claim then makes no host read at all until a rebind clears it.
-	bindings[options.id] = boundTo(contenders[options.id]) or false
 end
 
 -- The player's position, read once a press, or nils before there is a world.
@@ -443,6 +443,15 @@ AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
 	bindings = {}
 end)
 
+--- Keeps the key a contender is bound to, for its strip row: the key the host
+--- answered its registration with, or nothing (the first `Shows` then reads it).
+-- @author dop42
+-- @param id string
+-- @param key string|nil
+function OPX.Spots.Key.Prime(id, key)
+	if contenders[id] ~= nil and type(key) == 'string' and key ~= '' then bindings[id] = key:upper() end
+end
+
 -- Whether a filed claim takes the press from another: the higher rank, then
 -- the nearer, then the id -- the order `decide` uses.
 local function beats(claim, id, other, otherId)
@@ -506,4 +515,40 @@ function OPX.Spots.Key.Reach(spot, x, y, measuredSq)
 	end
 	local dx, dy = x - spot.x, y - spot.y
 	return math.sqrt(dx * dx + dy * dy)
+end
+
+-- ── Escape: the top layer, and only the top layer ───────────────────────────
+--
+-- ESCAPE CLOSED EVERYTHING AT ONCE. `open77_pause` swallows it and raises
+-- `open77:pauseKey` to every listener, and a menu, a form, a panel, the door
+-- panel, the chat box and the call hologram each closed itself on it: a menu
+-- opened over the hologram took the hologram down with it. Escape is now a
+-- contest like E and X, on a key no mapping is bound to, and the rank of an
+-- open layer is WHEN it opened: the newest takes the press and the rest stay.
+
+--- The pseudo-key the layers contend for.
+OPX.Spots.Key.ESCAPE = 'ESCAPE'
+
+--- Enters one layer into the contest for Escape.
+-- @author dop42
+-- @param layer string the layer's name, e.g. 'menu'
+-- @param openedAt function () -> ms|nil: when the layer opened, nil when shut
+-- @return string the contender id its pause handler asks `TopLayer` with
+function OPX.Spots.Key.Layer(layer, openedAt)
+	local id = 'escape.' .. tostring(layer)
+	OPX.Spots.Key.Contend({ tag = tostring(layer), id = id, default = OPX.Spots.Key.ESCAPE,
+		wants = function()
+			local at = openedAt()
+			if type(at) ~= 'number' then return nil end
+			return at
+		end })
+	return id
+end
+
+--- Whether this Escape is this layer's: asked FIRST in every pause handler.
+-- @author dop42
+-- @param id string what `Layer` answered
+-- @return boolean
+function OPX.Spots.Key.TopLayer(id)
+	return OPX.Spots.Key.Owns(id)
 end

@@ -232,6 +232,9 @@ end
 -- In that order: a close the view paints before the keyboard goes back is not
 -- seen. A box that is already closed is not told twice, because closing it again
 -- would fade every line in the log back in.
+-- When the input line opened, for Escape's layer order.
+local openedAtMs = 0
+
 local function closeChat(asked)
 	if opened then
 		opened = false
@@ -261,6 +264,7 @@ local function openChat()
 	end
 	if opened then return end
 	opened = true
+	openedAtMs = OPX.Now()
 
 	-- The focus is asked for BEFORE the open: both travel on one ordered
 	-- channel, and the element focus has to land in a surface that already holds
@@ -572,7 +576,12 @@ function M.Start()
 	-- this module has no binding of its own. Escape is swallowed before any
 	-- surface sees it, and arrives as the pause key instead.
 	AddEventHandler(M.Host.CHAT_KEY, openChat)
-	AddEventHandler(M.Host.PAUSE_KEY, function() closeChat() end)
+	-- Escape closes the TOP layer only: see `OPX.Spots.Key.Layer`.
+	local layer = OPX.Spots.Key.Layer('chat', function() return opened and openedAtMs or nil end)
+	AddEventHandler(M.Host.PAUSE_KEY, function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
+		closeChat()
+	end)
 
 	AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed'), function(payload)
 		if type(payload) ~= 'table' then return end

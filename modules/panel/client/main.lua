@@ -732,6 +732,7 @@ local function Open(spec)
 	nextHandle = nextHandle + 1
 	record = {
 		handle = nextHandle,
+		openedAtMs = OPX.Now(),
 		owner = owner,
 		on = spec.on,
 		view = view,
@@ -1174,7 +1175,12 @@ function M.Start()
 	-- unsaved changes -- so the same key that is consulted on the page was not
 	-- consulted here, and the menu already honours its own `closable` on this
 	-- path. A dialog up owns Escape, as it does on `panel:dismiss`.
+	--
+	-- Only as the top layer (`OPX.Spots.Key.Layer`). A panel with a dialog up
+	-- still takes the press when it is on top, and the dialog keeps it.
+	local layer = OPX.Spots.Key.Layer('panel', function() return record and record.openedAtMs end)
 	AddEventHandler(M.Host.PAUSE_KEY, function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
 		if record == nil or record.dialog ~= nil then return end
 		if record.view.dismiss == 'ask' then
 			raise(record, 'dismiss')

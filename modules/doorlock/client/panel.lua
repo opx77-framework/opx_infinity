@@ -219,6 +219,7 @@ function Panel.Open(access, options)
 	nextHandle = nextHandle + 1
 	record = {
 		handle = nextHandle,
+		openedAtMs = OPX.Now(),
 		access = type(access) == 'table' and access or {},
 		mode = Runtime.Report().mode,
 		view = options.view or 'list',
@@ -615,7 +616,15 @@ function Panel.Start()
 	RegisterNetEvent(M.Event.STAFF_DONE, onStaffDone)
 	-- Escape is swallowed by the plugin before the page sees it, and arrives
 	-- here instead: it cancels a pick first, and closes the panel otherwise.
+	--
+	-- Only as the top layer (`OPX.Spots.Key.Layer`): a pick in the world is the
+	-- newest thing the player started, so it outranks the panel it came from.
+	local layer = OPX.Spots.Key.Layer('doorlock', function()
+		if pick ~= nil then return pick.at end
+		return record ~= nil and record.shown and record.openedAtMs or nil
+	end)
 	AddEventHandler('open77:pauseKey', function()
+		if not OPX.Spots.Key.TopLayer(layer) then return end
 		if pick ~= nil then return Panel.CancelPick() end
 		if record ~= nil and record.shown then Panel.Close() end
 	end)
