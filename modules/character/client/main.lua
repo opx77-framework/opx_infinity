@@ -213,7 +213,7 @@ local function headingReporter()
 	local lastSent
 
 	OPX.Scheduler.Every('character.heading',
-		M.Number(M.Settings.HEADING_REPORT_MS, 1000), function()
+		M.Number(M.Settings.HEADING_REPORT_MS, 5000), function()
 			if not M.IsLoggedIn then
 				lastSent = nil
 				return

@@ -936,6 +936,12 @@ function Runtime.Start()
 		tag = 'dealership',
 		declared = keySettings(),
 		onPress = Runtime.Open,
+		-- An open list first, which this key closes; then the dealer it stands at.
+		wants = function(x, y)
+			if handle ~= nil then return OPX.Spots.Key.Rank('OPEN') end
+			if nearest == nil then return nil end
+			return OPX.Spots.Key.Rank('SPOT'), OPX.Spots.Key.Reach(nearest, x, y)
+		end,
 	})
 
 	-- The strip redraws a rebound key itself; this only re-reads whether the row

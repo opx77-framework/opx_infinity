@@ -180,6 +180,17 @@ which refuses the game's own in-cabin button on purpose; its key (`KEY` in
 `config/elevators.lua`) opens the job-gated floor list instead, and the server
 re-checks the floor before the cabin moves.
 
+**One press, one owner.** The host fires every mapping bound to a key from one press,
+so a key several features share is *contested*: **E** (garages, dealers, stores,
+teleports, lifts, doors) and **X** (progress cancel, call decline / hang-up, crate drop,
+emote stop). Each says whether it has something to do right now and at which rank —
+`KEY_PRIORITY` in `config/client.lua` — and only the highest acts; at equal rank the
+nearer spot does (a garage marker beside a managed door: whichever you stand closer
+to). On X a cancelable bar beats a ringing call, which beats a carried crate, which
+beats an emote, which beats hanging up a call that is merely going on. Nobody with
+anything to do means every handler stays silent. A player who rebinds one of them to
+another key takes it out of the contest. `OPX.Spots.Key.Owns` is the rule.
+
 ### The garage key: out, and away
 
 `garages` is a **place**, like a dealer and a store: stand on the marker, press its

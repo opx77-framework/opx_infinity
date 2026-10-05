@@ -55,6 +55,15 @@ OPX.Config.SHARED = {
 	-- `OPX.Vehicle.IsAvRecord` is the only reader; an empty list falls back to this
 	-- pair rather than meaning "nothing flies".
 	AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
+
+	-- Metres the SERVER adds to a place's reach (garages, dealers, fitting
+	-- rooms, teleports, lifts) when it measures a press again. The client shows
+	-- the row and sends the press from where IT stands; the server measures
+	-- where it last OBSERVED the player, a moment behind. With no slack a row
+	-- drawn at the edge of a marker was a press refused as "too far" -- the
+	-- prompt said yes and the server said no to the same step. `doorlock` has
+	-- its own `SLACK` for the same reason and the same default. 0 to 4.
+	REACH_SLACK = 1.0,
 }
 
 --- Per-module settings. A module reads its own table as `module.Settings`, and

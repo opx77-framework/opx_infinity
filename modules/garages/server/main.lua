@@ -307,7 +307,8 @@ local function resolve(source, key)
 		-- a garage standing on the same spot that sorted first by key won the
 		-- search and was then refused as `wrongBucket`, to a player standing on a
 		-- garage in their own.
-		point = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
+		point = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y,
+			OPX.Spots.ServerReachSq(Access.USE_RADIUS))
 	else
 		point = Access.Spot(spots, key)
 		if point == nil and garages[key] ~= nil then
@@ -334,7 +335,9 @@ local function resolve(source, key)
 	if point.bucket ~= at.bucket then return nil, Result.Err('garages.wrongBucket') end
 
 	local flat = Access.FlatDistanceSquared(point, at.x, at.y)
-	if flat == nil or flat > Access.USE_RADIUS_SQ then
+	-- WITH THE SERVER'S SLACK: the row was drawn from where the client stood,
+	-- and this measures where the player was last observed (`REACH_SLACK`).
+	if flat == nil or flat > OPX.Spots.ServerReachSq(Access.USE_RADIUS) then
 		return nil, Result.Err('garages.tooFar', point.key)
 	end
 	return point, nil

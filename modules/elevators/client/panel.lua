@@ -47,6 +47,10 @@ local REFUSAL = {
 	no_position = 'elevators.noPosition',
 	wrong_bucket = 'elevators.wrongBucket',
 	too_far = 'elevators.tooFar',
+	-- The server's own down check. The sentence existed and was reached only by
+	-- the client's `player_down`, so a refusal from the server read as the
+	-- generic "the lift refused".
+	downed = 'elevators.downed',
 }
 
 -- The operator's REASON, or this module's wording for the code.
