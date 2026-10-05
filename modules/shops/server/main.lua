@@ -296,9 +296,10 @@ end
 -- THE GRANT IS THE WHOLE REASON THIS IS A FUNCTION. `appearance` refuses a
 -- clothing save that did not come through a door the server knows about --
 -- otherwise the price of a change is whatever a rewritten client feels like
--- paying -- and the three doors below dress a player WITHOUT opening a fitting
--- room: a bought uniform, one of their own saved outfits, a code somebody read
--- out. The clothes go on, the client's own debounced save follows a second or
+-- paying -- and the two doors below dress a player WITHOUT opening a fitting
+-- room: a bought uniform, one of their own saved outfits. (A code somebody read
+-- out was the third; it is worn inside a priced room now, see `onRedeem`.) The
+-- clothes go on, the client's own debounced save follows a second or
 -- two later, and without this it would be refused as roomless -- which for
 -- `onWear` would mean money taken for clothes that do not survive the session.
 --
@@ -321,6 +322,11 @@ local function dressIn(source, look, wear, bill)
 	return true
 end
 
+--- The name a shop's fitting room is opened under, and later recognised by.
+local function roomOwner(shop)
+	return 'shops:' .. shop.key
+end
+
 --- "I am at this shop and I want the room."
 local function onOpen(source, key)
 	local shop, why = shopAt(source, key)
@@ -334,7 +340,10 @@ local function onOpen(source, key)
 	TriggerClientEvent(M.Event.LOOKS, source, { shop = shop.key, looks = looksFor(source, shop),
 		prices = tuning.charge and shop.prices or {}, currency = tuning.currency })
 
-	local ok, reason = appearance.OpenWardrobe(source, { owner = 'shops', charge = chargeFor(shop) })
+	-- Opened under the shop's own name: a share code is redeemed only inside the
+	-- room of the shop the player stands at (`onRedeem`).
+	local ok, reason = appearance.OpenWardrobe(source,
+		{ owner = roomOwner(shop), charge = chargeFor(shop) })
 	if not ok then
 		-- THE REASON GOES TO THE JOURNAL AND NOT ACROSS THE WIRE. `invalid_player`
 		-- and whatever the `appearance` contract answers next are that module's
@@ -569,6 +578,23 @@ local function onRedeem(source, payload)
 	local code = M.CleanCode(typed, tuning.codeLength)
 	if code == nil then return refuse(source, 'shops.badCode') end
 
+	-- ONLY INSIDE A SHOP'S FITTING ROOM, AT THAT SHOP'S PRICES (the owner's
+	-- ruling, 2026-10). A code used to put the look on anywhere, through a free
+	-- look grant: somebody else's purchase, worn for nothing, which made the
+	-- share code a way round every counter in the city. Now the player has to
+	-- stand at a shop, with that shop's priced room open, and the look goes on
+	-- in the room like any other piece: the save that leaves it is billed by the
+	-- room's own charge (`chargeFor`), slot by slot, at this shop's prices. A
+	-- Cancel costs nothing and keeps nothing, as for every room.
+	local shop, why = shopAt(source, type(payload) == 'table' and payload.shop or nil)
+	if shop == nil then
+		return refuse(source, why == 'no_such_shop' and 'shops.redeemAtShop' or ('shops.' .. why))
+	end
+	if appearance == nil or type(appearance.PricedRoom) ~= 'function'
+		or appearance.PricedRoom(source) ~= roomOwner(shop) then
+		return refuse(source, 'shops.redeemInRoom')
+	end
+
 	local found = M.Storage.ByCode(code)
 	if not found.ok or type(found.value) ~= 'table' then
 		return refuse(source, 'shops.noSuchCode')
@@ -576,7 +602,9 @@ local function onRedeem(source, payload)
 
 	local wear = equipmentOf(OPX.Storage.Decode(found.value.look, nil))
 	if wear == nil then return refuse(source, 'shops.outfitUnreadable') end
-	dressIn(source, tostring(found.value.name), wear)
+	-- No grant of its own: the room's priced grant is what admits, and bills,
+	-- the save.
+	TriggerClientEvent(M.Event.PUT_ON, source, { look = tostring(found.value.name), wear = wear })
 end
 
 --- Reads the config and declares the table. Never yields.

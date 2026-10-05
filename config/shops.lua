@@ -106,6 +106,11 @@ OPX.Config.MODULES.shops = {
 
 		-- Whether a look may be shared at all. False stops codes being minted
 		-- and stops them being redeemed; the looks already saved keep working.
+		--
+		-- A code is redeemed ONLY inside a shop's fitting room, at its counter,
+		-- and the pieces it puts on are billed at that shop's `PRICES` when the
+		-- room is saved, exactly as if picked from its racks (the owner's ruling,
+		-- 2026-10). It used to dress the player for free, anywhere.
 		SHARING = true,
 
 		-- Characters in a share code, excluding its dashes.

@@ -583,7 +583,10 @@ local function askCode()
 			-- round trip, and the server's is the one that decides.
 			local code = M.CleanCode(typed, length)
 			if code == nil then return OPX.Toast.Locale('shops.badCode', nil, 'error') end
-			TriggerServerEvent(M.Event.REDEEM, { code = code })
+			-- With the shop whose room this is: a code is worn only inside a
+			-- shop's room and billed at its prices, and the server checks both.
+			if serving == nil then return OPX.Toast.Locale('shops.redeemAtShop', nil, 'error') end
+			TriggerServerEvent(M.Event.REDEEM, { code = code, shop = serving })
 		end,
 	}
 end

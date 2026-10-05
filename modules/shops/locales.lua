@@ -18,6 +18,8 @@ local EN = {
 	['shops.position_unknown'] = 'Your position could not be read.',
 	['shops.not_for_you'] = 'This shop does not serve you.',
 	['shops.downed'] = 'Nobody serves you from the floor.',
+	['shops.redeemAtShop'] = 'An outfit code is used at a clothing shop\'s counter.',
+	['shops.redeemInRoom'] = 'Open the fitting room first: the outfit is tried on there, at this shop\'s prices.',
 
 	['shops.unavailable'] = 'The fitting room is not available right now.',
 	['shops.cannotDress'] = 'Those clothes would not go on.',
@@ -88,6 +90,8 @@ local FR = {
 	['shops.position_unknown'] = "Votre position n'a pas pu être lue.",
 	['shops.not_for_you'] = 'Cette boutique ne vous est pas ouverte.',
 	['shops.downed'] = 'Personne ne vous sert tant que vous êtes à terre.',
+	['shops.redeemAtShop'] = "Un code de tenue s'utilise au comptoir d'une boutique de vêtements.",
+	['shops.redeemInRoom'] = "Ouvrez d'abord la cabine d'essayage : la tenue s'y essaie, aux prix de cette boutique.",
 
 	['shops.unavailable'] = "La cabine d'essayage n'est pas disponible pour le moment.",
 	['shops.cannotDress'] = "Impossible d'enfiler ces vêtements.",
