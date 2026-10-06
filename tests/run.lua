@@ -39210,12 +39210,22 @@ do
 		return body
 	end
 	local built = slurp('web/index.html')
-	check('augmented-ui keeps the three mixins the templates use',
+	-- #112: the three augmented-ui tokens the templates use are drawn by a hand-written
+	-- block in shapes.css; the library's 130 kB core is gone from the page.
+	check('the page draws the three shape tokens the templates use',
 		built:find('[data-augmented-ui~=tr-clip]', 1, true) ~= nil
 			and built:find('[data-augmented-ui~=bl-clip]', 1, true) ~= nil
-			and built:find('[data-augmented-ui~=border]', 1, true) ~= nil)
-	check('and none of the ~700 it does not (pruned at build time)',
-		built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+			and built:find('[data-augmented-ui~=border]:after', 1, true) ~= nil)
+	check('and none of the library: no core, no unused mixin',
+		built:find('--aug__TL1_Toggle', 1, true) == nil and built:find('--aug__CORETOGGLE', 1, true) == nil
+			and built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+	check('augmented-ui is no longer a dependency, and shapes.css imports nothing',
+		slurp('package.json'):find('"augmented-ui"', 1, true) == nil
+			and slurp('ui/src/design-system/shapes.css'):find('@import', 1, true) == nil)
+	check('the build refuses a shape token shapes.css does not draw',
+		slurp('vite.config.ts'):find("new Set(['tr-clip', 'bl-clip', 'border'])", 1, true) ~= nil)
+	check('the page stays well under its 591 kB with the library', #built > 0 and #built < 520000,
+		tostring(#built))
 
 	local types = slurp('ui/src/bridge/types.ts')
 	check('lists of records are coerced per element, lookups read own keys only',
@@ -39425,6 +39435,82 @@ do
 		end
 	end
 	check('every hover frame is 1.5px, as the menu\'s is', #heavy == 0, table.concat(heavy, ' | '))
+end
+
+-- ── the WebUI backlog: compositor-only motion, memoised rows, a still chat log ──
+-- #113 #114 #115 #118 #120. Each was a cost or a jump a player could see and no Lua
+-- test could: read off the sources, and off the built page where it says the same.
+section('webui backlog: pulses, meters, memoised rows, the panel window and the chat log')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local function rule(source, selector)
+		local style = (source:match('<style.*') or ''):gsub('/%*.-%*/', '')
+		return style:match('\n' .. selector:gsub('%p', '%%%0') .. '%s*({[^}]*})') or ''
+	end
+	local built = slurp('web/index.html')
+
+	-- #113: the ring is an opacity on a layer that never scrolls, not a border-color on
+	-- the scrolling, 3D-transformed panel.
+	local holo = slurp('ui/src/modules/calls/HoloRoot.vue')
+	local pulse = (holo:match('@keyframes op%-holo%-pulse%s*(%b{})') or '')
+	check('the ringing pulse animates opacity and nothing else',
+		pulse:find('opacity', 1, true) ~= nil and pulse:find('border', 1, true) == nil)
+	check('on the edge layer of a frame that does not scroll',
+		rule(holo, '.panel-frame.is-ringing .panel-edges'):find('op-holo-pulse', 1, true) ~= nil
+			and rule(holo, '.panel-frame'):find('overflow', 1, true) == nil
+			and rule(holo, '.panel'):find('overflow: auto', 1, true) ~= nil)
+	check('and its 0.95 edges rest at 0.4737 of themselves, the 0.45 they always had',
+		rule(holo, '.panel-edges'):find('0.95', 1, true) ~= nil
+			and rule(holo, '.panel-edges'):find('opacity: 0.4737', 1, true) ~= nil)
+	check('the built page carries the frame and its edges',
+		built:find('panel-frame', 1, true) ~= nil and built:find('panel-edges', 1, true) ~= nil)
+
+	-- #114: the voice meter and the voice block move by transform alone.
+	local voice = slurp('ui/src/modules/hud/HudVoice.vue')
+	check('the voice meter is a translateY under a static mask, not a clip-path',
+		voice:find('clipPath', 1, true) == nil and voice:find('translateY(${', 1, true) ~= nil
+			and rule(voice, '.meter'):find('mask%-image') ~= nil
+			and rule(voice, '.fill'):find('mask%-image') == nil
+			and rule(voice, '.fill'):find('clip%-path') == nil)
+	check('and the block steps over the key strip by transform, not by bottom',
+		rule(voice, '.voice'):find('bottom var', 1, true) == nil
+			and (rule(voice, '.voice'):match('\n%s*bottom:%s*([^;]*)') or 'voice-lift'):find('voice-lift', 1, true) == nil
+			and rule(voice, '.voice'):find('translate(8px, calc(8px - var(--voice-lift', 1, true) ~= nil
+			and rule(voice, '.voice.live'):find('var(--voice-lift', 1, true) ~= nil)
+
+	-- #115: a slider input redraws the rows whose state changed, not every row.
+	local panel = slurp('ui/src/modules/panel/PanelView.vue')
+	local _, memos = panel:gsub('v%-memo="', '')
+	check('the panel\'s rows and boxes are memoised on what each one shows', memos == 2
+		and panel:find('v-memo="[item.id === chosen,', 1, true) ~= nil
+		and panel:find('v-memo="[standing(openSlider) === box.index,', 1, true) ~= nil)
+	check('and a memoised row finds its place by id, not by a captured offset',
+		panel:find('@click="pick(item)"', 1, true) ~= nil and panel:find('pick(item, offset)', 1, true) == nil)
+
+	-- #118: the panel's window is re-measured as the column fills, without a loop.
+	check('the panel window is sized from a measured row, not panel.js\'s 58px',
+		panel:find('const ROW_HEIGHT = 58', 1, true) == nil and panel:find('rowPitch.value = row.offsetHeight', 1, true) ~= nil)
+	check('and the grid\'s height can never depend on the rows it draws',
+		rule(panel, '.grid'):find('flex: 1 1 0;', 1, true) ~= nil and rule(panel, '.grid'):find('min%-height: 0') ~= nil)
+
+	-- #120: the log keeps its resting place when the box opens; the input gives way.
+	local state = slurp('ui/src/modules/chat/state.ts')
+	local input = slurp('ui/src/modules/chat/ChatInput.vue')
+	local log = slurp('ui/src/modules/chat/ChatLog.vue')
+	check('the input drops by the field row\'s overrun of the room the log leaves',
+		state:find('export const inputDrop', 1, true) ~= nil
+			and rule(input, '.anchor-bottom-left'):find('var(--chat-drop, 0px)', 1, true) ~= nil
+			and input:find("'--chat-drop'", 1, true) ~= nil)
+	check('and the log counts that drop as room, so an empty box does not lift it',
+		log:find('RESTING_BOTTOM + inputDrop.value', 1, true) ~= nil)
+	check('the log\'s resting place is the one it had',
+		rule(log, '.anchor-bottom-left'):find('bottom: calc(var(--chat-offset) + var(--chat-lift, 0px))', 1, true) ~= nil)
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────

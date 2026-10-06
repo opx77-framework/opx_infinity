@@ -114,10 +114,9 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   }
 })
 
-/** 0..1, for the meter's `clip-path`. An input level is the fastest-moving number on
-    this block, so it moves the one way that costs neither a layout nor a paint --
-    and it is a clip rather than a scale because a scale takes the fill's slat mask
-    with it, which is what used to draw a second set of bars over the first. */
+/** 0..1, for the meter's `translateY`. An input level is the fastest-moving number on
+    this block, so it moves the one way that costs neither a layout nor a paint: a
+    transform on a solid fill, under a mask that does not move (#114). */
 function share(value: number): number {
   return Math.max(0, Math.min(100, value)) / 100
 }
@@ -166,17 +165,22 @@ function share(value: number): number {
           :aria-valuemin="0"
           :aria-valuemax="100"
         >
-          <!-- CLIPPED, NOT SCALED, and the difference is the whole of the bug the
-               owner reported as "it draws bars over the bars". The fill carries a
-               mask cut to the same 4px-on, 2px-off rhythm as the unlit column
-               behind it -- but `transform: scaleY()` scales an element's PAINTING,
-               and a mask is part of that. At half level the 6px pitch became 3px,
-               so the lit slats stopped landing on the unlit ones and the eye read
-               a second, denser set of bars laid over the first.
-               `clip-path` reveals part of an unscaled element instead, so the
-               rhythm is fixed and the lit slats sit exactly in the unlit ones. It
-               is composited like a transform, so nothing here touches layout. -->
-          <span class="fill" :style="{ clipPath: `inset(${(1 - share(voice.level)) * 100}% 0 0 0)` }" />
+          <!-- THE MASK STANDS STILL AND THE FILL SLIDES UNDER IT.
+               The slats are a mask cut to the same 4px-on, 2px-off rhythm as the
+               unlit column behind, and it must never move with the level: a
+               `scaleY()` on the masked element scaled the mask too, the 6px pitch
+               became 3px at half level, and the eye read a second set of bars over
+               the first ("it draws bars over the bars"). The fix after that was a
+               `clip-path` on the masked fill -- right to look at, but a clip-path
+               change is a repaint of a masked element at the fastest-moving number
+               on the HUD (#114).
+               So the mask is on `.meter`, which never changes, and the fill
+               inside it is one solid colour moved down by `translateY`: the part
+               of it still inside the meter is exactly what `inset(top 0 0 0)`
+               revealed, and a transform is the compositor's alone. -->
+          <span class="meter">
+            <span class="fill" :style="{ transform: `translateY(${(1 - share(voice.level)) * 100}%)` }" />
+          </span>
         </span>
 
         <div v-if="voice.mode || voice.distance" class="reach">
@@ -229,7 +233,7 @@ function share(value: number): number {
      arrive -- the meter, the reach mode, the pips and the keycaps are all conditional,
      and a top-anchored block would slide its own mic down the screen every time a line
      appeared above it. */
-  bottom: calc(var(--op-inset-y) - var(--hud-bleed) + var(--voice-lift, 0px));
+  bottom: calc(var(--op-inset-y) - var(--hud-bleed));
   /* IT IS SIZED BY ITS WIDEST LINE, and it was not.
 
      `opx77_hud/web/hud.css` pinned `.voice` at 52px: a narrow column hugging the
@@ -252,17 +256,19 @@ function share(value: number): number {
   padding: var(--hud-bleed);
   opacity: 0;
   /* In from the corner it lives in: the horizontal 8px is the original, the vertical
-     one replaces the -50% that used to centre it. */
-  transform: translate(8px, 8px);
+     one replaces the -50% that used to centre it. The lift over an open key strip
+     rides on the same transform (see `transition` below). */
+  transform: translate(8px, calc(8px - var(--voice-lift, 0px)));
   perspective: var(--op-persp);
   contain: layout paint style;
   /* An entrance: three steps, not a fade. */
-  /* `bottom` too: the block steps up over an open key strip and back down when it
-     closes (`stores/corners.ts`), and a jump would read as a glitch. */
+  /* The block steps up over an open key strip and back down when it closes
+     (`stores/corners.ts`), and a jump would read as a glitch. That step was a
+     transition on `bottom` -- a layout per frame -- and is now part of the
+     `transform` below, on the same timing (#114). */
   transition:
     opacity var(--op-enter-ms) var(--op-stutter),
-    transform var(--op-enter-ms) var(--op-stutter),
-    bottom var(--op-enter-ms) var(--op-stutter);
+    transform var(--op-enter-ms) var(--op-stutter);
   /* The state ladder, resolved once and read by the mic, the caption, the meter
      and the slash. NOT by the frame: `--voice-frame` sat here for four states
      and nothing ever read it, so the caps and the rx counter never followed the
@@ -276,7 +282,7 @@ function share(value: number): number {
 
 .voice.live {
   opacity: 1;
-  transform: translate(0, 0);
+  transform: translate(0, calc(var(--voice-lift, 0px) * -1));
 }
 
 /* At rest. */
@@ -451,7 +457,7 @@ function share(value: number): number {
 
    It is still ONE node, not twenty. The old resource toggled a class on up to
    twenty `.block` children every frame the level moved; the slats here are a
-   STATIC gradient and the level is one `scaleY` on one composited child, so the
+   STATIC gradient and the level is one `translateY` on one composited child, so the
    look comes back without the twenty per-frame class writes coming back with it. */
 .track {
   position: relative;
@@ -480,23 +486,31 @@ function share(value: number): number {
   );
 }
 
-/* The one filled shape on this block, and it is data. `scaleX`, never `width`. */
+/* The window the level shows through. Static: it carries the slat divisions,
+   cut OUT of whatever slides under it, so the gaps show the night behind instead
+   of a darker red -- and since nothing about it ever changes, the mask is drawn
+   once. `overflow: hidden` is the cut the old `inset()` made. */
+.meter {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  -webkit-mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
+  mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
+}
+
+/* The one filled shape on this block, and it is data: a solid colour, lit from
+   the bottom by sliding a full-height element up into the meter rather than by
+   squashing it. `translateY(100%)` is entirely below the window, which is the
+   rest state. Only the transform moves per frame. */
 .fill {
   display: block;
   width: 100%;
   height: 100%;
   background: var(--voice-tone);
-  /* Lit from the bottom, like the original -- now by revealing the bottom of a
-     full-height element rather than by squashing it. `inset(100% 0 0 0)` hides
-     it entirely, which is the rest state. */
-  clip-path: inset(100% 0 0 0);
-  /* The slat divisions, cut OUT of the fill rather than drawn over it, so the
-     gaps show the night behind instead of a darker red. The mask is NOT scaled
-     with the level any more -- see the note on the element. */
-  -webkit-mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
-  mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
+  transform: translateY(100%);
   transition:
-    clip-path var(--op-dur-fast) linear,
+    transform var(--op-dur-fast) linear,
     background var(--op-dur-fast) linear;
 }
 

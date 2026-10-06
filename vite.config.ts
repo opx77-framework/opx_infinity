@@ -3,7 +3,6 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import type { Plugin as PostcssPlugin } from 'postcss'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -67,58 +66,44 @@ function inlineSurface(): Plugin {
 }
 
 /**
- * Every mixin token a template asks augmented-ui for, read from the source.
+ * The three augmented-ui tokens `design-system/shapes.css` draws, and nothing else.
  *
- * Both the static attribute and the bound one are scanned, and every word in the value
- * counts -- the bound form is an expression (`dragging ? undefined : 'tr-clip border'`),
- * so `dragging` and `undefined` come along too. They match no rule and cost nothing; a
- * token MISSED here would cost a shape, which is why this over-collects on purpose.
+ * The library is gone (#112): shapes.css carries a hand-written copy of the polygons
+ * it resolved to for `tr-clip`, `bl-clip` and `border`, which are the only tokens
+ * any template ever used. A template asking for a fourth -- `tl-clip`, `br-round` --
+ * would get a plain rectangle and no warning, so the build refuses it instead.
+ *
+ * The static attribute is read whole. The bound one is an expression
+ * (`dragging ? undefined : 'tr-clip border'`), so only its quoted strings count.
  */
-function augmentedTokens(): Set<string> {
-  const tokens = new Set<string>()
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = resolve(dir, entry.name)
-      if (entry.isDirectory()) walk(path)
-      else if (/\.(vue|ts)$/.test(entry.name)) {
-        const source = readFileSync(path, 'utf8')
-        for (const match of source.matchAll(/:?data-augmented-ui="([^"]*)"/g)) {
-          for (const word of match[1].match(/[a-z0-9-]+/gi) ?? []) tokens.add(word)
+const AUGMENTED_TOKENS = new Set(['tr-clip', 'bl-clip', 'border'])
+
+function guardAugmented(): Plugin {
+  return {
+    name: 'opx-guard-augmented',
+    buildStart() {
+      const unknown: string[] = []
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = resolve(dir, entry.name)
+          if (entry.isDirectory()) walk(path)
+          else if (/\.(vue|ts)$/.test(entry.name)) {
+            const source = readFileSync(path, 'utf8')
+            for (const match of source.matchAll(/(:?)data-augmented-ui="([^"]*)"/g)) {
+              const values = match[1] ? [...match[2].matchAll(/'([^']*)'/g)].map((m) => m[1]) : [match[2]]
+              for (const value of values) {
+                for (const word of value.split(/\s+/).filter(Boolean)) {
+                  if (!AUGMENTED_TOKENS.has(word)) unknown.push(`${entry.name}: ${word}`)
+                }
+              }
+            }
+          }
         }
       }
-    }
-  }
-  walk(resolve(here, 'ui/src'))
-  return tokens
-}
-
-/**
- * Drops the augmented-ui rules for mixins no template uses.
- *
- * The library is 167 kB of CSS -- the single largest thing in the page, bigger than the
- * whole JS bundle -- because it ships every position x every shape x every axis variant
- * (`tl-2-scoop-xy`, `r-rect-y`, ...) as attribute-selector rules. This surface uses three
- * tokens. A rule whose selector names `[data-augmented-ui~="X"]` for an X nobody writes
- * can never match, so removing it changes nothing on screen; it only stops CEF parsing,
- * storing and matching ~600 dead rules against every augmented element on every style
- * recalc. Rules with no `~=` token (the core custom-property defaults, the border and
- * inlay layers) are kept whole.
- */
-function pruneAugmented(): PostcssPlugin {
-  const used = augmentedTokens()
-  if (used.size === 0) throw new Error('pruneAugmented: no data-augmented-ui token found in ui/src')
-  const token = /\[data-augmented-ui~="([^"]+)"\]/g
-  const live = (selector: string): boolean => {
-    for (const match of selector.matchAll(token)) if (!used.has(match[1])) return false
-    return true
-  }
-  return {
-    postcssPlugin: 'opx-prune-augmented',
-    Rule(rule) {
-      if (!rule.selector.includes('data-augmented-ui~=')) return
-      const kept = rule.selectors.filter(live)
-      if (kept.length === 0) rule.remove()
-      else if (kept.length !== rule.selectors.length) rule.selectors = kept
+      walk(resolve(here, 'ui/src'))
+      if (unknown.length) {
+        throw new Error(`guardAugmented: shapes.css draws only tr-clip, bl-clip and border -- ${unknown.join(', ')}`)
+      }
     }
   }
 }
@@ -140,8 +125,7 @@ export default defineConfig(() => {
     root: resolve(here, 'ui'),
     // Relative, so nothing in the output can ever name an origin.
     base: './',
-    plugins: [vue(), inlineSurface(), copyProbe()],
-    css: { postcss: { plugins: [pruneAugmented()] } },
+    plugins: [guardAugmented(), vue(), inlineSurface(), copyProbe()],
     // Every component is `<script setup>`; nothing uses `data()`, `methods` or `this`.
     // Left at its default (true) the Options API resolver ships in the runtime anyway.
     define: {
