@@ -78,12 +78,45 @@ local function ownerLoaded(citizenId)
 	return character.GetPlayerByCitizenId(citizenId) ~= nil
 end
 
---- Copies a spawned vehicle's health, damage and flags onto its row.
+--- The litres in a live vehicle's tank: the `fuel` field of its state bag, the
+--- platform's (`open77_fuel`) and `modules/fuel`'s. Nil when nobody has written
+--- one, which the row keeps as "never measured" rather than as empty.
+-- READ OFF THE BAG AND NOT ASKED OF `fuel`: the field is the platform's, and a
+-- server running `open77_fuel` without this resource's fuel module still has a
+-- tank worth keeping. A read, so no permission and no yield.
+local function fuelOf(vehicleId)
+	local state = Open77.state
+	if type(state) ~= 'table' or type(state.entity) ~= 'function' then return nil end
+	local read, litres = pcall(function() return state.entity('vehicle', vehicleId).fuel end)
+	litres = read and finiteNumber(litres) or nil
+	if litres == nil or litres < 0 then return nil end
+	return litres
+end
+
+--- Gives a vehicle that just came out the tank it was put away with. Through
+--- the fuel contract when it runs -- it clamps to the tank and writes through
+--- `open77_fuel` when standing down for it -- and straight onto the bag field
+--- otherwise, which is all the contract would do.
+local function restoreFuel(vehicleId, litres)
+	if litres == nil then return end
+	local fuel = OPX.Api.Get('fuel')
+	if fuel ~= nil and type(fuel.Restore) == 'function' then
+		local ran, written = pcall(fuel.Restore, vehicleId, litres)
+		if ran and written == true then return end
+	end
+	local state = Open77.state
+	if type(state) ~= 'table' or type(state.entity) ~= 'function' then return end
+	local read, bag = pcall(state.entity, 'vehicle', vehicleId)
+	if read and bag ~= nil then pcall(bag.set, bag, 'fuel', litres) end
+end
+
+--- Copies a spawned vehicle's health, damage, flags and tank onto its row.
 local function applyCondition(vehicle, record, snapshot)
 	vehicle.health = finiteNumber(snapshot.health) or vehicle.health
 	vehicle.damage = Open77.vehicles.getDamage(record.id)
 	vehicle.metadata = vehicle.metadata or {}
 	vehicle.metadata.flags = finiteNumber(snapshot.flags)
+	vehicle.fuel = fuelOf(record.id) or vehicle.fuel
 end
 
 -- ONE REGISTRATION PER CHARACTER AT A TIME, citizen id -> when it began. The
@@ -392,6 +425,9 @@ function M.Spawn(source, plateId, at)
 	if flags ~= nil and Open77.vehicles.update(id, { flags = flags }) ~= true then
 		Open77.log.warn(('[vehicles] %s came out without its stored flags'):format(plateId))
 	end
+	-- And the tank, before anything yields: a burn pass that found the bag empty
+	-- first would fill it as a fresh car's, and the next store would keep that.
+	restoreFuel(id, vehicle.fuel)
 
 	-- The connection is read again after the database read, which yielded:
 	-- writing `live` for a character that left meanwhile would leave a vehicle
@@ -752,6 +788,7 @@ function M.Init()
 	owners = {}
 	registering = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
+	OPX.Schema.AddColumns(M.Storage.COLUMNS)
 end
 
 --- Publishes the contract. Nothing may read one before this phase ends.
@@ -849,6 +886,7 @@ function M.Stop()
 					health = finiteNumber(snapshot.health) or 1.0,
 					damage = gotDamage and type(damage) == 'table' and damage or nil,
 					flags = finiteNumber(snapshot.flags),
+					fuel = fuelOf(record.id),
 				}
 				local sent, why = Store.SaveConditionNow(entity, function(ok, reason)
 					if not ok then

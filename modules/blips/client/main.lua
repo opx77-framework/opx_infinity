@@ -1,4 +1,4 @@
---- Turns five lists somebody else owns into real Cyberpunk mappins.
+--- Turns six lists somebody else owns into real Cyberpunk mappins.
 -- @author dop42
 --
 -- READ `config/blips.lua` FIRST. It carries the measurement that started this
@@ -115,7 +115,7 @@ end
 --- Validates one category block, answering the usable form or nil and why.
 --
 -- EVERY FAULT IS NAMED WITH ITS CATEGORY. An operator reading a boot log wants
--- to know which of the five blocks they have to open, and "SPRITE must be a
+-- to know which of the six blocks they have to open, and "SPRITE must be a
 -- string" without that word is a message that sends them to read all of them.
 -- @param name string
 -- @param raw any
@@ -192,7 +192,7 @@ function Runtime.Categories()
 			if usable ~= nil then out[name] = usable end
 		end
 	end
-	-- A category name that is not one of the five is a typo, and a typo that
+	-- A category name that is not one of the six is a typo, and a typo that
 	-- draws nothing while looking exactly like a block that works is the worst
 	-- kind. It is named rather than ignored.
 	for name in pairs(declared) do
@@ -378,6 +378,22 @@ local function pointsOf(name, pace)
 			if type(raw) == 'table' then add(tostring(key), raw.LABEL, raw.X, raw.Y, raw.Z) end
 		end
 
+	elseif name == 'fuel' then
+		-- The OPEN stations, as `modules/fuel` built them from its config: a
+		-- station that is not surveyed yet or was refused is not in the list, so
+		-- it is not pinned -- the same rule the module itself keeps, asked of the
+		-- module rather than written again here. One pin per station, at its
+		-- centre (ox's `createBlip(station)`), never one per pump.
+		local stations = accessor('fuel', 'Stations')
+		if stations == nil then return out, skipped end
+		local read, list = pcall(stations)
+		if not read or type(list) ~= 'table' then return out, skipped end
+		for key, station in pairs(list) do
+			if type(station) == 'table' then
+				add(tostring(key), station.label, station.x, station.y, station.z)
+			end
+		end
+
 	elseif name == 'jobs' then
 		-- TWO SOURCES UNDER ONE CATEGORY. A player reading a map asks "where is
 		-- there work", not "which module owns this", so a gunsmith bench and a
@@ -423,7 +439,7 @@ local function pointsOf(name, pace)
 				--
 				-- A SITE THAT IS NOT A TABLE IS NOT PINNED, and is not indexed:
 				-- `site.JOBS` on one raised inside the pass and lost every pin of
-				-- all five categories, every four seconds, for one bad config row.
+				-- all six categories, every four seconds, for one bad config row.
 				pace(4)
 				local allowed = type(site) == 'table'
 					and passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY }, membership)
@@ -890,7 +906,7 @@ end
 -- `tests/run.lua` is written.
 --
 -- THERE IS NO `M.Api` AND THERE SHOULD NOT BE. Nothing in this resource needs
--- to ask this module anything: it consumes five lists and publishes pins. A
+-- to ask this module anything: it consumes six lists and publishes pins. A
 -- contract here would be a surface offered on the chance somebody wants it,
 -- which is the thing `tests/run.lua`'s `CORE_NAMESPACE` note argues against one
 -- level up.
