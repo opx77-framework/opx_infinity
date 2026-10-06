@@ -57,7 +57,10 @@
    w/2 past the cut, which is how the library offset a 45deg join.
 
    The bottom-left corner is a custom property rather than a second selector so
-   that the clip stays at the specificity of one attribute, as it was. */
+   that the clip stays at the specificity of one attribute, as it was.
+
+   The geometry, the attribute and the custom-property names are augmented-ui's:
+   augmented-ui, BSD 2-Clause License, Copyright (c) James0x57, PropJockey, 2020. */
 [data-augmented-ui] {
   position: relative;
   isolation: isolate;
