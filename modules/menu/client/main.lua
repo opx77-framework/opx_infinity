@@ -197,10 +197,22 @@ local function fitsInPayload(value, depth, budget)
 end
 
 --- Validates a caller's opaque table whole, answering a refusal code or nil.
+-- A FLAT TABLE IS COUNTED IN ONE LOOP, two nodes a pair, which is every row's
+-- `data` in practice; the first table met inside hands the whole count to
+-- `fitsInPayload` from the start. The count and the refusal are the same: a
+-- flat table of n pairs is 1 + 2n nodes either way.
 local function dataFault(value, notTable, tooLarge)
 	if value == nil then return nil end
 	if type(value) ~= 'table' then return notTable end
-	if not fitsInPayload(value, 1, { nodes = 0 }) then return tooLarge end
+	local nodes = 1
+	for key, nested in pairs(value) do
+		if type(nested) == 'table' or type(key) == 'table' then
+			if not fitsInPayload(value, 1, { nodes = 0 }) then return tooLarge end
+			return nil
+		end
+		nodes = nodes + 2
+		if nodes > MAX_DATA_NODES then return tooLarge end
+	end
 	return nil
 end
 
@@ -239,6 +251,92 @@ end
 -- Recurses, so it is declared before the row normaliser reaches for it.
 local normalizeItems
 
+-- ── rows that did not change ───────────────────────────────────────────────
+--
+-- A CALLER THAT HANDS THE SAME ROW BACK IS NOT CHECKED AGAIN. An update was a
+-- full re-check of the spec, about 238 instructions a row, and a screen that
+-- redraws keeps most of its rows as they were. A plain row (no `items`, no
+-- `confirm`, no table nested deeper than one level) that passed is remembered
+-- by identity with a shallow copy of every field and of every table it holds
+-- (`data`, `choices`, `slider`). Handed back with every field the same, it
+-- answers the entry it built for under half the cost. Anything else -- a field
+-- changed, added or removed, an id that came from a position that moved, a row
+-- the player adjusted since, a row used twice in one spec -- is checked from
+-- scratch. Only a row that passed is remembered, so every refusal is the one
+-- it always was, in the same order.
+--
+-- The memory is the live menu's own (`record.memo`): the rows of the spec it
+-- was built from, replaced by each update that lands and dropped with the menu
+-- -- the client sandbox has no weak tables, and this keeps nothing a closed
+-- menu held. A row is copied the second spec it appears in, not the first, so
+-- a caller that builds every row afresh pays a table write a row and no copy.
+
+-- An empty memory, for a pass with no menu behind it.
+local FORGOTTEN = {}
+
+--- A fresh check budget, reading what `memo` remembered.
+local function budgetOf(memo)
+	return { nodes = 0, used = {}, memo = memo or FORGOTTEN, keep = {} }
+end
+
+-- A shallow copy of a table of plain values, and its size; nil for a table
+-- that nests another.
+local function flatCopy(value)
+	local copy, count = {}, 0
+	for key, nested in pairs(value) do
+		if type(nested) == 'table' or type(key) == 'table' then return nil end
+		copy[key] = nested
+		count = count + 1
+	end
+	return copy, count
+end
+
+-- Whether a table still holds exactly the plain values copied.
+local function sameAs(value, copy, size)
+	if type(value) ~= 'table' then return false end
+	local count = 0
+	for key, nested in pairs(value) do
+		if copy[key] ~= nested then return false end
+		count = count + 1
+	end
+	return count == size
+end
+
+-- What to remember of a row that passed, or false for a row not worth it.
+local function remember(item, index, entry)
+	if item.items ~= nil or (item.confirm ~= nil and item.confirm ~= false) then return false end
+	local fields, size, nested = {}, 0, nil
+	for key, value in pairs(item) do
+		if type(key) == 'table' then return false end
+		if type(value) == 'table' then
+			local copy, count = flatCopy(value)
+			if copy == nil then return false end
+			nested = nested or {}
+			nested[#nested + 1] = { key = key, copy = copy, size = count }
+		end
+		fields[key] = value
+		size = size + 1
+	end
+	return { entry = entry, index = index, fields = fields, size = size, nested = nested }
+end
+
+-- The entry a row built last time, when nothing it was built from changed.
+local function recalled(item, memo, index, used)
+	local entry = memo.entry
+	if entry.touched or used[entry] then return nil end
+	if item.id == nil and memo.index ~= index then return nil end
+	if not sameAs(item, memo.fields, memo.size) then return nil end
+	local nested = memo.nested
+	if nested ~= nil then
+		for slot = 1, #nested do
+			local was = nested[slot]
+			if not sameAs(item[was.key], was.copy, was.size) then return nil end
+		end
+	end
+	used[entry] = true
+	return entry
+end
+
 -- ── checking a spec in steps ────────────────────────────────────────────────
 --
 -- A SPEC IS CHECKED ROW BY ROW, about 240 instructions a row, inside the resume
@@ -260,13 +358,13 @@ local pacing = nil
 
 -- Checks a spec's rows, paced when the caller asked and can yield. Answers the
 -- rows, the node count and whether it yielded, or nil and the refusal.
-local function checkRows(spec)
+local function checkRows(spec, memo)
 	local paced = spec.yield == true and type(Wait) == 'function' and coroutine.isyieldable()
-	local budget = { nodes = 0 }
+	local budget = budgetOf(memo)
 	if not paced then
 		local items, reason = normalizeItems(spec.items, 1, budget)
 		if items == nil then return nil, reason end
-		return { items = items, nodes = budget.nodes, yielded = false }
+		return { items = items, nodes = budget.nodes, yielded = false, memo = budget.keep }
 	end
 	local count, yielded = 0, false
 	pacing = function()
@@ -280,7 +378,7 @@ local function checkRows(spec)
 	pacing = nil
 	if not ran then error(items, 0) end
 	if items == nil then return nil, reason end
-	return { items = items, nodes = budget.nodes, yielded = yielded }
+	return { items = items, nodes = budget.nodes, yielded = yielded, memo = budget.keep }
 end
 
 --- Normalises one row and derives its kind from its shape.
@@ -448,10 +546,29 @@ normalizeItems = function(items, depth, budget)
 	if total > MAX_ROWS then return nil, 'too_many_items' end
 
 	local list = {}
+	local used, remembered, keep = budget.used, budget.memo, budget.keep
 	for index = 1, total do
 		if pacing ~= nil then pacing() end
-		local entry, reason = normalizeItem(items[index], index, depth, budget)
-		if entry == nil then return nil, reason end
+		local item = items[index]
+		-- `false` is a row seen once and not yet worth a copy.
+		local memo = remembered[item]
+		local entry = memo and recalled(item, memo, index, used) or nil
+		if entry ~= nil then
+			-- Counted as a row checked afresh would be, and refused the same way.
+			budget.nodes = budget.nodes + 1
+			if budget.nodes > MAX_NODES then return nil, 'menu_too_large' end
+			keep[item] = memo
+		else
+			local reason
+			entry, reason = normalizeItem(item, index, depth, budget)
+			if entry == nil then return nil, reason end
+			if memo == nil then
+				if keep[item] == nil then keep[item] = false end
+			else
+				used[entry] = true
+				keep[item] = remember(item, index, entry)
+			end
+		end
 		list[index] = entry
 	end
 	if #list == 0 then return nil, 'empty_menu' end
@@ -539,6 +656,8 @@ end
 --- Steps a toggle, a choice list or a slider, answering whether it moved.
 local function adjust(entry, delta)
 	if entry.disabled then return false end
+	-- Rebuilt from the spec on the next update, as before, not answered as it stands.
+	entry.touched = true
 	local kind = entry.kind
 	if kind == 'toggle' then
 		entry.on = not entry.on
@@ -649,7 +768,7 @@ end
 -- ── building and rebuilding ─────────────────────────────────────────────────
 
 --- Builds a menu record from a caller's spec, or refuses it whole.
-local function build(owner, spec, checked)
+local function build(owner, spec, checked, memo)
 	if type(spec.on) ~= 'function' then return nil, 'callback_required' end
 
 	local id = spec.id
@@ -712,15 +831,15 @@ local function build(owner, spec, checked)
 	-- the rows of the menu that is up and is not the moment to move it.
 	local where = geometry(spec)
 
-	local items, nodes
+	local items, nodes, kept
 	if checked ~= nil then
-		items, nodes = checked.items, checked.nodes
+		items, nodes, kept = checked.items, checked.nodes, checked.memo
 	else
-		local budget = { nodes = 0 }
+		local budget = budgetOf(memo)
 		local reason
 		items, reason = normalizeItems(spec.items, 1, budget)
 		if items == nil then return nil, reason end
-		nodes = budget.nodes
+		nodes, kept = budget.nodes, budget.keep
 	end
 
 	return {
@@ -740,6 +859,7 @@ local function build(owner, spec, checked)
 		reportFocus = spec.reportFocus == true,
 		items = items,
 		nodes = nodes,
+		memo = kept,
 		stack = { screen(items, title, nil, spec.cursor) },
 	}
 end
@@ -773,14 +893,14 @@ local function rebuild(owned, spec, checked)
 	if not validStatus(spec.status) then return false, 'invalid_status' end
 	if spec.on ~= nil and type(spec.on) ~= 'function' then return false, 'callback_required' end
 
-	local items, nodes
+	local items, nodes, kept
 	if checked ~= nil then
-		items, nodes = checked.items, checked.nodes
+		items, nodes, kept = checked.items, checked.nodes, checked.memo
 	elseif spec.items ~= nil then
-		local budget = { nodes = 0 }
+		local budget = budgetOf(owned.memo)
 		local built, reason = normalizeItems(spec.items, 1, budget)
 		if built == nil then return false, reason end
-		items, nodes = built, budget.nodes
+		items, nodes, kept = built, budget.nodes, budget.keep
 	end
 
 	local title
@@ -795,6 +915,7 @@ local function rebuild(owned, spec, checked)
 	if items ~= nil then
 		owned.items = items
 		owned.nodes = nodes
+		owned.memo = kept
 	end
 	if title ~= nil then owned.title = title end
 	if spec.on ~= nil then owned.on = spec.on end
@@ -1068,10 +1189,13 @@ local function Open(spec)
 
 	-- A caller on its own thread may have the rows checked in steps (see
 	-- `checkRows`); whatever a frame changed is checked again before this goes on.
+	-- What the menu up now remembers of its rows (see `remember`): a reopen that
+	-- hands the same rows back is not checked again either.
+	local memo = record and record.memo or nil
 	local checked
 	if spec.yield == true then
 		local rowsReason
-		checked, rowsReason = checkRows(spec)
+		checked, rowsReason = checkRows(spec, memo)
 		if checked == nil then return Result.Err(rowsReason) end
 		if checked.yielded then
 			if OPX.UI.Interactive() == nil then return Result.Err('no_surface') end
@@ -1084,7 +1208,7 @@ local function Open(spec)
 
 	-- Built before the live menu is taken down, so a refused spec costs the
 	-- player nothing.
-	local built, reason = build(owner, spec, checked)
+	local built, reason = build(owner, spec, checked, memo)
 	if built == nil then return Result.Err(reason) end
 
 	if record ~= nil then
@@ -1149,7 +1273,7 @@ local function Update(handle, spec)
 	if spec.yield == true and spec.items ~= nil then
 		local owned = record
 		local rowsReason
-		checked, rowsReason = checkRows(spec)
+		checked, rowsReason = checkRows(spec, owned.memo)
 		if checked == nil then return Result.Err(rowsReason) end
 		if checked.yielded then
 			if record == nil then return Result.Err('no_menu_open') end

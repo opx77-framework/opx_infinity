@@ -37424,6 +37424,113 @@ do
 end
 
 
+-- ── a menu update that hands its rows back is not checked again (#117) ─────
+-- Every update re-checked the whole spec, about 238 instructions a row in the
+-- caller's resume. A row handed back unchanged now answers the entry it built
+-- for under half that, and a row built afresh is a little cheaper too (a flat
+-- `data` is counted in one loop). Everything a row can change -- a field
+-- edited, added or removed in place, its `data` grown, the position its id came
+-- from, the player's own adjustment -- is checked again, and refused exactly
+-- as before.
+section('menu: an update handing its rows back is not checked again')
+do
+	local env, control, why = boot('client')
+	check('client boots for the menu', why == nil, why)
+	if why == nil then
+		local menu = env.OPX.Api.Get('menu')
+		local function rows(count)
+			local items = {}
+			for index = 1, count do
+				items[index] = { id = 'row_' .. index, label = 'Row number ' .. index,
+					description = 'A description for row ' .. index, icon = 'person',
+					data = { go = 'player', arg = index, page = 1 } }
+			end
+			return items
+		end
+		local opened = menu.Open({ owner = 'probe', id = 'probe.memo', title = 'Memo', items = rows(10),
+			on = function() end })
+		check('a menu opens', opened.ok, opened.error)
+		local handle = opened.ok and opened.value.handle or 0
+
+		local fresh = callCost(menu.Update, handle, { items = rows(100) })
+		check('a fresh 100-row update costs less a row than it did (238)', fresh < 100 * 230,
+			('%d instructions, %d a row'):format(fresh, fresh // 100))
+		local same = rows(100)
+		menu.Update(handle, { items = same })
+		menu.Update(handle, { items = same })
+		local again = callCost(menu.Update, handle, { items = same })
+		check('the same 100 rows handed back cost under 150 a row', again < 100 * 150,
+			('%d instructions, %d a row'):format(again, again // 100))
+
+		local function at(id)
+			local state = menu.State()
+			return state.ok and state.value.itemId == id and state.value or nil
+		end
+		same[1].label = 'Renamed'
+		menu.Update(handle, { items = same, cursor = 'row_1' })
+		check('a label edited in place is drawn', at('row_1') and at('row_1').label == 'Renamed')
+		same[1].disabled = true
+		menu.Update(handle, { items = same })
+		check('a field added in place is honoured', at('row_2') ~= nil)
+		same[1].disabled = nil
+		menu.Update(handle, { items = same, cursor = 'row_1' })
+		check('and one removed again', at('row_1') ~= nil)
+
+		local function refusal(items)
+			local answer = menu.Update(handle, { items = items })
+			return not answer.ok and answer.error or 'accepted'
+		end
+		for key = 1, 40 do same[3].data['k' .. key] = key end
+		local copy = rows(100)
+		for key = 1, 40 do copy[3].data['k' .. key] = key end
+		check('data grown in place is refused as a fresh row is',
+			refusal(same) == 'item_data_too_large' and refusal(copy) == 'item_data_too_large', refusal(same))
+		same[3].data = { go = 'player' }
+		same[4].icon = 'not_an_icon'
+		copy[3].data, copy[4].icon = { go = 'player' }, 'not_an_icon'
+		check('an icon broken in place is refused as a fresh row is',
+			refusal(same) == 'invalid_item_icon' and refusal(copy) == 'invalid_item_icon', refusal(same))
+		same[4].icon = 'person'
+		check('and accepted again once mended', refusal(same) == 'accepted')
+
+		-- Ids derived from a position follow the position, not the memory.
+		local first, second = { label = 'First' }, { label = 'Second' }
+		menu.Update(handle, { items = { first, second } })
+		menu.Update(handle, { items = { first, second } })
+		menu.Update(handle, { items = { second, first }, cursor = 'item_2' })
+		check('a row with no id is named by where it stands now', at('item_2') and at('item_2').label == 'First')
+
+		-- The player's adjustment, and one row table used twice.
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local function press(key)
+			control.PageEmit(page, 'opx:menu:key', { handle = handle, key = key })
+			control.Pump(2)
+		end
+		local toggle = { id = 'flag', label = 'Flag', toggle = false }
+		local twice = { label = 'Twice', toggle = false }
+		local items = { toggle, twice, twice }
+		menu.Update(handle, { items = items, cursor = 'flag' })
+		menu.Update(handle, { items = items, cursor = 'flag' })
+		check('the menu page is there to press on', page ~= nil)
+		if page ~= nil then
+			press('right')
+			check('the player flips a remembered toggle', at('flag') and at('flag').value == true)
+			menu.Update(handle, { items = items })
+			check('and an update puts it back to the spec, as before', at('flag') and at('flag').value == false)
+			menu.Update(handle, { items = items, cursor = 'item_2' })
+			press('right')
+			press('down')
+			check('one row table used twice is two rows', at('item_3') and at('item_3').value == false)
+		end
+	end
+end
+
+
 -- ── the two near-limit resumes: a paced menu spec, and the eye's staff rows ──
 -- A menu spec is checked about 240 instructions a row in the resume that hands
 -- it over; a caller on a thread may ask (`yield = true`) for the rows to be
