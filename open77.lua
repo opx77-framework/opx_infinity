@@ -22,7 +22,7 @@
 --                         spelling the runtime still accepts; the catalogued name
 --                         is this one, and `players.stats.read` likewise covers
 --                         getHealth. `open77_validate` asks for the damage.*
---                         spellings anyway -- a false positive, see README
+--                         spellings anyway -- a false positive, see CONTRIBUTING.md
 --   player.cyberware.read `Open77.appearance.captureBody` needs it ALONGSIDE
 --                         player.appearance.read. Without it every other
 --                         player's body goes undrawn, and the static validator
