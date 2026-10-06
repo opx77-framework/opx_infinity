@@ -219,7 +219,7 @@ M.Command = {
 	VEHICLE_FLAG = 'opx.admin.vehicle.flag',
 	-- A KEY TO ONE PRECISE VEHICLE, into the operator's own bag. Under
 	-- `opx.admin.vehicle.*` like the rest of the vehicle tools, so a role written
-	-- the way README.md writes one already holds it; revoked alone, it takes the
+	-- the way docs/MANUAL.md writes one already holds it; revoked alone, it takes the
 	-- eye row and the menu row with it and nothing else.
 	VEHICLE_KEY = 'opx.admin.vehicle.key',
 

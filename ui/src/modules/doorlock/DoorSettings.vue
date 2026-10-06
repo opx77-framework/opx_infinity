@@ -14,7 +14,7 @@ import { TABS, hasLeaves, stepKey, type Access, type Defaults, type Draft, type 
  * THE FIELDS ARE OX'S, ONE FOR ONE. General: door name, passcode, autolock interval,
  * interact distance and the switches -- locked, double, automatic, lockpick, hide UI,
  * hold open -- plus this server's "on duty only". ox's door rate is not here: Open77's
- * door natives have no speed to set (README "Door locks"). Characters, Groups (group +
+ * door natives have no speed to set (docs/MANUAL.md, "Door locks"). Characters, Groups (group +
  * grade), Items (item, metadata type, remove on use) and Lockpick (one difficulty per
  * row, a custom row taking ox's area size and speed multiplier) are ox's row editors,
  * each with ox's "create a new row" button; ox puts an item's metadata and an

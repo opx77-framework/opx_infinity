@@ -18964,7 +18964,7 @@ end
 -- `opx.weather.set` is asked about and answered like any other name.
 --
 -- What it is answered WITH is the bug. Those three commands belong to the
--- weather module, and a staff role written the way `README.md` writes one --
+-- weather module, and a staff role written the way `docs/MANUAL.md` writes one --
 -- `command.opx.admin` plus `command.opx.admin.*` -- holds neither
 -- `command.opx.weather.*` nor `command.opx.time`. So the map says false, the eye
 -- correctly refuses to draw a row it cannot run, and the sky keeps only the two
@@ -19029,7 +19029,7 @@ do
 		local admin = senv.OPX.Modules.Get('admin')
 		local PLAYER = 1
 		scontrol.Admit(PLAYER, 'user-1')
-		-- EXACTLY the role the README describes, and nothing else: the opener and
+		-- EXACTLY the role docs/MANUAL.md describes, and nothing else: the opener and
 		-- every command this module registers. No weather, no time, no inventory.
 		for _, command in ipairs(admin.Server.Commands()) do
 			scontrol.Allow(PLAYER, 'command.' .. command.name)
@@ -19154,7 +19154,7 @@ do
 			line:find('opx%.admin%.self%.noclip') == nil, line)
 
 		-- THE OTHER DIRECTION, so the check cannot pass by hiding everything: add
-		-- the three grants the README says the world controls need and the rows
+		-- the three grants docs/MANUAL.md says the world controls need and the rows
 		-- come back.
 		local full = {}
 		for name, value in pairs(map.access) do full[name] = value end
