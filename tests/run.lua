@@ -39483,6 +39483,15 @@ do
 			and (rule(voice, '.voice'):match('\n%s*bottom:%s*([^;]*)') or 'voice-lift'):find('voice-lift', 1, true) == nil
 			and rule(voice, '.voice'):find('translate(8px, calc(8px - var(--voice-lift', 1, true) ~= nil
 			and rule(voice, '.voice.live'):find('var(--voice-lift', 1, true) ~= nil)
+
+	-- #115: a slider input redraws the rows whose state changed, not every row.
+	local panel = slurp('ui/src/modules/panel/PanelView.vue')
+	local _, memos = panel:gsub('v%-memo="', '')
+	check('the panel\'s rows and boxes are memoised on what each one shows', memos == 2
+		and panel:find('v-memo="[item.id === chosen,', 1, true) ~= nil
+		and panel:find('v-memo="[standing(openSlider) === box.index,', 1, true) ~= nil)
+	check('and a memoised row finds its place by id, not by a captured offset',
+		panel:find('@click="pick(item)"', 1, true) ~= nil and panel:find('pick(item, offset)', 1, true) == nil)
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────

@@ -799,9 +799,13 @@ function choose(item: Item): void {
   emit('opx:panel:select', { handle: handle.value, item: item.id })
 }
 
-/** A row clicked: the dial moves to it as well, so the two never disagree. */
-function pick(item: Item, offset: number): void {
-  cursor.value = windowStart.value + offset
+/** A row clicked: the dial moves to it as well, so the two never disagree.
+    Found by id rather than by the row's offset in the window: a row is memoised
+    (`v-memo` in the template) and keeps the handler it was drawn with, so an
+    offset captured then would be stale as soon as the window slid under it. */
+function pick(item: Item): void {
+  const index = shown.value.findIndex((entry) => entry.id === item.id)
+  if (index >= 0) cursor.value = index
   choose(item)
 }
 
@@ -1073,9 +1077,16 @@ function filter(value: string): void {
           </div>
 
           <div ref="gridEl" class="grid" :class="{ busy: view.busy }" :style="gridStyle">
+            <!-- MEMOISED ON WHAT A ROW SHOWS (#115). The dial moves `at` on every
+                 input event of a drag, and without the memo every row of the
+                 window was rebuilt for it; now a row is redrawn only when its own
+                 chosen, cursor or disabled state, or its words, change. Anything
+                 added to this row must be added to the memo too. -->
             <button
               v-for="(item, offset) in visible"
               :key="item.id"
+              v-memo="[item.id === chosen, item.id !== chosen && windowStart + offset === at,
+                       item.disabled || view.busy, item.label, item.detail]"
               type="button"
               class="row op-frame"
               :class="{
@@ -1086,7 +1097,7 @@ function filter(value: string): void {
               }"
               :disabled="item.disabled || view.busy"
               data-augmented-ui="tr-clip border"
-              @click="pick(item, offset)"
+              @click="pick(item)"
               @mouseenter="pointAt(item.id)"
               @mouseleave="pointAway"
             >
@@ -1358,9 +1369,17 @@ function filter(value: string): void {
               <span class="tile-name op-eyebrow">{{ label('nothing') }}</span>
             </button>
 
+            <!-- MEMOISED ON WHAT A BOX SHOWS (#115). A thumb dragged on the track
+                 below writes `thumb` on every input event, and `standing()` reads
+                 it, so without the memo all of the category's boxes -- up to 677 --
+                 were rebuilt per event to move one `is-on`. Now only the box
+                 leaving the thumb and the one arriving under it are. Anything added
+                 to this box must be added to the memo too. -->
             <button
               v-for="box in boxes"
               :key="box.index"
+              v-memo="[standing(openSlider) === box.index, openSlider.disabled || view.busy,
+                       box.label, box.name, box.image, broken[box.name] === true]"
               type="button"
               class="tile op-frame"
               :class="{
