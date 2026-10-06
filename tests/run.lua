@@ -39498,6 +39498,19 @@ do
 		panel:find('const ROW_HEIGHT = 58', 1, true) == nil and panel:find('rowPitch.value = row.offsetHeight', 1, true) ~= nil)
 	check('and the grid\'s height can never depend on the rows it draws',
 		rule(panel, '.grid'):find('flex: 1 1 0;', 1, true) ~= nil and rule(panel, '.grid'):find('min%-height: 0') ~= nil)
+
+	-- #120: the log keeps its resting place when the box opens; the input gives way.
+	local state = slurp('ui/src/modules/chat/state.ts')
+	local input = slurp('ui/src/modules/chat/ChatInput.vue')
+	local log = slurp('ui/src/modules/chat/ChatLog.vue')
+	check('the input drops by the field row\'s overrun of the room the log leaves',
+		state:find('export const inputDrop', 1, true) ~= nil
+			and rule(input, '.anchor-bottom-left'):find('var(--chat-drop, 0px)', 1, true) ~= nil
+			and input:find("'--chat-drop'", 1, true) ~= nil)
+	check('and the log counts that drop as room, so an empty box does not lift it',
+		log:find('RESTING_BOTTOM + inputDrop.value', 1, true) ~= nil)
+	check('the log\'s resting place is the one it had',
+		rule(log, '.anchor-bottom-left'):find('bottom: calc(var(--chat-offset) + var(--chat-lift, 0px))', 1, true) ~= nil)
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────
