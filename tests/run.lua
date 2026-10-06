@@ -202,6 +202,12 @@ local CORE_NAMESPACE = {
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
+	-- CLIENT ONLY. What `menu`, `form` and `panel` share, in
+	-- `lib/client/modal.lua`: the id checks, the payload bound, the slider step,
+	-- the focus responder and the down / sweep / pause lifecycle. Three copies
+	-- drifted -- a view opened from a close callback was orphaned, and fixed
+	-- three times -- and the copy that drifted would be the view that traps.
+	Modal = true,
 	-- `Carry` is the one reload-surviving blob, divided into a namespace per
 	-- writer. `Open77.state` holds ONE value per resource and two modules were
 	-- writing it whole, each destroying the other; see `lib/server/storage.lua`.
@@ -25457,12 +25463,13 @@ do
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
 			{ 'modules/downed/client/view.lua',
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/form/client/main.lua',
+			-- `form`, `menu` and `panel` answer with the one responder in
+			-- `lib/client/modal.lua` (#119), which carries the idiom for all three.
+			{ 'lib/client/modal.lua',
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/menu/client/main.lua',
-				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/panel/client/main.lua',
-				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/form/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
+			{ 'modules/menu/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
+			{ 'modules/panel/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
 			{ 'modules/spawn/client/main.lua',
 				'if payload.focus ~= true or payload.owner ~= OWNER then' },
 		}
@@ -37236,7 +37243,11 @@ do
 			local spent = cost(snapshot, { epoch = 'e1', revision = 5, bucket = 0, states = states })
 			check('a 64-state snapshot page costs its handler almost nothing', spent < 600,
 				('%d instructions'):format(spent))
-			settle(control, function() return animations.Presenter.State(40).active == true end, 40)
+			-- The commit is paced too (#116): settle on the whole page, not one state.
+			settle(control, function()
+				return animations.Presenter.State(40).active == true and
+					animations.Presenter.State(65).active == true
+			end, 40)
 			check('and the page is still committed, on the worker',
 				animations.Presenter.State(40).active == true and animations.Presenter.State(65).active == true)
 		end
@@ -37285,6 +37296,337 @@ do
 			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
 			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
 		end
+	end
+end
+
+
+-- ── the animations snapshot worker, paced by weight (#116) ──────────────────
+-- The worker yielded every sixteen states whatever they carried: a page of
+-- one-step states cost about 5,700 instructions a resume, a page of
+-- sixteen-step states or the commit of a many-page bucket far more. It now
+-- charges each state its steps and yields on the tab, so the dearest resume
+-- stays under 4,000 whatever the snapshot holds -- and the mirror's revision
+-- rules hold across those yields.
+section('the animations snapshot worker stays under 4,000 instructions a resume')
+do
+	local streamed, posed = {}, {}
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.animations = env.Open77.animations or {}
+		env.Open77.animations._context = function()
+			return { generation = 1, bucket = 0, playerId = 1, players = streamed, ready = true }
+		end
+		env.Open77.animations._playProfile = function(entity, profile)
+			posed[entity] = profile
+			return true
+		end
+		env.Open77.animations.stop = function() return true end
+	end)
+	check('client boots with the presentation natives', why == nil, why)
+	if why == nil then
+		local animations = env.OPX.Modules.Get('animations')
+		local snapshot = control.netEvents['open77:animations:snapshot']
+		local live = control.netEvents['open77:animations:state']
+		local State = animations.Presenter.State
+
+		local function stateOf(playerId, revision, steps, epoch)
+			local list = {}
+			for index = 1, steps do
+				list[index] = { profile = 'profile_' .. index, clip = 'clip_' .. index, durationMs = 1000 }
+			end
+			return { epoch = epoch or 'e1', playbackId = 'p' .. playerId .. ':' .. revision,
+				revision = revision, playerId = playerId, active = true, bucket = 0, step = 0,
+				cycle = 0, steps = list }
+		end
+		local function pagesOf(id, revision, first, count, steps, perPage, epoch)
+			local pages = {}
+			local total = math.ceil(count / perPage)
+			for part = 1, total do
+				local states = {}
+				for index = 1, perPage do
+					local playerId = first + (part - 1) * perPage + index - 1
+					if playerId < first + count then
+						states[#states + 1] = stateOf(playerId, revision - 1, steps, epoch)
+					end
+				end
+				pages[part] = { epoch = epoch or 'e1', revision = revision, bucket = 0,
+					snapshotId = id, total = total, slice = part, states = states }
+			end
+			return pages
+		end
+		local function send(pages)
+			return resumeCost(env, control, function()
+				for _, page in ipairs(pages) do snapshot(page) end
+			end, 400)
+		end
+
+		local light, lightResumes = send(pagesOf('s1', 10, 2, 64, 1, 64))
+		check('a page of 64 one-step states: every resume under 4,000', light < 4000,
+			('%d instructions, %d resumes'):format(light, lightResumes))
+		check('and it is committed', State(2).active and State(65).active)
+
+		local heavy, heavyResumes = send(pagesOf('s2', 20, 2, 64, 16, 64))
+		check('a page of 64 sixteen-step states: every resume under 4,000', heavy < 4000,
+			('%d instructions, %d resumes'):format(heavy, heavyResumes))
+		check('and it is committed', State(40).active and State(40).steps == 16)
+
+		local wide, wideResumes = send(pagesOf('s3', 30, 2, 1024, 4, 64))
+		check('a 16-page snapshot of 1,024 players: every resume under 4,000, merge and commit too',
+			wide < 4000, ('%d instructions, %d resumes'):format(wide, wideResumes))
+		check('and every player is mirrored', State(2).active and State(1025).active)
+
+		-- The tick poses the bodies this client streams, not the whole bucket:
+		-- walking a 1,024-player mirror every tick was 36,000 instructions
+		-- (`OPX_BUDGET_METER` names the `animations:presenter` job when it is).
+		streamed[3], streamed['4'], streamed[5], streamed['5'] = 303, 404, 505, 999
+		control.Pump(20)
+		check('the streamed bodies are posed, a doubled key under its number',
+			posed[303] ~= nil and posed[404] ~= nil and posed[505] ~= nil and posed[999] == nil)
+		streamed[3], streamed['4'], streamed[5], streamed['5'] = nil, nil, nil, nil
+
+		-- Absence ends a playback, across the paced commit.
+		local smaller = send(pagesOf('s4', 40, 2, 100, 1, 64))
+		check('a smaller snapshot ends whoever it leaves out', State(101).active and
+			not State(102).active and not State(1025).active, smaller)
+
+		-- A live state landing while the commit is part-way through waits for it:
+		-- newer than the snapshot it survives, older it is refused.
+		local pages = pagesOf('s5', 60, 2, 1024, 4, 64)
+		local landed = false
+		local function committed()
+			local count = 0
+			for playerId = 2, 1025 do
+				if State(playerId).playbackId == 'p' .. playerId .. ':59' then count = count + 1 end
+			end
+			return count
+		end
+		local worst = resumeCost(env, control, function()
+			for _, page in ipairs(pages) do snapshot(page) end
+		end, 0)
+		for _ = 1, 400 do
+			control.Pump(1)
+			if not landed then
+				local count = committed()
+				if count > 0 and count < 1024 then
+					live(stateOf(1000, 70, 1))
+					live(stateOf(1001, 50, 1))
+					landed = true
+				end
+			end
+		end
+		check('a live state can land part-way through a commit', landed)
+		check('one newer than the snapshot is kept after it',
+			State(1000).playbackId == 'p1000:70', State(1000).playbackId)
+		check('one older than the snapshot is refused, as before',
+			State(1001).playbackId == 'p1001:59', State(1001).playbackId)
+		check('every other player is mirrored', committed() == 1023, committed())
+		check('the incoming pages still stayed inside a resume', worst < 4000, worst)
+
+		-- Another incarnation of the service still replaces the whole mirror.
+		send(pagesOf('s6', 1, 2, 10, 1, 64, 'e2'))
+		check('a snapshot from another epoch replaces the mirror',
+			State(5).active and not State(500).active and not State(1000).active)
+		live(stateOf(7, 0, 1, 'e1'))
+		check('and a live state from the old epoch is refused', State(7).playbackId == 'p7:0')
+	end
+end
+
+
+-- ── a menu update that hands its rows back is not checked again (#117) ─────
+-- Every update re-checked the whole spec, about 238 instructions a row in the
+-- caller's resume. A row handed back unchanged now answers the entry it built
+-- for under half that, and a row built afresh is a little cheaper too (a flat
+-- `data` is counted in one loop). Everything a row can change -- a field
+-- edited, added or removed in place, its `data` grown, the position its id came
+-- from, the player's own adjustment -- is checked again, and refused exactly
+-- as before.
+section('menu: an update handing its rows back is not checked again')
+do
+	local env, control, why = boot('client')
+	check('client boots for the menu', why == nil, why)
+	if why == nil then
+		local menu = env.OPX.Api.Get('menu')
+		local function rows(count)
+			local items = {}
+			for index = 1, count do
+				items[index] = { id = 'row_' .. index, label = 'Row number ' .. index,
+					description = 'A description for row ' .. index, icon = 'person',
+					data = { go = 'player', arg = index, page = 1 } }
+			end
+			return items
+		end
+		local opened = menu.Open({ owner = 'probe', id = 'probe.memo', title = 'Memo', items = rows(10),
+			on = function() end })
+		check('a menu opens', opened.ok, opened.error)
+		local handle = opened.ok and opened.value.handle or 0
+
+		local fresh = callCost(menu.Update, handle, { items = rows(100) })
+		check('a fresh 100-row update costs less a row than it did (238)', fresh < 100 * 230,
+			('%d instructions, %d a row'):format(fresh, fresh // 100))
+		local same = rows(100)
+		menu.Update(handle, { items = same })
+		menu.Update(handle, { items = same })
+		local again = callCost(menu.Update, handle, { items = same })
+		check('the same 100 rows handed back cost under 150 a row', again < 100 * 150,
+			('%d instructions, %d a row'):format(again, again // 100))
+
+		local function at(id)
+			local state = menu.State()
+			return state.ok and state.value.itemId == id and state.value or nil
+		end
+		same[1].label = 'Renamed'
+		menu.Update(handle, { items = same, cursor = 'row_1' })
+		check('a label edited in place is drawn', at('row_1') and at('row_1').label == 'Renamed')
+		same[1].disabled = true
+		menu.Update(handle, { items = same })
+		check('a field added in place is honoured', at('row_2') ~= nil)
+		same[1].disabled = nil
+		menu.Update(handle, { items = same, cursor = 'row_1' })
+		check('and one removed again', at('row_1') ~= nil)
+
+		local function refusal(items)
+			local answer = menu.Update(handle, { items = items })
+			return not answer.ok and answer.error or 'accepted'
+		end
+		for key = 1, 40 do same[3].data['k' .. key] = key end
+		local copy = rows(100)
+		for key = 1, 40 do copy[3].data['k' .. key] = key end
+		check('data grown in place is refused as a fresh row is',
+			refusal(same) == 'item_data_too_large' and refusal(copy) == 'item_data_too_large', refusal(same))
+		same[3].data = { go = 'player' }
+		same[4].icon = 'not_an_icon'
+		copy[3].data, copy[4].icon = { go = 'player' }, 'not_an_icon'
+		check('an icon broken in place is refused as a fresh row is',
+			refusal(same) == 'invalid_item_icon' and refusal(copy) == 'invalid_item_icon', refusal(same))
+		same[4].icon = 'person'
+		check('and accepted again once mended', refusal(same) == 'accepted')
+
+		-- Ids derived from a position follow the position, not the memory.
+		local first, second = { label = 'First' }, { label = 'Second' }
+		menu.Update(handle, { items = { first, second } })
+		menu.Update(handle, { items = { first, second } })
+		menu.Update(handle, { items = { second, first }, cursor = 'item_2' })
+		check('a row with no id is named by where it stands now', at('item_2') and at('item_2').label == 'First')
+
+		-- The player's adjustment, and one row table used twice.
+		local page
+		for _, candidate in ipairs(control.pages) do
+			for _, sent in ipairs(candidate.sent) do
+				if sent.channel == 'opx:menu:open' then page = candidate end
+			end
+		end
+		local function press(key)
+			control.PageEmit(page, 'opx:menu:key', { handle = handle, key = key })
+			control.Pump(2)
+		end
+		local toggle = { id = 'flag', label = 'Flag', toggle = false }
+		local twice = { label = 'Twice', toggle = false }
+		local items = { toggle, twice, twice }
+		menu.Update(handle, { items = items, cursor = 'flag' })
+		menu.Update(handle, { items = items, cursor = 'flag' })
+		check('the menu page is there to press on', page ~= nil)
+		if page ~= nil then
+			press('right')
+			check('the player flips a remembered toggle', at('flag') and at('flag').value == true)
+			menu.Update(handle, { items = items })
+			check('and an update puts it back to the spec, as before', at('flag') and at('flag').value == false)
+			menu.Update(handle, { items = items, cursor = 'item_2' })
+			press('right')
+			press('down')
+			check('one row table used twice is two rows', at('item_3') and at('item_3').value == false)
+		end
+	end
+end
+
+
+-- ── one modal helper for menu, form and panel (#119) ────────────────────────
+-- The id checks, the payload counter, the slider step, the focus responder and
+-- the down / sweep / pause lifecycle were three copies, and three copies drift.
+-- They are `OPX.Modal`'s now. The counter is held to the plain rule it replaced
+-- -- the value, and both halves of every pair under a table -- on tables of
+-- every shape, and the three modules are held to carrying no copy of their own.
+section('menu, form and panel stand on one modal helper')
+do
+	local env, _, why = boot('client')
+	check('client boots for the modal helper', why == nil, why)
+	if why == nil then
+		local Modal = env.OPX.Modal
+
+		-- The rule as `form` and `panel` wrote it, one call a node.
+		local function naive(value, ceiling, depth)
+			local budget = { nodes = 0 }
+			local function walk(node, level)
+				budget.nodes = budget.nodes + 1
+				if budget.nodes > ceiling then return false end
+				if type(node) ~= 'table' then return true end
+				if level > depth then return false end
+				for key, nested in pairs(node) do
+					if not walk(key, level + 1) then return false end
+					if not walk(nested, level + 1) then return false end
+				end
+				return true
+			end
+			return walk(value, 1), budget.nodes
+		end
+		local deep = { a = { b = { c = { d = { e = 1 } } } } }
+		local wide = {}
+		for index = 1, 40 do wide['k' .. index] = index end
+		local mixed = { 1, 2, { 3, 4 }, [{ 'key' }] = 'value', name = 'x' }
+		local shapes = { 'text', 7, {}, { a = 1 }, wide, deep, mixed,
+			{ list = wide }, { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 } }
+		local differ = {}
+		for index, shape in ipairs(shapes) do
+			for _, ceiling in ipairs({ 1, 2, 3, 10, 64, 1024 }) do
+				for _, depth in ipairs({ 1, 2, 4, math.huge }) do
+					local okA, nodesA = Modal.Fits(shape, ceiling, depth)
+					local okB, nodesB = naive(shape, ceiling, depth)
+					if okA ~= okB or nodesA ~= nodesB then
+						differ[#differ + 1] = ('shape %d, %s/%s: %s %d against %s %d'):format(index,
+							tostring(ceiling), tostring(depth), tostring(okA), nodesA, tostring(okB), nodesB)
+					end
+				end
+			end
+			local _, whole = naive(shape, math.huge, math.huge)
+			if Modal.Nodes(shape) ~= whole then differ[#differ + 1] = ('shape %d counted whole'):format(index) end
+			local fault = Modal.DataFault(shape, 'not_table', 'too_large')
+			local fits = naive(shape, Modal.DATA_NODES, Modal.DATA_DEPTH)
+			local expected = type(shape) ~= 'table' and 'not_table' or (not fits and 'too_large') or nil
+			if fault ~= expected then differ[#differ + 1] = ('shape %d as data: %s'):format(index, tostring(fault)) end
+		end
+		check('the shared counter answers what the one-call-a-node rule answers, and stops where it did',
+			#differ == 0, table.concat(differ, ' | '))
+
+		-- The slider step: clamped, never wrapped, snapped back onto the grid.
+		local slider = Modal.SliderRange({ min = 0, max = 1, step = 0.1, value = 0.95 })
+		local moved = Modal.StepSlider(slider, 1)
+		check('a slider steps onto its grid and stops at its end',
+			moved and slider.value == 1.0 and not Modal.StepSlider(slider, 1), slider.value)
+		check('and a range that is not one is refused as before',
+			select(2, Modal.SliderRange({ min = 5, max = 5 })) == 'invalid_slider_range'
+				and select(2, Modal.SliderRange('x')) == 'invalid_slider')
+
+		-- No module keeps a copy of what is shared.
+		local function read(path)
+			local handle = io.open(path, 'r')
+			local body = handle and handle:read('a') or ''
+			if handle then handle:close() end
+			return body
+		end
+		local COPIES = {
+			'local function fitsInPayload', 'local function countNodes', 'local function sweepOwner',
+			'local function setDown', 'local function adoptDownState', 'local function allowedWhileDown',
+			'local function validName', 'local function validId', 'local function onFocus(',
+			'local function fromPage(', '((value - slider.min) / slider.step)', 'local downHeard',
+		}
+		local kept = {}
+		for _, path in ipairs({ 'modules/menu/client/main.lua', 'modules/form/client/main.lua',
+			'modules/panel/client/main.lua' }) do
+			local text = read(path)
+			if #text == 0 then kept[#kept + 1] = path .. ' unreadable' end
+			for _, copy in ipairs(COPIES) do
+				if text:find(copy, 1, true) then kept[#kept + 1] = path .. ': ' .. copy end
+			end
+		end
+		check('menu, form and panel carry no copy of their own', #kept == 0, table.concat(kept, ' | '))
 	end
 end
 

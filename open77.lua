@@ -202,6 +202,10 @@ client_script "lib/client/spots.lua"
 client_script "core/client/note.lua"
 client_script "core/client/scheduler.lua"
 client_script "core/client/ui.lua"
+-- What `menu`, `form` and `panel` share: the id checks, the payload bound, the
+-- slider step, the focus responder and the lifecycle around one open view.
+-- After `ui.lua`, whose focus calls it answers with, and before all three.
+client_script "lib/client/modal.lua"
 client_script "core/client/notify.lua"
 
 shared_script "modules/diagnostics/module.lua"
