@@ -578,7 +578,7 @@ end
 -- every value in LINKS as well as this module's own commands, so the first guess,
 -- that the map covered only admin's own, is wrong. The ACL simply said no.
 -- `opx.weather.set`, `opx.weather.next` and `opx.time` are the WEATHER module's
--- commands, and a staff role written the way `README.md` writes one --
+-- commands, and a staff role written the way `docs/MANUAL.md` writes one --
 -- `command.opx.admin` plus `command.opx.admin.*` -- holds neither. So `granted`
 -- correctly dropped every row that ends in one, and the sky was left with the two
 -- rows whose grants ARE admin's own, Noclip and PvP. The same mechanism takes

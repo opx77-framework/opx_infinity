@@ -22,7 +22,7 @@
 --                         spelling the runtime still accepts; the catalogued name
 --                         is this one, and `players.stats.read` likewise covers
 --                         getHealth. `open77_validate` asks for the damage.*
---                         spellings anyway -- a false positive, see README
+--                         spellings anyway -- a false positive, see CONTRIBUTING.md
 --   player.cyberware.read `Open77.appearance.captureBody` needs it ALONGSIDE
 --                         player.appearance.read. Without it every other
 --                         player's body goes undrawn, and the static validator
@@ -37,7 +37,7 @@
 -- calls it. `Open77.players.all` still needs no permission.
 
 resource "opx_infinity"
-version "0.1.2"
+version "0.2.0"
 -- `>=0.0.1`, which is what all 29 shipped system resources and all 21 of the old
 -- opx77_* resources declare -- every resource that has ever installed on this
 -- platform. A real range with build metadata (`>=2.31.13+op77.67`) is accepted by
