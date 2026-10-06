@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/opx77-framework/opx_infinity/actions/workflows/check.yml"><img alt="check" src="https://github.com/opx77-framework/opx_infinity/actions/workflows/check.yml/badge.svg?branch=main"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/opx77-framework/opx_infinity"></a>
-  <img alt="Version 0.1.2" src="https://img.shields.io/badge/version-0.1.2-informational">
+  <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-informational">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <a href="https://opx77-framework.github.io/opx77_doc/"><img alt="Documentation" src="https://img.shields.io/badge/docs-opx77__doc-c5003c"></a>
   <a href="https://discord.gg/xpSuYgEYsU"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white"></a>
@@ -120,7 +120,7 @@ one. The full guide is [Install](https://opx77-framework.github.io/opx77_doc/doc
    ```
 
 5. **Restart and read the journal.** A healthy boot ends with one line per module and
-   `opx_infinity 0.1.2 up`. `/opx.modules` and `/opx.version` print the same report in
+   `opx_infinity 0.2.0 up`. `/opx.modules` and `/opx.version` print the same report in
    game. If something is off, see [Troubleshooting](https://opx77-framework.github.io/opx77_doc/docs/getting-started/troubleshooting).
 
 The platform's `open77_notifications` package is recommended: server toasts sent with
