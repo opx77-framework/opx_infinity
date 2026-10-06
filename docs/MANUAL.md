@@ -1056,10 +1056,12 @@ line a consumer needs.
 
 ## The UI
 
-**Read `ui/README.md` first — it is binding.** augmented-ui is the foundation, not a
-decoration, and the contract there explains the parts that will otherwise waste your
-afternoon (a cut is required before a border renders; a clip shears an outset
-box-shadow; augment containers, not cells).
+**Read `ui/README.md` first — it is binding.** Every chamfer is drawn by
+`ui/src/design-system/shapes.css`, which speaks augmented-ui's vocabulary (the
+`data-augmented-ui` attribute, `--aug-*` variables) without the library, and the build
+refuses any shape token it doesn't draw. The contract there explains the parts that will
+otherwise waste your afternoon (a cut is required before a border renders; a clip shears
+an outset box-shadow; shape containers, not cells).
 
 One page, two layers: `overlay` is a HUD and never takes focus, `modal` does.
 `open77_pause` owns Escape — never bind it.
