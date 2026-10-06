@@ -39437,6 +39437,41 @@ do
 	check('every hover frame is 1.5px, as the menu\'s is', #heavy == 0, table.concat(heavy, ' | '))
 end
 
+-- ── the WebUI backlog: compositor-only motion, memoised rows, a still chat log ──
+-- #113 #114 #115 #118 #120. Each was a cost or a jump a player could see and no Lua
+-- test could: read off the sources, and off the built page where it says the same.
+section('webui backlog: pulses, meters, memoised rows, the panel window and the chat log')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local function rule(source, selector)
+		local style = (source:match('<style.*') or ''):gsub('/%*.-%*/', '')
+		return style:match('\n' .. selector:gsub('%p', '%%%0') .. '%s*({[^}]*})') or ''
+	end
+	local built = slurp('web/index.html')
+
+	-- #113: the ring is an opacity on a layer that never scrolls, not a border-color on
+	-- the scrolling, 3D-transformed panel.
+	local holo = slurp('ui/src/modules/calls/HoloRoot.vue')
+	local pulse = (holo:match('@keyframes op%-holo%-pulse%s*(%b{})') or '')
+	check('the ringing pulse animates opacity and nothing else',
+		pulse:find('opacity', 1, true) ~= nil and pulse:find('border', 1, true) == nil)
+	check('on the edge layer of a frame that does not scroll',
+		rule(holo, '.panel-frame.is-ringing .panel-edges'):find('op-holo-pulse', 1, true) ~= nil
+			and rule(holo, '.panel-frame'):find('overflow', 1, true) == nil
+			and rule(holo, '.panel'):find('overflow: auto', 1, true) ~= nil)
+	check('and its 0.95 edges rest at 0.4737 of themselves, the 0.45 they always had',
+		rule(holo, '.panel-edges'):find('0.95', 1, true) ~= nil
+			and rule(holo, '.panel-edges'):find('opacity: 0.4737', 1, true) ~= nil)
+	check('the built page carries the frame and its edges',
+		built:find('panel-frame', 1, true) ~= nil and built:find('panel-edges', 1, true) ~= nil)
+end
+
 -- ── the garages list and scan, a resume at a time ───────────────────────────
 -- THE LIST WAS READ AND SCANNED IN THE NET EVENT'S ONE RESUME, every point
 -- checked field by field, and every scan re-coerced the player's position once
