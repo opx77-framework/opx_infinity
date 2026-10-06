@@ -39492,6 +39492,12 @@ do
 		and panel:find('v-memo="[standing(openSlider) === box.index,', 1, true) ~= nil)
 	check('and a memoised row finds its place by id, not by a captured offset',
 		panel:find('@click="pick(item)"', 1, true) ~= nil and panel:find('pick(item, offset)', 1, true) == nil)
+
+	-- #118: the panel's window is re-measured as the column fills, without a loop.
+	check('the panel window is sized from a measured row, not panel.js\'s 58px',
+		panel:find('const ROW_HEIGHT = 58', 1, true) == nil and panel:find('rowPitch.value = row.offsetHeight', 1, true) ~= nil)
+	check('and the grid\'s height can never depend on the rows it draws',
+		rule(panel, '.grid'):find('flex: 1 1 0;', 1, true) ~= nil and rule(panel, '.grid'):find('min%-height: 0') ~= nil)
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────

@@ -221,9 +221,13 @@ interface PanelView {
   columns: 1 | 2
 }
 
-/* panel.js's numbers, kept: the window is sized by measured height, so a column that is
-   short on one screen and tall on another shows what fits rather than a fixed count. */
-const ROW_HEIGHT = 58
+/* The window is sized by measured height, so a column that is short on one screen and
+   tall on another shows what fits rather than a fixed count. These are only the guess
+   used before the first row has been drawn: once one exists its real height and the
+   grid's real gap are measured and used instead (#118). The guess was panel.js's 58px,
+   while the row this file draws is 40px -- a third of every window stood empty under
+   its last row. */
+const ROW_HEIGHT = 40
 const ROW_GAP = 4
 const HOVER_MS = 110
 const LEAVE_MS = 160
@@ -280,6 +284,8 @@ const thumb = reactive<Record<string, number>>({})
 
 const gridEl = ref<HTMLElement | null>(null)
 const gridHeight = ref(0)
+/** One row plus the gap under it, as last measured off a drawn row. 0 until one is. */
+const rowPitch = ref(0)
 
 /** The window of the open category the page is holding. See `Tiles`. */
 const tiles = reactive<Tiles>({ slot: '', entries: [] })
@@ -499,7 +505,9 @@ const shown = computed(() => {
 const at = computed(() => Math.max(0, Math.min(cursor.value, shown.value.length - 1)))
 
 const windowSize = computed(() => {
-  const rows = Math.max(1, Math.floor((gridHeight.value + ROW_GAP) / (ROW_HEIGHT + ROW_GAP)))
+  const pitch = rowPitch.value > 0 ? rowPitch.value : ROW_HEIGHT + ROW_GAP
+  const gap = rowPitch.value > 0 ? rowGap : ROW_GAP
+  const rows = Math.max(1, Math.floor((gridHeight.value + gap) / pitch))
   return rows * (view.columns === 1 ? 1 : 2)
 })
 
@@ -552,8 +560,30 @@ watch(query, () => {
   cursor.value = 0
 })
 
+/** The grid's own row gap, read with the row; see `rowPitch`. */
+let rowGap = ROW_GAP
+
+/**
+ * THE WINDOW'S TWO MEASUREMENTS, and why neither can feed back into the other (#118).
+ *
+ * The grid's height is the remainder of a column of definite height: `.grid` is
+ * `flex: 1 1 0` with `min-height: 0`, so its size is decided by what is ABOVE and
+ * BELOW it -- the dial, the readout, the summary, the status line -- and never by the
+ * rows inside it. The row's height is its own padding and one line of type, and does
+ * not depend on the grid at all. So a measure changes the window, the window changes
+ * which rows are drawn, and drawing them changes neither number: one pass, no loop.
+ */
 function measure(): void {
-  gridHeight.value = gridEl.value?.clientHeight ?? 0
+  const grid = gridEl.value
+  gridHeight.value = grid?.clientHeight ?? 0
+  const row = grid?.querySelector<HTMLElement>('.row') ?? null
+  if (grid && row) {
+    // `offsetHeight` and not the bounding box: the column is tilted, and a
+    // perspective projection would report every row at a different height.
+    const gap = parseFloat(getComputedStyle(grid).rowGap)
+    rowGap = Number.isFinite(gap) ? gap : ROW_GAP
+    rowPitch.value = row.offsetHeight + rowGap
+  }
 }
 
 /* THE GRID IS MEASURED WHENEVER IT CHANGES SIZE, not only on open and on a window
@@ -570,6 +600,13 @@ watch(gridEl, (element, previous) => {
   if (sizer === null) sizer = new ResizeObserver(() => measure())
   if (previous) sizer.unobserve(previous)
   if (element) sizer.observe(element)
+}, { flush: 'post' })
+
+/* The first rows drawn are the first chance to measure one. Only the edge from none to
+   some: after that the pitch is known, and a window that slides draws rows of the same
+   height. */
+watch(() => visible.value.length > 0, (some) => {
+  if (some) measure()
 }, { flush: 'post' })
 
 function clearHoverTimers(): void {
@@ -2112,7 +2149,10 @@ function filter(value: string): void {
   grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
   gap: var(--op-space-1);
   align-content: start;
-  flex: 1 1 auto;
+  /* A ZERO BASIS, so the grid's height is the column's remainder and never its
+     rows': the window is sized from this height, and a basis of `auto` would let
+     the rows it draws feed back into the measurement that chose them (#118). */
+  flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
   transition: opacity var(--op-dur-fast) var(--op-ease);
