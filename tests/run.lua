@@ -202,6 +202,12 @@ local CORE_NAMESPACE = {
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
+	-- CLIENT ONLY. What `menu`, `form` and `panel` share, in
+	-- `lib/client/modal.lua`: the id checks, the payload bound, the slider step,
+	-- the focus responder and the down / sweep / pause lifecycle. Three copies
+	-- drifted -- a view opened from a close callback was orphaned, and fixed
+	-- three times -- and the copy that drifted would be the view that traps.
+	Modal = true,
 	-- `Carry` is the one reload-surviving blob, divided into a namespace per
 	-- writer. `Open77.state` holds ONE value per resource and two modules were
 	-- writing it whole, each destroying the other; see `lib/server/storage.lua`.
@@ -25457,12 +25463,13 @@ do
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
 			{ 'modules/downed/client/view.lua',
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/form/client/main.lua',
+			-- `form`, `menu` and `panel` answer with the one responder in
+			-- `lib/client/modal.lua` (#119), which carries the idiom for all three.
+			{ 'lib/client/modal.lua',
 				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/menu/client/main.lua',
-				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
-			{ 'modules/panel/client/main.lua',
-				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/form/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
+			{ 'modules/menu/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
+			{ 'modules/panel/client/main.lua', 'OPX.Modal.FocusResponder(FOCUS)' },
 			{ 'modules/spawn/client/main.lua',
 				'if payload.focus ~= true or payload.owner ~= OWNER then' },
 		}
@@ -37527,6 +37534,99 @@ do
 			press('down')
 			check('one row table used twice is two rows', at('item_3') and at('item_3').value == false)
 		end
+	end
+end
+
+
+-- ── one modal helper for menu, form and panel (#119) ────────────────────────
+-- The id checks, the payload counter, the slider step, the focus responder and
+-- the down / sweep / pause lifecycle were three copies, and three copies drift.
+-- They are `OPX.Modal`'s now. The counter is held to the plain rule it replaced
+-- -- the value, and both halves of every pair under a table -- on tables of
+-- every shape, and the three modules are held to carrying no copy of their own.
+section('menu, form and panel stand on one modal helper')
+do
+	local env, _, why = boot('client')
+	check('client boots for the modal helper', why == nil, why)
+	if why == nil then
+		local Modal = env.OPX.Modal
+
+		-- The rule as `form` and `panel` wrote it, one call a node.
+		local function naive(value, ceiling, depth)
+			local budget = { nodes = 0 }
+			local function walk(node, level)
+				budget.nodes = budget.nodes + 1
+				if budget.nodes > ceiling then return false end
+				if type(node) ~= 'table' then return true end
+				if level > depth then return false end
+				for key, nested in pairs(node) do
+					if not walk(key, level + 1) then return false end
+					if not walk(nested, level + 1) then return false end
+				end
+				return true
+			end
+			return walk(value, 1), budget.nodes
+		end
+		local deep = { a = { b = { c = { d = { e = 1 } } } } }
+		local wide = {}
+		for index = 1, 40 do wide['k' .. index] = index end
+		local mixed = { 1, 2, { 3, 4 }, [{ 'key' }] = 'value', name = 'x' }
+		local shapes = { 'text', 7, {}, { a = 1 }, wide, deep, mixed,
+			{ list = wide }, { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 } }
+		local differ = {}
+		for index, shape in ipairs(shapes) do
+			for _, ceiling in ipairs({ 1, 2, 3, 10, 64, 1024 }) do
+				for _, depth in ipairs({ 1, 2, 4, math.huge }) do
+					local okA, nodesA = Modal.Fits(shape, ceiling, depth)
+					local okB, nodesB = naive(shape, ceiling, depth)
+					if okA ~= okB or nodesA ~= nodesB then
+						differ[#differ + 1] = ('shape %d, %s/%s: %s %d against %s %d'):format(index,
+							tostring(ceiling), tostring(depth), tostring(okA), nodesA, tostring(okB), nodesB)
+					end
+				end
+			end
+			local _, whole = naive(shape, math.huge, math.huge)
+			if Modal.Nodes(shape) ~= whole then differ[#differ + 1] = ('shape %d counted whole'):format(index) end
+			local fault = Modal.DataFault(shape, 'not_table', 'too_large')
+			local fits = naive(shape, Modal.DATA_NODES, Modal.DATA_DEPTH)
+			local expected = type(shape) ~= 'table' and 'not_table' or (not fits and 'too_large') or nil
+			if fault ~= expected then differ[#differ + 1] = ('shape %d as data: %s'):format(index, tostring(fault)) end
+		end
+		check('the shared counter answers what the one-call-a-node rule answers, and stops where it did',
+			#differ == 0, table.concat(differ, ' | '))
+
+		-- The slider step: clamped, never wrapped, snapped back onto the grid.
+		local slider = Modal.SliderRange({ min = 0, max = 1, step = 0.1, value = 0.95 })
+		local moved = Modal.StepSlider(slider, 1)
+		check('a slider steps onto its grid and stops at its end',
+			moved and slider.value == 1.0 and not Modal.StepSlider(slider, 1), slider.value)
+		check('and a range that is not one is refused as before',
+			select(2, Modal.SliderRange({ min = 5, max = 5 })) == 'invalid_slider_range'
+				and select(2, Modal.SliderRange('x')) == 'invalid_slider')
+
+		-- No module keeps a copy of what is shared.
+		local function read(path)
+			local handle = io.open(path, 'r')
+			local body = handle and handle:read('a') or ''
+			if handle then handle:close() end
+			return body
+		end
+		local COPIES = {
+			'local function fitsInPayload', 'local function countNodes', 'local function sweepOwner',
+			'local function setDown', 'local function adoptDownState', 'local function allowedWhileDown',
+			'local function validName', 'local function validId', 'local function onFocus(',
+			'local function fromPage(', '((value - slider.min) / slider.step)', 'local downHeard',
+		}
+		local kept = {}
+		for _, path in ipairs({ 'modules/menu/client/main.lua', 'modules/form/client/main.lua',
+			'modules/panel/client/main.lua' }) do
+			local text = read(path)
+			if #text == 0 then kept[#kept + 1] = path .. ' unreadable' end
+			for _, copy in ipairs(COPIES) do
+				if text:find(copy, 1, true) then kept[#kept + 1] = path .. ': ' .. copy end
+			end
+		end
+		check('menu, form and panel carry no copy of their own', #kept == 0, table.concat(kept, ' | '))
 	end
 end
 
