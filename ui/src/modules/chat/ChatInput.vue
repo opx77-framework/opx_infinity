@@ -7,7 +7,7 @@ import { list, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
-import { setInputHeight, setInputOpen } from './state'
+import { inputDrop, setFieldHeight, setInputHeight, setInputOpen } from './state'
 
 /**
  * THE CHAT INPUT LINE -- the modal half of the box.
@@ -73,6 +73,7 @@ let stash = ''
 const HISTORY_CAP = 50
 
 const box = ref<HTMLElement | null>(null)
+const row = ref<HTMLElement | null>(null)
 const field = ref<HTMLInputElement | null>(null)
 let release: (() => void) | null = null
 let caretTimer: ReturnType<typeof setInterval> | null = null
@@ -221,6 +222,10 @@ function holdFocus(hold: boolean): void {
 function measure(): void {
   const element = box.value
   setInputHeight(element === null ? 0 : Math.round(element.getBoundingClientRect().height))
+  // The field row on its own, which is what decides how far the block drops clear of
+  // the log (`inputDrop` in state.ts). Measured in the same task the box opens in,
+  // before the first paint, so the block is never drawn at the old line first.
+  setFieldHeight(row.value === null ? 0 : Math.round(row.value.getBoundingClientRect().height))
 }
 
 function startSizing(): void {
@@ -241,6 +246,7 @@ function stopSizing(): void {
   if (sizer !== null) sizer.disconnect()
   sizer = null
   setInputHeight(0)
+  setFieldHeight(0)
 }
 
 function show(): void {
@@ -522,7 +528,7 @@ onUnmounted(() => {
     ref="box"
     class="chat-input"
     :class="anchor"
-    :style="{ '--chat-offset': `${offset}px`, '--chat-width': `${width}px` }"
+    :style="{ '--chat-offset': `${offset}px`, '--chat-width': `${width}px`, '--chat-drop': `${inputDrop}px` }"
   >
     <ul
       v-if="matches.length > 0"
@@ -573,7 +579,7 @@ onUnmounted(() => {
          hover, and the field is under the cursor for as long as the chat is open --
          a pointer resting on it dropped the lit 2px arete to the 1.5px hover frame.
          The cut and the type colour it gave are restated below. -->
-    <div class="chat-field op-arete" data-augmented-ui="tr-clip border">
+    <div ref="row" class="chat-field op-arete" data-augmented-ui="tr-clip border">
       <span class="chat-caret" aria-hidden="true">&gt;</span>
       <input
         ref="field"
@@ -645,9 +651,12 @@ onUnmounted(() => {
     0 0 6px rgba(0, 0, 0, 0.65);
 }
 
+/* `--chat-drop` is how far the field row overruns the room the log leaves for it
+   (see `inputDrop` in state.ts): the input hangs that much lower so the log does
+   not have to move when the box opens (#120). Only bottom anchors take it. */
 .anchor-bottom-left {
   left: var(--op-inset-x);
-  bottom: calc(var(--chat-offset) - var(--op-space-6));
+  bottom: calc(var(--chat-offset) - var(--op-space-6) - var(--chat-drop, 0px));
 }
 
 /* Centred on the screen's axis rather than pinned to the left inset, so the box
@@ -656,7 +665,7 @@ onUnmounted(() => {
 .anchor-bottom-center {
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(var(--chat-offset) - var(--op-space-6));
+  bottom: calc(var(--chat-offset) - var(--op-space-6) - var(--chat-drop, 0px));
 }
 
 /* AT THE TOP THE INPUT LINE SITS ON THE OFFSET ITSELF and the log is pushed

@@ -385,115 +385,126 @@ const shown = computed<Row[]>(() => contacts.value)
         </div>
       </div>
 
-      <section v-if="open" class="panel" :class="{ 'is-ringing': ringing }">
-        <!-- NO PLATE ANYWHERE ON THIS SURFACE. The owner has asked for the
-             background gone three times now, and a hologram with a slab behind
-             it is a window. Legibility comes from light instead: the type
-             carries its own glow and `.op-ink` holds it against the street,
-             which is what every other plateless surface here leans on. -->
-        <header class="head">
-          <p class="eyebrow op-eyebrow">{{ t('calls.holo.eyebrow') }}</p>
-          <h2 class="title op-label">{{ t('calls.holo.title') }}</h2>
-          <button class="shut op-eyebrow" type="button" @click="close">
-            {{ t('calls.holo.close') }}
-          </button>
-        </header>
-
-        <!-- The ringing call is the one thing here with a clock running on it,
-             so it sits above everything and the panel's edges pulse with it. -->
-        <div v-if="ringing" class="ring-row">
-          <p class="ring-who op-copy">
-            {{ inviteIsContact
-              ? t('calls.holo.sharing', { name: callerName })
-              : t('calls.holo.ringing', { name: callerName }) }}
-          </p>
-          <div class="acts">
-            <button class="act yes op-eyebrow" type="button" @click="accept">
-              {{ inviteIsContact ? t('calls.holo.yes') : t('calls.holo.answer') }}
+      <!-- THE FRAME HOLDS THE TILT AND THE EDGES; THE PANEL INSIDE IT SCROLLS.
+           The ring pulse used to animate `border-color` on the scrolling,
+           3D-transformed panel itself, which repainted the whole projection on
+           every frame for as long as a call rang (#113). The edges are now a
+           layer of their own that never scrolls and never repaints: drawn once
+           at 0.95, and the pulse is its `opacity` -- 0.4737 x 0.95 is the
+           0.45 the edges rest at, so the alpha travels the same path as the
+           old colour did, on the compositor. -->
+      <div v-if="open" class="panel-frame" :class="{ 'is-ringing': ringing }">
+        <section class="panel">
+          <!-- NO PLATE ANYWHERE ON THIS SURFACE. The owner has asked for the
+               background gone three times now, and a hologram with a slab behind
+               it is a window. Legibility comes from light instead: the type
+               carries its own glow and `.op-ink` holds it against the street,
+               which is what every other plateless surface here leans on. -->
+          <header class="head">
+            <p class="eyebrow op-eyebrow">{{ t('calls.holo.eyebrow') }}</p>
+            <h2 class="title op-label">{{ t('calls.holo.title') }}</h2>
+            <button class="shut op-eyebrow" type="button" @click="close">
+              {{ t('calls.holo.close') }}
             </button>
-            <button class="act no op-eyebrow" type="button" @click="decline">
-              {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+          </header>
+
+          <!-- The ringing call is the one thing here with a clock running on it,
+               so it sits above everything and the panel's edges pulse with it. -->
+          <div v-if="ringing" class="ring-row">
+            <p class="ring-who op-copy">
+              {{ inviteIsContact
+                ? t('calls.holo.sharing', { name: callerName })
+                : t('calls.holo.ringing', { name: callerName }) }}
+            </p>
+            <div class="acts">
+              <button class="act yes op-eyebrow" type="button" @click="accept">
+                {{ inviteIsContact ? t('calls.holo.yes') : t('calls.holo.answer') }}
+              </button>
+              <button class="act no op-eyebrow" type="button" @click="decline">
+                {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="onCall" class="live-row">
+            <p class="live-who op-copy">
+              {{ t('calls.holo.live', { names: participants.join(', ') }) }}
+            </p>
+            <button class="act no op-eyebrow" type="button" @click="hangUp">
+              {{ t('calls.holo.hangUp') }}
             </button>
           </div>
-        </div>
 
-        <div v-if="onCall" class="live-row">
-          <p class="live-who op-copy">
-            {{ t('calls.holo.live', { names: participants.join(', ') }) }}
-          </p>
-          <button class="act no op-eyebrow" type="button" @click="hangUp">
-            {{ t('calls.holo.hangUp') }}
-          </button>
-        </div>
-
-        <!-- WHAT IS RINGING OUT, and its own way back. Shown on a call too: a
-             third person being asked to join is withdrawn here, while the live
-             row's button above still ends the call itself. -->
-        <div v-if="outgoing !== null" class="live-row">
-          <!-- A contact offer is not a call: it read "Calling {name}..." here. -->
-          <p class="waiting op-eyebrow">
-            {{ dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.offering') }}
-          </p>
-          <button class="act no op-eyebrow" type="button" @click="withdraw">
-            {{ t('calls.holo.withdraw') }}
-          </button>
-        </div>
-
-        <nav class="tabs">
-          <button
-            v-for="name in (['contacts', 'recent'] as const)"
-            :key="name"
-            class="tab op-eyebrow"
-            :class="{ on: tab === name }"
-            type="button"
-            @click="tab = name"
-          >
-            {{ t(TAB_KEY[name]) }}
-          </button>
-        </nav>
-
-        <ul v-if="tab !== 'recent'" class="rows">
-          <li v-for="row in shown" :key="row.ref || row.id" class="row" :class="{ off: row.refusal !== null }">
-            <span class="dot" aria-hidden="true"></span>
-            <span class="who op-copy op-truncate">{{ row.name }}</span>
-            <!-- THE REASON IS SHOWN, NOT MERELY OBEYED. A row that is simply
-                 dark says the contact is unreachable and nothing else, and the
-                 two commonest reasons both stop being true in a minute. -->
-            <span v-if="row.refusal !== null" class="why op-eyebrow">
-              {{ t(reasonKey(row.refusal)) }}
-            </span>
-            <template v-else>
-              <button class="pill op-eyebrow" type="button" @click="callRow(row)">
-                {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
-              </button>
-            </template>
-            <button
-              v-if="row.ref !== ''"
-              class="pill op-eyebrow"
-              type="button"
-              @click="forgetRow(row)"
-            >
-              {{ confirming === row.ref ? t('calls.holo.forgetConfirm') : t('calls.holo.forget') }}
+          <!-- WHAT IS RINGING OUT, and its own way back. Shown on a call too: a
+               third person being asked to join is withdrawn here, while the live
+               row's button above still ends the call itself. -->
+          <div v-if="outgoing !== null" class="live-row">
+            <!-- A contact offer is not a call: it read "Calling {name}..." here. -->
+            <p class="waiting op-eyebrow">
+              {{ dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.offering') }}
+            </p>
+            <button class="act no op-eyebrow" type="button" @click="withdraw">
+              {{ t('calls.holo.withdraw') }}
             </button>
-          </li>
-          <li v-if="shown.length === 0" class="empty op-copy">
-            {{ t('calls.holo.noContacts') }}
-          </li>
-        </ul>
+          </div>
 
-        <ul v-else class="rows">
-          <li v-for="(row, at) in recent" :key="at" class="row off">
-            <span class="dot" aria-hidden="true"></span>
-            <span class="who op-copy op-truncate">{{ row.name }}</span>
-            <span class="why op-eyebrow">
-              {{ t(own(OUTCOME_KEY, row.outcome) ?? 'calls.holo.outcome.missed') }}
-            </span>
-          </li>
-          <li v-if="recent.length === 0" class="empty op-copy">
-            {{ t('calls.holo.noRecent') }}
-          </li>
-        </ul>
-      </section>
+          <nav class="tabs">
+            <button
+              v-for="name in (['contacts', 'recent'] as const)"
+              :key="name"
+              class="tab op-eyebrow"
+              :class="{ on: tab === name }"
+              type="button"
+              @click="tab = name"
+            >
+              {{ t(TAB_KEY[name]) }}
+            </button>
+          </nav>
+
+          <ul v-if="tab !== 'recent'" class="rows">
+            <li v-for="row in shown" :key="row.ref || row.id" class="row" :class="{ off: row.refusal !== null }">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="who op-copy op-truncate">{{ row.name }}</span>
+              <!-- THE REASON IS SHOWN, NOT MERELY OBEYED. A row that is simply
+                   dark says the contact is unreachable and nothing else, and the
+                   two commonest reasons both stop being true in a minute. -->
+              <span v-if="row.refusal !== null" class="why op-eyebrow">
+                {{ t(reasonKey(row.refusal)) }}
+              </span>
+              <template v-else>
+                <button class="pill op-eyebrow" type="button" @click="callRow(row)">
+                  {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
+                </button>
+              </template>
+              <button
+                v-if="row.ref !== ''"
+                class="pill op-eyebrow"
+                type="button"
+                @click="forgetRow(row)"
+              >
+                {{ confirming === row.ref ? t('calls.holo.forgetConfirm') : t('calls.holo.forget') }}
+              </button>
+            </li>
+            <li v-if="shown.length === 0" class="empty op-copy">
+              {{ t('calls.holo.noContacts') }}
+            </li>
+          </ul>
+
+          <ul v-else class="rows">
+            <li v-for="(row, at) in recent" :key="at" class="row off">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="who op-copy op-truncate">{{ row.name }}</span>
+              <span class="why op-eyebrow">
+                {{ t(own(OUTCOME_KEY, row.outcome) ?? 'calls.holo.outcome.missed') }}
+              </span>
+            </li>
+            <li v-if="recent.length === 0" class="empty op-copy">
+              {{ t('calls.holo.noRecent') }}
+            </li>
+          </ul>
+        </section>
+        <span class="panel-edges" aria-hidden="true"></span>
+      </div>
     </div>
   </div>
 </template>
@@ -686,12 +697,27 @@ const shown = computed<Row[]>(() => contacts.value)
 }
 
 /* --- the panel ------------------------------------------------------------ */
-.panel {
+/* The frame is what stands in the stage: the tilt, the size and the edges. It
+   never scrolls, so the edge layer in it is painted once and then only ever
+   composited. A column flex box, so the panel inside shrinks to the frame's
+   max-height and scrolls instead of overflowing it. */
+.panel-frame {
   position: relative;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   width: 100%;
   max-height: 78%;
   margin-bottom: 14%;
+  transform: rotateX(6deg) translateZ(40px);
+}
+
+.panel {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 1 auto;
+  min-height: 0;
+  width: 100%;
   padding: var(--op-space-3);
   overflow: auto;
   /* Scrolls like every other list on the surface: by the wheel, with no OS
@@ -700,11 +726,12 @@ const shown = computed<Row[]>(() => contacts.value)
   /* THE ONLY ELEMENT ON THIS SURFACE THAT TAKES THE POINTER. A click beside it
      goes to the world. */
   pointer-events: auto;
-  transform: rotateX(6deg) translateZ(40px);
   /* The projection's own edge, instead of a plate: a hairline down each side
-     and a scanline wash across it. */
-  border-left: 1px solid rgba(var(--op-red-rgb), 0.45);
-  border-right: 1px solid rgba(var(--op-red-rgb), 0.45);
+     and a scanline wash across it. The hairlines are `.panel-edges`; the
+     border stays, transparent, so the scanlines still run under them and the
+     content keeps its place. */
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
   background: repeating-linear-gradient(
     to bottom,
     rgba(var(--op-red-rgb), 0.05) 0 1px,
@@ -717,17 +744,28 @@ const shown = computed<Row[]>(() => contacts.value)
   height: 0;
 }
 
-.panel.is-ringing {
+/* The hairlines, over the panel's transparent border. Drawn at the ring's peak
+   alpha and held at 0.45 / 0.95 = 0.4737 of it at rest. */
+.panel-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-left: 1px solid rgba(var(--op-red-rgb), 0.95);
+  border-right: 1px solid rgba(var(--op-red-rgb), 0.95);
+  opacity: 0.4737;
+}
+
+.panel-frame.is-ringing .panel-edges {
   animation: op-holo-pulse 1.6s ease-in-out infinite;
 }
 
 @keyframes op-holo-pulse {
   0%,
   100% {
-    border-color: rgba(var(--op-red-rgb), 0.45);
+    opacity: 0.4737;
   }
   50% {
-    border-color: rgba(var(--op-red-rgb), 0.95);
+    opacity: 1;
   }
 }
 
@@ -983,7 +1021,7 @@ const shown = computed<Row[]>(() => contacts.value)
    hologram, not a broken one. */
 @media (prefers-reduced-motion: reduce) {
   .sweep,
-  .panel.is-ringing,
+  .panel-frame.is-ringing .panel-edges,
   .stage {
     animation: none;
   }

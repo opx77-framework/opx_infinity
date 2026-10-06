@@ -4,7 +4,7 @@ import { emit } from '@/bridge/channel'
 import { bool, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
-import { inputHeight, inputOpen } from './state'
+import { CLEARANCE, RESTING_BOTTOM, inputDrop, inputHeight, inputOpen } from './state'
 
 /**
  * THE CHAT LOG -- the overlay half of the box.
@@ -56,17 +56,14 @@ let sequence = 0
 /**
  * THE ROOM THE STYLESHEET ALREADY LEAVES FOR THE INPUT LINE, in pixels: one
  * field row at the top anchors (`--op-space-7`), and the distance the input
- * hangs below the log's own edge at the bottom ones (`--op-space-6`).
+ * hangs below the log's own edge at the bottom ones (`RESTING_BOTTOM` in
+ * `state.ts`, `--op-space-6`).
  *
  * Written as numbers because what is computed from them is compared against a
  * height measured in pixels on the other layer; they are the same two tokens the
  * anchor rules below use, and moving one means moving the other.
  */
 const RESTING_TOP = 48
-const RESTING_BOTTOM = 32
-
-/** The gap left between the input block and the log. `--op-space-2`. */
-const CLEARANCE = 8
 
 const atTop = computed(
   () => anchor.value === 'anchor-top-left' || anchor.value === 'anchor-top-center'
@@ -86,7 +83,10 @@ const atTop = computed(
  */
 const lift = computed(() => {
   if (!inputOpen.value) return 0
-  const resting = atTop.value ? RESTING_TOP : RESTING_BOTTOM
+  // At a bottom anchor the input has already dropped clear of the log by the field
+  // row's overrun (`inputDrop`), so the room is that much larger and an open box
+  // with nothing typed leaves the log exactly where it rested (#120).
+  const resting = atTop.value ? RESTING_TOP : RESTING_BOTTOM + inputDrop.value
   return Math.max(0, inputHeight.value + CLEARANCE - resting)
 })
 

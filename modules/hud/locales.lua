@@ -40,6 +40,7 @@ OPX.Locale.Register('en', {
 	['hud.vehicle.unit'] = 'KM/H',
 	['hud.vehicle.integrity'] = 'INTEGRITY',
 	['hud.vehicle.airborne'] = 'AIRBORNE',
+	['hud.vehicle.fuel'] = 'FUEL',
 })
 
 OPX.Locale.Register('fr', {
@@ -72,4 +73,5 @@ OPX.Locale.Register('fr', {
 	['hud.vehicle.unit'] = 'KM/H',
 	['hud.vehicle.integrity'] = 'INTÉGRITÉ',
 	['hud.vehicle.airborne'] = 'EN VOL',
+	['hud.vehicle.fuel'] = 'CARBURANT',
 })

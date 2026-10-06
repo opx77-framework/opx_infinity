@@ -83,7 +83,7 @@ M.Event = {
 
 	-- The public SERVER bus, for other resources: a vehicle was sold, at the
 	-- counter or face to face. Raised by the server only, `(buyer, { ... })`;
-	-- see `core/server/publish.lua` and README.md "For creators".
+	-- see `core/server/publish.lua` and docs/MANUAL.md "For creators".
 	ON_SOLD = OPX.Event(LOCAL, 'dealership', 'sold'),
 }
 
