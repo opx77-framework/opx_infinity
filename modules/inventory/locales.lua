@@ -195,6 +195,9 @@ OPX.Locale.Register('en', {
 	['inventory.item.door_key'] = 'Door key',
 	['inventory.item.door_key.description'] =
 		'Opens one door, the one named on it.',
+	['inventory.item.petrolcan'] = 'Fuel can',
+	['inventory.item.petrolcan.description'] =
+		'Buy and refill it at a pump. Use it beside a vehicle to pour it into the tank.',
 	['inventory.item.shard'] = 'Data shard',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =
@@ -585,6 +588,9 @@ OPX.Locale.Register('fr', {
 	['inventory.item.door_key'] = 'Clé de porte',
 	['inventory.item.door_key.description'] =
 		'Ouvre une seule porte, celle dont le nom est dessus.',
+	['inventory.item.petrolcan'] = 'Jerrican',
+	['inventory.item.petrolcan.description'] =
+		'S\'achète et se remplit à une pompe. Utilisez-le près d\'un véhicule pour le vider dans le réservoir.',
 	['inventory.item.shard'] = 'Éclat de données',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =

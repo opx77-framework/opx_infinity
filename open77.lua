@@ -113,6 +113,10 @@ shared_script "config/crafting.lua"
 -- same rows.
 shared_script "config/gunsmith.lua"
 shared_script "config/hauling.lua"
+-- Shared: the client reads the stations, the reach, the key and the prices it
+-- draws here, and the server re-derives every one of them. Before the blips
+-- config, which pins its stations. See modules/fuel/module.lua.
+shared_script "config/fuel.lua"
 -- AFTER every config it names, which is the only ordering rule it has: the map
 -- pins are sourced from garages, dealership, shops, teleports, gunsmith and
 -- hauling, and a reader who finds a category here should already have passed
@@ -498,6 +502,19 @@ server_script "modules/doorlock/server/main.lua"
 client_script "modules/doorlock/client/main.lua"
 client_script "modules/doorlock/client/panel.lua"
 client_script "modules/doorlock/client/exports.lua"
+
+-- Fuel, ox_fuel's port onto the platform's `fuel` bag field. After `character`,
+-- `inventory`, `progress`, `target`, `prompts` and `menu`, every one optional
+-- and every one ordered above. `world.vehicles` (the engine cut) and
+-- `state.write` (the bag) are declared below already; the client reads the bag
+-- and the seat under `vehicles.read`. `blips` pins its stations and `hud` draws
+-- its gauge, both through the module at run time, so neither order matters.
+shared_script "modules/fuel/module.lua"
+shared_script "modules/fuel/locales.lua"
+shared_script "modules/fuel/shared/model.lua"
+server_script "modules/fuel/server/tanks.lua"
+server_script "modules/fuel/server/main.lua"
+client_script "modules/fuel/client/main.lua"
 
 -- Clothing shops. After `appearance`, whose fitting room it opens, and after
 -- `target`, whose eye carries its row -- both are ordered above. Before
