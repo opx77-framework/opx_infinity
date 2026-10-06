@@ -824,6 +824,24 @@ local function vehicleView()
 		end
 	end
 
+	-- THE TANK, read off the vehicle's `fuel` bag field through the fuel module
+	-- (ox's `Entity(vehicle).state.fuel`). ABSENT, not 0, for a car nobody has
+	-- filled or a server without the module: an empty gauge is a thing a player
+	-- pulls over for.
+	if configured.FUEL ~= false then
+		local fuel = OPX.Api.Get('fuel')
+		local read, level = false, nil
+		if fuel ~= nil and type(fuel.Percent) == 'function' then
+			read, level = pcall(fuel.Percent, seat.vehicleId)
+		end
+		if read and finite(level) then
+			view.fuel = percent(level)
+			view.fuelLabel = locale('hud.vehicle.fuel')
+			view.fuelTone = view.fuel <= (Settings.TONE_BAD or 15) and 'bad'
+				or view.fuel <= (Settings.TONE_WARN or 33) and 'warn' or 'neutral'
+		end
+	end
+
 	return view
 end
 
@@ -851,6 +869,7 @@ local function drawWidgets(force)
 	drawBlock(CHANNEL_VEHICLE, vehicle, vehicle ~= nil and {
 		tostring(vehicle.speed), vehicle.gear, tostring(vehicle.rpm or ''),
 		tostring(vehicle.integrity or ''), vehicle.tone, vehicle.airborne and '1' or '0',
+		tostring(vehicle.fuel or ''), vehicle.fuelTone or '',
 	} or nil, force)
 end
 

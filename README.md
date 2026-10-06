@@ -30,7 +30,7 @@
 ## What it is
 
 `opx_infinity` is the whole OPX//77 framework in **a single Open77 resource**: a core
-runtime, 35 gameplay modules, one Vue WebUI page and one test suite. It replaced
+runtime, 36 gameplay modules, one Vue WebUI page and one test suite. It replaced
 twenty-one `opx77_*` resources in September 2026. Modules talk to each other through
 in-process contracts; other resources reach it through a curated set of exports and
 public server events.
@@ -55,7 +55,9 @@ It is built around three rules:
   props, weapons drawn from the bag, eddies as a bearer item, gives the receiver accepts.
 - **Vehicles**: an owned-vehicle registry, keys as inventory items with a real host
   lock, garages with entries and exits, dealerships with showrooms and
-  player-to-player sales paid into a company account.
+  player-to-player sales paid into a company account, and **fuel** (an ox_fuel port:
+  tanks the server burns on the platform's `fuel` bag field, pumps paid in cash or
+  bank, jerry cans, a gauge on the vehicle dial).
 - **Places and world**: clothing stores, teleports, job-gated elevators, map blips,
   server-owned time and weather, and **door locks** (a faithful ox_doorlock port with
   its own staff panel).
@@ -116,6 +118,7 @@ one. The full guide is [Install](https://opx77-framework.github.io/opx77_doc/doc
    command.opx.admin          command.opx.admin.*
    command.opx.garages.*      command.opx.dealership.*     command.opx.clothing.*
    command.opx.doorlock       command.opx.doorlock.*
+   command.opx.fuel.*
    command.opx.weather.*      command.opx.time             command.opx.time.*
    ```
 

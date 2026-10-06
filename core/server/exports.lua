@@ -877,6 +877,54 @@ publish('RemoveDoor', 'write', function(caller, ref)
 	return answered(doorlock.Remove(doorRef(ref), 'ext:' .. caller))
 end, true)
 
+-- ── fuel ─────────────────────────────────────────────────────────────────────
+-- ox_fuel has no getter export: a resource reads `Entity(vehicle).state.fuel`,
+-- a PERCENTAGE. That bag field exists here too, under the same name, but it is
+-- the platform's and holds LITRES (`open77_fuel`), so a port of an ox consumer
+-- asks these instead and gets ox's unit back. ox's `setPaymentMethod` and
+-- `setMoneyCheck` take a function, which no export can carry: the pump offers
+-- cash and bank itself (`PAYMENT` in `config/fuel.lua`).
+
+local function fuelApi()
+	local fuel = OPX.Api.Get('fuel')
+	if fuel == nil or fuel.Get == nil then return nil end
+	return fuel
+end
+
+--- A vehicle id another resource handed in: an integer, or its text.
+local function vehicleArg(value)
+	if math.type(value) == 'integer' and value > 0 then return value end
+	if type(value) == 'string' and #value >= 1 and #value <= 32 and not value:find('%s') then return value end
+	return nil
+end
+
+-- ox's `state.fuel`: the tank in percent, 0..100, or nil before anybody filled it.
+publish('GetFuel', 'read', function(_, vehicleId)
+	local fuel = fuelApi()
+	if fuel == nil then return refuse('error.unavailable') end
+	if vehicleArg(vehicleId) == nil then return refuse('export.badArgument') end
+	local read = fuel.Get(vehicleArg(vehicleId))
+	if not read.ok then return answered(read) end
+	return ok(read.value.percent)
+end)
+
+-- The whole tank: `{ litres, capacity, percent, usesFuel }`.
+publish('GetFuelState', 'read', function(_, vehicleId)
+	local fuel = fuelApi()
+	if fuel == nil then return refuse('error.unavailable') end
+	if vehicleArg(vehicleId) == nil then return refuse('export.badArgument') end
+	return answered(fuel.Get(vehicleArg(vehicleId)))
+end)
+
+-- ox's `state:set('fuel', percent)`, announced on `opx:on:fuel:changed` with
+-- `reason = 'ext:<caller>'`. Memory only: safe either way it is called.
+publish('SetFuel', 'write', function(caller, vehicleId, percent)
+	local fuel = fuelApi()
+	if fuel == nil or fuel.Set == nil then return refuse('error.unavailable') end
+	if vehicleArg(vehicleId) == nil or type(percent) ~= 'number' then return refuse('export.badArgument') end
+	return answered(fuel.Set(vehicleArg(vehicleId), percent, 'ext:' .. caller))
+end)
+
 -- ── who is in the city, and what it is made of ───────────────────────────────
 
 --- A loaded character as a roster row: who, and the two groups. No money, no

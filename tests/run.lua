@@ -41084,6 +41084,718 @@ do
 	end
 end
 
+-- ── fuel ─────────────────────────────────────────────────────────────────────
+-- ox_fuel's port onto the platform's `fuel` bag field (`modules/fuel`). The
+-- model is pure and checked on its own numbers; the server is booted with one
+-- surveyed station patched in after `config/fuel.lua` loads, a real character
+-- contract (`standCharacter`) so cash and bank really move, the real progress
+-- module so a bar is timed by the server, and an inventory fake that holds cans.
+
+local FUEL_RECORD = 'Vehicle.v_standard2_archer_hella_player'
+
+-- The station every fuel test boots with: pumps at 100 and 104 on the x axis.
+local function fuelConfig(env, file)
+	if file ~= 'config/fuel.lua' then return end
+	local stations = env.OPX.Config.MODULES.fuel.STATIONS
+	stations.test_station = { LABEL = 'Test station', X = 102.0, Y = 0.0, Z = 0.0,
+		PUMPS = { { X = 100.0, Y = 0.0, Z = 0.0 }, { X = 104.0, Y = 0.0, Z = 0.0 } } }
+	stations.half_surveyed = { LABEL = 'Half', X = 500.0, Y = 0.0, Z = 0.0,
+		PUMPS = { { X = 500.0, Y = 0.0, Z = 0.0 }, { X = 0.0, Y = 0.0, Z = 0.0 } } }
+end
+
+-- A bridge with one vehicle row, which records every write to it.
+local function fuelBridge(rows, writes)
+	return Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('UPDATE opx77_vehicles', 1, true) then
+				writes[#writes + 1] = { sql = sql, params = type(params) == 'table' and params or {} }
+			end
+			return 1
+		end,
+		query = function(sql, params)
+			if sql:find('opx77_vehicles', 1, true) then return rows end
+			return {}
+		end,
+		single = function(sql, params)
+			if sql:find('COUNT(%*)') ~= nil then return { total = #rows } end
+			local plate = type(params) == 'table' and params.plate or nil
+			for index = 1, #rows do
+				if rows[index].plate == plate then return rows[index] end
+			end
+			return nil
+		end,
+	})
+end
+
+-- A car in the world at a point, engine on or off, and its live entry.
+local function fuelCar(env, control, x, record, engineOn)
+	local id = env.Open77.vehicles.create({ record = record or FUEL_RECORD,
+		position = { x = x, y = 0.0, z = 0.0 }, bucket = 0 })
+	local entry
+	for _, car in ipairs(control.vehicles.world) do
+		if car.id == id then entry = car end
+	end
+	entry.flags = engineOn and 1 or 0
+	entry.speed = 0
+	return id, entry
+end
+
+local function bagOf(env, id) return env.Open77.state.entity('vehicle', id) end
+
+-- The last fuel answer sent to one player, or nil.
+local function fuelAnswer(control, name, player)
+	for index = #control.clientEvents, 1, -1 do
+		local event = control.clientEvents[index]
+		if event.name == name and event.source == player then return event[1] end
+	end
+	return nil
+end
+
+-- An inventory fake holding cans by slot, in place of the real contract.
+local function fuelInventory(OPX)
+	local fake = { cans = {}, added = {}, set = {}, carry = true }
+	local realGet = OPX.Api.Get
+	local api = {
+		GetInventory = function()
+			local items = {}
+			for slot, can in pairs(fake.cans) do
+				items[#items + 1] = { slot = slot, name = 'petrolcan', count = 1, metadata = can }
+			end
+			return { ok = true, value = { items = items } }
+		end,
+		GetSlot = function(_, slot)
+			local can = fake.cans[slot]
+			if can == nil then return { ok = true, value = nil } end
+			return { ok = true, value = { slot = slot, name = 'petrolcan', count = 1, metadata = can } }
+		end,
+		SetMetadata = function(_, slot, metadata)
+			fake.set[#fake.set + 1] = { slot = slot, metadata = metadata }
+			fake.cans[slot] = metadata
+			return { ok = true }
+		end,
+		AddItem = function(_, name, count, metadata)
+			fake.added[#fake.added + 1] = { name = name, count = count, metadata = metadata }
+			fake.cans[#fake.cans + 1] = metadata
+			return { ok = true }
+		end,
+		CanCarry = function() return { ok = true, value = fake.carry } end,
+		GetItemCount = function() return { ok = true, value = 0 } end,
+	}
+	OPX.Api.Get = function(name, minimum)
+		if name == 'inventory' then return api end
+		return realGet(name, minimum)
+	end
+	return fake
+end
+
+section('fuel: the model, on its own numbers')
+do
+	local env, control, why = boot('server', fuelBridge({}, {}), nil, fuelConfig)
+	check('the server boots with the fuel module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		local Model = fuel.Model
+		check('the module is running', OPX.Modules.IsRunning('fuel'), OPX.Modules.Record('fuel').Reason)
+		local s = Model.Settings(OPX.Config.MODULES.fuel)
+
+		check('an engine that is off burns nothing (ox: SetFuelConsumptionRateMultiplier(0))',
+			Model.Burn(s, { dtMs = 1000, engineOn = false, speed = 40, usage = 1 }) == 0)
+		local idle = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 0, usage = 1 }) * 60
+		check('an idling engine burns IDLE_LITRES_PER_MINUTE x MULTIPLIER a minute',
+			math.abs(idle - 0.05 * 12) < 1e-9, idle)
+		-- 100 km/h for an hour is 100 km: 9 L x 12 x the curve's factor there.
+		local hour = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 100 / 3.6, usage = 1 }) * 3600
+		local factor = Model.Factor(s.curve, 100)
+		check('a cruise burns LITRES_PER_100KM x MULTIPLIER x the curve per hundred km',
+			math.abs(hour - 9 * 12 * factor) < 1e-6, hour)
+		check('the curve is a straight line between its points',
+			math.abs(Model.Factor(s.curve, 70) - 0.95) < 1e-9 and Model.Factor(s.curve, 999) == 2.0
+				and Model.Factor(s.curve, 0) == 1.3, Model.Factor(s.curve, 70))
+		local lied = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 0, moved = 20, usage = 1 })
+		local honest = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 20, usage = 1 })
+		check('a car that reports standing still while it moves pays for the road it covered',
+			math.abs(lied - honest) < 1e-12 and lied > idle / 60, lied)
+		local jump = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 0, moved = 5000, usage = 1 })
+		check('a jump past MAX_SPEED_KPH is a teleport and is billed as idle',
+			math.abs(jump - idle / 60) < 1e-12, jump)
+		local fast = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 10000, usage = 1 })
+		local cap = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 350 / 3.6, usage = 1 })
+		check('a reported speed is clamped to MAX_SPEED_KPH', math.abs(fast - cap) < 1e-12)
+		local late = Model.Burn(s, { dtMs = 3600000, engineOn = true, speed = 20, usage = 1 })
+		check('a tick that came an hour late bills five ticks at most',
+			math.abs(late - honest * 5) < 1e-9, late)
+		check('a burn is never negative, whatever it is fed',
+			Model.Burn(s, { dtMs = -5, engineOn = true, speed = -40, usage = 1 }) == 0
+				and Model.Burn(s, { dtMs = 0 / 0, engineOn = true }) == 0)
+		check('ox\'s classUsage by record: a sport2 hypercar drinks more, a bike less',
+			Model.Usage(s, 'Vehicle.v_sport2_quadra_type66_player') == 1.5
+				and Model.Usage(s, 'Vehicle.v_sportbike1_yaiba_kusanagi_player') == 0.55
+				and Model.Usage(s, FUEL_RECORD) == 1.0)
+		check('an AV takes no fuel at all (ox\'s DoesVehicleUseFuel)',
+			Model.Usage(s, 'Vehicle.av_rayfield_excalibur') == 0
+				and Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 50, usage = 0 }) == 0)
+		local leaking = Model.Burn(s, { dtMs = 1000, engineOn = true, speed = 0, usage = 1, health = 0.1 }) * 60
+		check('below LEAK.BELOW_HEALTH the tank leaks (ox\'s petrol tank health)',
+			math.abs(leaking - idle - 0.5) < 1e-9, leaking)
+		check('a price is rounded up: a pump never pours a free drop',
+			Model.Cost(0.01, 4) == 1 and Model.Cost(30, 4) == 120 and Model.Cost(0, 4) == 0)
+
+		local stations, problems, placeholders = Model.Stations(s, OPX.Config.MODULES.fuel.STATIONS)
+		check('a surveyed station is open, with its pumps', stations.test_station ~= nil
+			and #stations.test_station.pumps == 2 and stations.test_station.price == 4)
+		local disabled = {}
+		for _, key in ipairs(placeholders) do disabled[key] = true end
+		check('every shipped Night City station is a placeholder, disabled until surveyed',
+			disabled.badlands_sunset and disabled.watson_northside and stations.badlands_sunset == nil)
+		check('and a station with one unsurveyed pump is disabled whole',
+			disabled.half_surveyed and stations.half_surveyed == nil)
+		check('a refusal names the station', #problems == 0, table.concat(problems, '; '))
+		local found = false
+		for _, line in ipairs(control.log.info) do
+			if line:find('disabled until surveyed', 1, true) and line:find('badlands_sunset', 1, true) then
+				found = true
+			end
+		end
+		check('and the journal says which stations are disabled, and how to survey them', found)
+	end
+end
+
+section('fuel: the server burns the tank, and an empty one stops the car')
+do
+	local env, control, why = boot('server', fuelBridge({}, {}), nil, fuelConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		local Tanks = fuel.Tanks
+		local changed = {}
+		env.AddEventHandler('opx:on:fuel:changed', function(_, payload) changed[#changed + 1] = payload end)
+
+		local id, car = fuelCar(env, control, 0.0, nil, true)
+		control.Advance(1000)
+		Tanks.Tick()
+		local full = bagOf(env, id).fuel
+		check('a tank nobody filled starts at INITIAL_PERCENT, in litres, on the `fuel` bag field',
+			full ~= nil and math.abs(full - 60) < 0.01, full)
+		check('and the capacity rides beside it for a gauge', bagOf(env, id).fuelCapacity == 60)
+
+		car.speed = 30
+		local before = Tanks.Read(id)
+		for _ = 1, 10 do
+			car.position.x = car.position.x + 30
+			control.Advance(1000)
+			Tanks.Tick()
+		end
+		local after = Tanks.Read(id)
+		check('ten seconds at 108 km/h burn the tank', after < before, ('%s -> %s'):format(before, after))
+		local expected = fuel.Model.Burn(Tanks.Settings(), { dtMs = 1000, engineOn = true, speed = 30,
+			usage = 1 }) * 10
+		check('by what the model says, within a tick',
+			math.abs((before - after) - expected) <= expected * 0.15, ('%f vs %f'):format(before - after, expected))
+
+		-- A client claiming a standing car while the server sees it move.
+		car.speed = 0
+		local lyingBefore = Tanks.Read(id)
+		for _ = 1, 10 do
+			car.position.x = car.position.x + 30
+			control.Advance(1000)
+			Tanks.Tick()
+		end
+		check('a car reported standing still but moving burns as if driven',
+			lyingBefore - Tanks.Read(id) > expected * 0.8, lyingBefore - Tanks.Read(id))
+
+		car.flags = 0
+		local offBefore = Tanks.Read(id)
+		for _ = 1, 5 do
+			car.position.x = car.position.x + 30
+			control.Advance(1000)
+			Tanks.Tick()
+		end
+		check('an engine the host reports off burns nothing, even towed', Tanks.Read(id) == offBefore)
+
+		-- Empty: the engine is cut, and cut again while it runs.
+		car.flags = 1
+		local api = OPX.Api.Get('fuel')
+		api.SetLitres(id, 0.001, 'staff')
+		control.vehicles.engines = {}
+		control.Advance(1000)
+		Tanks.Tick()
+		control.Advance(1000)
+		Tanks.Tick()
+		check('an empty tank cuts the engine with Open77.vehicles.setEngine(id, false)',
+			#control.vehicles.engines >= 1 and control.vehicles.engines[1].on == false
+				and (car.flags & 1) == 0, #control.vehicles.engines)
+		car.flags = 1
+		control.Advance(1000)
+		Tanks.Tick()
+		check('and again when the driver starts it on an empty tank',
+			#control.vehicles.engines >= 2 and (car.flags & 1) == 0, #control.vehicles.engines)
+		local empties = 0
+		for _, payload in ipairs(changed) do
+			if payload.reason == 'empty' then empties = empties + 1 end
+		end
+		check('the empty is announced once on opx:on:fuel:changed', empties == 1, empties)
+		check('and the level never goes below zero', Tanks.Read(id) == 0)
+
+		-- An AV is never burned, never cut.
+		local av, avCar = fuelCar(env, control, 50.0, 'Vehicle.av_rayfield_excalibur', true)
+		avCar.speed = 50
+		control.Advance(1000)
+		Tanks.Tick()
+		check('an AV takes no fuel and gets no tank', bagOf(env, av).fuel == nil)
+
+		-- STANDING DOWN for the platform's own sample.
+		env.GetResourceState = function(name) return name == 'open77_fuel' and 'started' or 'stopped' end
+		Tanks.Recheck()
+		local other, otherCar = fuelCar(env, control, 80.0, nil, true)
+		bagOf(env, other):set('fuel', 40)
+		otherCar.speed = 30
+		for _ = 1, 3 do
+			otherCar.position.x = otherCar.position.x + 30
+			control.Advance(1000)
+			Tanks.Tick()
+		end
+		check('with open77_fuel running this module stands down: it burns nothing',
+			bagOf(env, other).fuel == 40 and Tanks.StandingDown())
+		local wrote = api.Set(other, 50, 'staff')
+		check('and still writes the shared field (open77_fuel\'s export, else the bag)',
+			wrote.ok and bagOf(env, other).fuel == 30, bagOf(env, other).fuel)
+		env.GetResourceState = function() return 'stopped' end
+		Tanks.Recheck()
+		check('and takes the burn back when it stops', not Tanks.StandingDown())
+	end
+end
+
+section('fuel: a refuel at a pump is a server session, billed by the server\'s clock')
+do
+	local env, control, why = boot('server', fuelBridge({}, {}), nil, fuelConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		local progress = OPX.Modules.Get('progress')
+		local Tanks = fuel.Tanks
+		local P = 61
+		local player = standCharacter(env, control, P, 'FUEL0001', { EDDIES = 500, BANK = 1000 })
+		local money = player.PlayerData.money
+		control.Stand(P, 100.5, 0.0, 0.0)
+		local id = fuelCar(env, control, 102.0, nil, false)
+		bagOf(env, id):set('fuel', 30)
+		local ANSWER = fuel.Event.ANSWER
+
+		-- Ends the bar the way the client reports it, after `ms` on the clock.
+		local function report(ms, ending)
+			for _ = 1, math.floor(ms / 500) do
+				control.Advance(500)
+				control.Pump(1)
+			end
+			local bar = fuelAnswer(control, progress.Event.START, P)
+			env.source = P
+			control.netEvents[progress.Event.REPORT](bar.id, ending)
+			env.source = nil
+			control.Pump(2)
+		end
+
+		local ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('at a pump with the car beside it, the refuel starts', ok and code == 'refuelling', code)
+		local bar = fuelAnswer(control, progress.Event.START, P)
+		check('and the server puts up a cancelable bar for the litres there is room for (ox\'s 250 ms ticks)',
+			bar ~= nil and bar.cancelable == true and bar.durationMs == 25000, bar and bar.durationMs)
+		check('the tank is held against the burn while it fills', Tanks.Held(id))
+		for _ = 1, 10 do
+			control.Advance(500)
+			control.Pump(1)
+		end
+		local midway = bagOf(env, id).fuel
+		check('the gauge rises while the pump runs', midway > 30 and midway < 60, midway)
+		report(20000, 'finished')
+		check('a bar run to the end fills the tank', math.abs(bagOf(env, id).fuel - 60) < 0.01, bagOf(env, id).fuel)
+		check('and charges the cash 30 L x 4 = 120, from the server\'s own price', money.EDDIES == 380, money.EDDIES)
+		check('and not the bank', money.BANK == 1000)
+		local answer = fuelAnswer(control, ANSWER, P)
+		check('the player is told what went in and what it cost (ox\'s fuel_success)',
+			answer.ok and answer.code == 'refuelled' and answer.cost == 120 and answer.percent == 100)
+
+		-- A full tank is refused, as in ox.
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('a full tank is refused tank_full', not ok and code == 'tank_full', code)
+
+		-- Bank, and a partial refuel cancelled half-way.
+		bagOf(env, id):set('fuel', 30)
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'BANK' })
+		check('the player may pay by bank instead', ok, code)
+		report(5000, 'cancelled')
+		local level = bagOf(env, id).fuel
+		-- Five seconds of the test's own steps, and the frames between them (the
+		-- harness moves the clock 100 ms a frame): six litres and a little more.
+		check('a bar cancelled after five seconds is a partial refuel, about 6 L', level > 35.5 and level < 38.5, level)
+		check('billed to the bank for what went in, rounded up', money.BANK == 1000 - math.ceil((level - 30) * 4 - 1e-9)
+			and money.EDDIES == 380, money.BANK)
+
+		-- A client claiming "finished" early is billed by the clock.
+		bagOf(env, id):set('fuel', 30)
+		control.Advance(1000)
+		local cash = money.EDDIES
+		fuel.Refuel(P, { method = 'EDDIES' })
+		report(2000, 'finished')
+		level = bagOf(env, id).fuel
+		check('a "finished" sent early is billed by the server\'s clock, not believed',
+			level < 34 and level > 30, level)
+		check('and costs what the clock poured', cash - money.EDDIES == math.ceil((level - 30) * 4 - 1e-9))
+
+		-- Walking away stops it.
+		bagOf(env, id):set('fuel', 30)
+		control.Advance(1000)
+		fuel.Refuel(P, { method = 'EDDIES' })
+		for _ = 1, 4 do
+			control.Advance(500)
+			control.Pump(1)
+		end
+		control.Stand(P, 130.0, 0.0, 0.0)
+		control.Advance(500)
+		control.Pump(3)
+		answer = fuelAnswer(control, ANSWER, P)
+		check('walking away from the pump stops the pour', fuel.Tanks.Held(id) == false
+			and answer.ok and answer.stopped == 'moved_away', answer and answer.stopped)
+		level = bagOf(env, id).fuel
+		check('and what went in before it is kept and billed', level > 30 and level < 34, level)
+		control.Stand(P, 100.5, 0.0, 0.0)
+
+		-- The car driving off stops it.
+		bagOf(env, id):set('fuel', 30)
+		control.Advance(1000)
+		fuel.Refuel(P, { method = 'EDDIES' })
+		for _, car in ipairs(control.vehicles.world) do
+			if car.id == id then car.position.x = car.position.x + 5 end
+		end
+		control.Advance(500)
+		control.Pump(3)
+		answer = fuelAnswer(control, ANSWER, P)
+		check('the vehicle moving off the pump stops the pour', answer.stopped == 'vehicle_moved'
+			or answer.code == 'vehicle_moved', answer and (answer.stopped or answer.code))
+		for _, car in ipairs(control.vehicles.world) do
+			if car.id == id then car.position.x = 102.0 end
+		end
+
+		-- Not enough money.
+		money.EDDIES = 0
+		bagOf(env, id):set('fuel', 30)
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('no cash for a single tick is refused not_enough_money (ox\'s refuel_cannot_afford)',
+			not ok and code == 'not_enough_money', code)
+
+		-- A wallet that runs short pours only what it pays for.
+		money.EDDIES = 50
+		control.Advance(1000)
+		ok = fuel.Refuel(P, { method = 'EDDIES' })
+		bar = fuelAnswer(control, progress.Event.START, P)
+		check('a wallet of 50 at 4/L pours 12.5 L at most', ok and bar.durationMs == math.ceil(12.5 / 1.2 * 1000),
+			bar and bar.durationMs)
+		report(bar.durationMs + 500, 'finished')
+		check('and leaves the wallet at zero, never below', money.EDDIES == 0
+			and math.abs(bagOf(env, id).fuel - 42.5) < 0.01, money.EDDIES)
+
+		-- Seated, away from a pump, a bad method, a refused hand-off.
+		money.EDDIES = 500
+		bagOf(env, id):set('fuel', 30)
+		control.Seat(P, { vehicleId = id, seat = -1 })
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('from the driver\'s seat it is refused leave_vehicle (ox\'s leave_vehicle)',
+			not ok and code == 'leave_vehicle', code)
+		control.Seat(P, nil)
+		control.Stand(P, 300.0, 0.0, 0.0)
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('away from every pump it is refused no_pump', not ok and code == 'no_pump', code)
+		control.Stand(P, 100.5, 0.0, 0.0)
+		control.Advance(1000)
+		ok, code = fuel.Refuel(P, { method = 'GOLD' })
+		check('a payment method the server does not take is refused', not ok and code == 'bad_method', code)
+		ok, code = fuel.Refuel(P, { method = 'EDDIES' })
+		check('and a second request inside the floor is too fast', not ok and code == 'too_fast', code)
+	end
+end
+
+section('fuel: the can -- bought and refilled at a pump, poured anywhere')
+do
+	local env, control, why = boot('server', fuelBridge({}, {}), nil, fuelConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		local progress = OPX.Modules.Get('progress')
+		local P = 62
+		local player = standCharacter(env, control, P, 'FUEL0002', { EDDIES = 500, BANK = 0 })
+		local money = player.PlayerData.money
+		local fake = fuelInventory(OPX)
+		control.Stand(P, 104.5, 0.0, 0.0)
+
+		local function finish(ms, ending)
+			for _ = 1, math.floor(ms / 500) do
+				control.Advance(500)
+				control.Pump(1)
+			end
+			local bar = fuelAnswer(control, progress.Event.START, P)
+			env.source = P
+			control.netEvents[progress.Event.REPORT](bar.id, ending)
+			env.source = nil
+			control.Pump(2)
+		end
+
+		local ok, code = fuel.CanBuy(P, { method = 'EDDIES' })
+		check('a can is bought at a pump behind a bar (ox\'s petrolCan.duration)', ok and code == 'buy', code)
+		finish(5000, 'finished')
+		check('it lands full: durability IS the fill, ox\'s durability and ammo',
+			#fake.added == 1 and fake.added[1].name == 'petrolcan' and fake.added[1].metadata.durability == 100)
+		check('for PRICE, charged after the bar and only then', money.EDDIES == 400, money.EDDIES)
+
+		control.Advance(1000)
+		fuel.CanBuy(P, { method = 'EDDIES' })
+		finish(1000, 'cancelled')
+		check('a purchase cut short costs nothing and gives nothing', money.EDDIES == 400 and #fake.added == 1)
+
+		fake.carry = false
+		control.Advance(1000)
+		ok, code = fuel.CanBuy(P, { method = 'EDDIES' })
+		check('a bag with no room is refused before anything is charged (ox\'s petrolcan_cannot_carry)',
+			not ok and code == 'cannot_carry' and money.EDDIES == 400, code)
+		fake.carry = true
+
+		-- Pour it, away from any pump.
+		control.Stand(P, 300.0, 0.0, 0.0)
+		local id = fuelCar(env, control, 302.0, nil, false)
+		env.Open77.state.entity('vehicle', id):set('fuel', 30)
+		control.Advance(1000)
+		ok, code = fuel.CanPour(P, nil, nil)
+		check('a can pours into the nearest vehicle anywhere, no pump needed', ok and code == 'pouring', code)
+		local bar = fuelAnswer(control, progress.Event.START, P)
+		check('for the litres in the can: 10 L at 0.8 L/s', bar.durationMs == 12500, bar.durationMs)
+		finish(13000, 'finished')
+		local level = env.Open77.state.entity('vehicle', id).fuel
+		check('the tank takes what the can held', math.abs(level - 40) < 0.01, level)
+		local slot = next(fake.cans)
+		check('and the can is drained to its new fill (ox\'s updateFuelCan)', fake.cans[slot].durability == 0,
+			fake.cans[slot].durability)
+		check('and pouring cost no money', money.EDDIES == 400)
+
+		control.Advance(1000)
+		ok, code = fuel.CanPour(P, nil, nil)
+		check('an empty can is refused (ox\'s petrolcan_not_enough_fuel)',
+			not ok and code == 'petrolcan_not_enough_fuel', code)
+
+		-- Refill it at the pump.
+		control.Stand(P, 104.5, 0.0, 0.0)
+		control.Advance(1000)
+		ok, code = fuel.CanBuy(P, { method = 'EDDIES', refill = true })
+		check('the emptiest can is refilled at a pump', ok and code == 'refill', code)
+		finish(5000, 'finished')
+		check('to full, for REFILL_PRICE', fake.cans[slot].durability == 100 and money.EDDIES == 340, money.EDDIES)
+
+		-- Half a pour, then the can is gone from its slot: nothing goes in.
+		control.Stand(P, 300.0, 0.0, 0.0)
+		env.Open77.state.entity('vehicle', id):set('fuel', 30)
+		control.Advance(1000)
+		fuel.CanPour(P, nil, nil)
+		for _ = 1, 6 do
+			control.Advance(500)
+			control.Pump(1)
+		end
+		fake.cans[slot] = nil
+		finish(500, 'cancelled')
+		check('a can that left its slot mid-pour pours nothing: the tank goes back',
+			math.abs(env.Open77.state.entity('vehicle', id).fuel - 30) < 0.01,
+			env.Open77.state.entity('vehicle', id).fuel)
+	end
+end
+
+section('fuel: an owned car keeps its tank through a garage')
+do
+	local rows = { {
+		plate = 'FU111EL', citizen_id = 'FUEL0003', record = FUEL_RECORD, appearance = nil,
+		garage = 'impound', state = 1, health = 1.0, body = nil, paint = nil, metadata = '{}', fuel = 12.5,
+	} }
+	local writes = {}
+	local env, control, why = boot('server', fuelBridge(rows, writes), nil, fuelConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local P = 63
+		standCharacter(env, control, P, 'FUEL0003')
+		control.Stand(P, 0.0, 0.0, 0.0)
+		local vehicles = OPX.Api.Get('vehicles')
+		local schema = false
+		for _, call in ipairs(control.database.calls) do
+			if tostring(call.sql):find('ADD COLUMN fuel', 1, true) then schema = true end
+		end
+		check('the fuel column is added to opx77_vehicles by OPX.Schema.AddColumns', schema
+			or OPX.Modules.Get('vehicles').Storage.COLUMNS[1].COLUMN == 'fuel')
+
+		local spawned
+		local thread = coroutine.create(function() spawned = vehicles.Spawn(P, 'FU111EL') end)
+		for _ = 1, 20 do
+			if coroutine.status(thread) == 'dead' then break end
+			coroutine.resume(thread)
+			control.Pump(1)
+		end
+		check('the car comes out', spawned ~= nil and spawned.ok, spawned and spawned.error)
+		local id = spawned and spawned.value and spawned.value.id
+		check('with the 12.5 L it was put away with, on the bag', id ~= nil
+			and math.abs((bagOf(env, id).fuel or -1) - 12.5) < 0.01, id and bagOf(env, id).fuel)
+
+		bagOf(env, id):set('fuel', 7.25)
+		local stored
+		thread = coroutine.create(function() stored = vehicles.Store('FU111EL') end)
+		for _ = 1, 20 do
+			if coroutine.status(thread) == 'dead' then break end
+			coroutine.resume(thread)
+			control.Pump(1)
+		end
+		check('it goes back', stored ~= nil and stored.ok, stored and stored.error)
+		local saved
+		for _, write in ipairs(writes) do
+			if write.params.plate == 'FU111EL' and write.sql:find('fuel', 1, true) then saved = write.params.fuel end
+		end
+		check('and the row takes the tank it went back with', saved ~= nil and math.abs(saved - 7.25) < 0.01, saved)
+
+		local storage = OPX.Modules.Get('vehicles').Storage
+		check('a row from before the column reads as never measured, not as empty',
+			storage.ToEntity({ plate = 'X', state = 1, health = 1, metadata = '{}' }).fuel == nil
+				and storage.ToEntity({ plate = 'X', state = 1, health = 1, metadata = '{}', fuel = 0 }).fuel == 0)
+	end
+end
+
+section('fuel: staff, the creator exports, and what a hostile client gets')
+do
+	local env, control, why = boot('server', fuelBridge({}, {}), nil, fuelConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		local P = 64
+		standCharacter(env, control, P, 'FUEL0004')
+		control.Stand(P, 0.0, 0.0, 0.0)
+		local id = fuelCar(env, control, 3.0, nil, false)
+		local far = fuelCar(env, control, 5000.0, nil, false)
+
+		for _, name in ipairs({ 'opx.fuel.set', 'opx.fuel.capture', 'opx.fuel.stations' }) do
+			check(('/%s is registered restricted, under command.%s'):format(name, name),
+				control.commands[name] ~= nil and control.commands[name].restricted == true)
+		end
+		control.commands['opx.fuel.set'].run(P, { 'near', '25' }, 'opx.fuel.set near 25')
+		check('/opx.fuel.set near 25 sets the nearest car to a quarter tank',
+			math.abs((bagOf(env, id).fuel or -1) - 15) < 0.01, bagOf(env, id).fuel)
+		control.Advance(1000)
+		control.commands['opx.fuel.set'].run(P, { tostring(far), '50' }, '')
+		check('a typed id out of reach is refused without opx.admin.vehicle.anywhere', bagOf(env, far).fuel == nil)
+		control.Allow(P, 'opx.admin.vehicle.anywhere')
+		control.Advance(1000)
+		control.commands['opx.fuel.set'].run(P, { tostring(far), '50' }, '')
+		check('and reached with it', math.abs((bagOf(env, far).fuel or -1) - 30) < 0.01, bagOf(env, far).fuel)
+		control.Advance(1000)
+		control.commands['opx.fuel.set'].run(P, { 'near', '140' }, '')
+		check('a percent past 100 is refused', math.abs(bagOf(env, id).fuel - 15) < 0.01)
+
+		local mark = #control.clientEvents
+		control.commands['opx.fuel.capture'].run(P, { 'kabuki', 'pump' }, '')
+		local printed = false
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			local text = type(event[1]) == 'table' and event[1].text or nil
+			if type(text) == 'string' and text:find('kabuki.PUMPS', 1, true) then printed = true end
+		end
+		check('/opx.fuel.capture <station> pump prints the PUMPS row to paste', printed)
+
+		-- The creator surface.
+		local answer = control.CallExport('some_hud', 'GetFuel', id)
+		check('GetFuel answers ox\'s percent to any reader', answer and answer.ok
+			and math.abs(answer.value - 25) < 0.01, answer and (answer.error or answer.value))
+		answer = control.CallExport('some_hud', 'GetFuelState', id)
+		check('GetFuelState answers litres and capacity', answer and answer.ok and answer.value.capacity == 60)
+		answer = control.CallExport('some_job', 'SetFuel', id, 80)
+		check('SetFuel is refused to a caller not in EXPORTS.WRITERS', answer and not answer.ok
+			and answer.error == 'export.callerDenied' and math.abs(bagOf(env, id).fuel - 15) < 0.01)
+		OPX.Config.SERVER.EXPORTS.WRITERS = { some_job = true }
+		local heard
+		env.AddEventHandler('opx:on:fuel:changed', function(_, payload) heard = payload end)
+		answer = control.CallExport('some_job', 'SetFuel', id, 80)
+		check('and admitted once the operator lists it', answer and answer.ok
+			and math.abs(bagOf(env, id).fuel - 48) < 0.01)
+		check('announced with the caller as the reason', heard ~= nil and heard.reason == 'ext:some_job'
+			and heard.percent == 80)
+		answer = control.CallExport('some_job', 'SetFuel', id, 'full')
+		check('a bad argument is refused, not raised', answer and answer.error == 'export.badArgument')
+		OPX.Config.SERVER.EXPORTS.WRITERS = {}
+
+		-- A client cannot write the bag, and the net doors carry no number.
+		env.source = P
+		control.netEvents[fuel.Event.REFUEL]({ method = 'EDDIES', litres = 60, price = 0, vehicleId = tostring(id) })
+		env.source = nil
+		control.Pump(2)
+		check('a refuel request carrying litres and a price away from a pump fills nothing',
+			math.abs(bagOf(env, id).fuel - 48) < 0.01)
+	end
+end
+
+section('fuel: the client reads the bag, and the scan stays inside its budget')
+do
+	local env, control, why = boot('client', nil, nil, function(sandbox, file)
+		if file ~= 'config/fuel.lua' then return end
+		local stations = sandbox.OPX.Config.MODULES.fuel.STATIONS
+		for n = 1, 6 do
+			local pumps = {}
+			for p = 1, 16 do pumps[p] = { X = n * 100.0 + p, Y = 0.0, Z = 0.0 } end
+			stations['s' .. n] = { LABEL = 'S' .. n, X = n * 100.0, Y = 0.0, Z = 0.0, PUMPS = pumps }
+		end
+	end)
+	check('the client boots with the fuel module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local fuel = OPX.Modules.Get('fuel')
+		check('the client half is running', OPX.Modules.IsRunning('fuel'), OPX.Modules.Record('fuel').Reason)
+		local api = OPX.Api.Get('fuel')
+		local bag = env.Open77.state.entity('vehicle', 77)
+		bag:set('fuel', 15)
+		bag:set('fuelCapacity', 60)
+		check('a gauge reads the bag: 15 L of 60 is 25 %', math.abs(api.Percent(77) - 25) < 1e-9)
+		check('and a car nobody filled has no reading, not zero', api.Percent(78) == nil)
+		local stations = fuel.Runtime.Stations()
+		local count = 0
+		for _ in pairs(stations) do count = count + 1 end
+		check('the open stations are what the blips pin', count == 6 and stations.s1.label == 'S1', count)
+		control.placement.x, control.placement.y, control.placement.z = 101.0, 0.0, 0.0
+		local spent = 0
+		for _ = 1, 4 do spent = math.max(spent, callCost(fuel.Runtime.Scan)) end
+		check('one scan pass over 96 pumps costs under 3,000 instructions', spent < 3000, spent)
+		local worst = resumeCost(env, control, function() end, 20)
+		check('and no resume of the running client passes 4,500', worst < 4500, worst)
+	end
+
+	-- The boot itself, with the same 96 pumps: a station coerced a resume and
+	-- four spheres an eye row, where one go measured 16,800 and 14,800.
+	local fresh, freshControl = Host.Environment('client')
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk = loadfile(file, 't', fresh)
+		if chunk ~= nil and pcall(chunk) and file == 'config/fuel.lua' then
+			local stations = fresh.OPX.Config.MODULES.fuel.STATIONS
+			for n = 1, 6 do
+				local pumps = {}
+				for p = 1, 16 do pumps[p] = { X = n * 100.0 + p, Y = 0.0, Z = 0.0 } end
+				stations['s' .. n] = { LABEL = 'S' .. n, X = n * 100.0, Y = 0.0, Z = 0.0, PUMPS = pumps }
+			end
+		end
+	end
+	local worst = resumeCost(fresh, freshControl, function()
+		freshControl.Fire('onClientResourceStart', 'opx_infinity')
+	end, 240)
+	check('a client booting with 96 pumps keeps every resume under 4,500', worst < 4500, worst)
+end
+
 -- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
 -- client call site whose worst single resume cost more than the figure, the
 -- dearest first. Read it, do not gate on it -- a site here is a resume the

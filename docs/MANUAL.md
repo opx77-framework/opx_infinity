@@ -24,7 +24,7 @@ most of the surprises in this codebase come from one of them.
 - [Layout](#layout) — a module, the three event channels, the view seam, how a player opens one
 - Features: [the garage key](#the-garage-key-out-and-away), [buying a vehicle](#buying-a-vehicle),
   [four rules the server keeps](#four-rules-the-server-keeps-the-owner-2026-10),
-  [vehicle keys](#vehicle-keys), [door locks](#door-locks), [emotes](#emotes),
+  [vehicle keys](#vehicle-keys), [door locks](#door-locks), [fuel](#fuel), [emotes](#emotes),
   [getting dressed](#getting-dressed)
 - Staff: [the grants a staff panel needs](#the-grants-a-staff-panel-needs),
   [what a grant does not imply](#what-a-grant-does-not-imply),
@@ -476,6 +476,113 @@ meaning; see "For creators". None of them ever carries a code.
 district name a script can read) and the platform's force / pay / hack door actions
 (not declared: a locked managed door refuses them).
 
+### Fuel
+
+`fuel` is a port of [ox_fuel](https://github.com/overextended/ox_fuel) onto Open77's
+fuel bag field (**"clone ox_fuel, comprends-le, comprends comment l'adapter comme on a
+fait avec ox_doorlock, puis implémente-le"**). Like the door locks, it keeps ox's
+logic and ox's names where they still mean something, puts them on this platform's
+natives, and says plainly what does not carry over.
+
+**Cyberpunk has no fuel.** REDengine 2.31 has no fuel level, no consumption rate and
+no petrol tank, so FiveM's `GetVehicleFuelLevel` / `SetVehicleFuelLevel` have nothing
+to map to (devkit `vehicles#what-cyberpunk-does-not-have`). The tank is a field of the
+vehicle's replicated state bag, **`fuel`, in litres**: the field and unit the
+platform's own sample `open77_fuel` uses (`state-bags#the-fuel-sample-open77fuel`), so a
+resource written for either one reads the other's tank. `fuelCapacity` sits beside it
+so a gauge can draw a percentage. ox keeps a percentage in `state.fuel`; every ox-facing
+export here (`GetFuel`, `SetFuel`) answers and takes a percentage.
+
+| ox_fuel | here | notes |
+|---|---|---|
+| `Entity(veh).state.fuel` (0..100) | bag `fuel` (litres) + `fuelCapacity` | the platform's field, shared with `open77_fuel` |
+| GTA's own burn, read by the driver's client once a second and pushed with `ox_fuel:setFuel` | the **server** burns every canonical vehicle each `CONSUMPTION.TICK_MS` (`server/tanks.lua`) | from the replicated speed AND the distance the server saw it move, whichever is more |
+| `globalFuelConsumptionRate` | `CONSUMPTION.MULTIPLIER` | over `open77_fuel`'s `LITRES_PER_100KM` and `IDLE_LITRES_PER_MINUTE` |
+| `classUsage` / `DoesVehicleUseFuel` | `CONSUMPTION.CLASSES` by TweakDB record (`v_sport2_`, `_sportbike`...); `USAGE = 0` takes no fuel | AVs are 0: cutting an engine in the air is a crash |
+| GTA's RPM-driven rate | `CONSUMPTION.SPEED_CURVE` on road speed | the server snapshot carries speed, not RPM (client telemetry is not billed) |
+| `GetVehiclePetrolTankHealth < 700` leak | `CONSUMPTION.LEAK` below a health share | one health pool in Cyberpunk |
+| empty tank: GTA will not start the car | `Open77.vehicles.setEngine(id, false)`, again every tick it is found running | `open77_fuel`'s behaviour; announced once as `reason = 'empty'` |
+| `data/stations.lua` (Los Santos) | `STATIONS` in `config/fuel.lua` | Night City places, **placeholders disabled until surveyed** |
+| `pumpModels` + ox_target `addModel` | a surveyed position per pump, an eye sphere round it | a Night City pump has no entity to aim at |
+| `startfueling` on E, `fuelHelpText` | E (`KEY`, shared-key rules) and the strip row, silent away from a pump | |
+| `refillValue` / `refillTick` | `REFILL.LITRES_PER_SECOND` / `REFILL.TICK_MS` | 1.2 L/s: ox's 50 s for an empty tank |
+| `priceTick` | `PRICE_PER_LITRE` (a station may name its own `PRICE`) | per litre, rounded up: no free drop |
+| cash via ox_inventory, `setPaymentMethod` | the pump asks: cash (`EDDIES`) or bank (`BANK`), `PAYMENT` | charged through the character contract |
+| `lib.progressCircle` + `ox_fuel:pay(price, fuel)` | a `progress` bar the **server** starts and times; it bills what its own clock poured | ox believed the client's price and level |
+| `lib.cancelProgress` on `price + priceTick >= money` | the server stops the pour when the money, the player or the car moves | |
+| `WEAPON_PETROLCAN` (`durability`/`ammo`) | item `petrolcan`, `metadata.durability` = fill 0..100, drawn as the wear bar | Cyberpunk has no can to hold |
+| `petrolCan.duration/price/refillPrice` | `CAN.DURATION_MS/PRICE/REFILL_PRICE` | |
+| `ox_fuel:updateFuelCan(durability)` | a can pour is the same server session, draining the can it came from | |
+| `showBlips` 0/1/2 | the `fuel` category in `config/blips.lua` (`SHOW`, `RANGE`) | no fuel sprite exists in 2.31; `drop_point` |
+| `versionCheck`, `ox_target` switch | — | both doors are always on |
+
+**A refuel is a server session.** The client sends what the player chose and how they
+pay (`{ method }`), nothing else. The server finds the pump nearest to where the host
+says the player stands, the nearest canonical vehicle in `VEHICLE_REACH` of them (on
+foot: from a seat it answers ox's *Leave the vehicle*), the room in the tank and what the
+chosen account can pay for, then starts a cancelable `progress` bar for those litres.
+Every `REFILL.TICK_MS` it moves the gauge and checks the session: the player still at the
+pump, the car still where it stood (`MOVE_TOLERANCE`, `STOP_SPEED`), the money still
+there. However the bar ends -- run out, cancelled, stopped, a "finished" sent early (the
+progress module refuses it), the player gone -- the litres billed are the ones the
+server's clock poured: **a cancelled bar is a partial refuel**, as in ox. A charge the
+account can no longer cover pours only what it can; a player who disconnects mid-pour
+gets nothing and pays nothing.
+
+**The can** is bought or refilled at a pump behind a `CAN.DURATION_MS` bar, charged
+after the bar (refunded if the bag refuses it), and poured anywhere: used from the bag
+(nearest vehicle in `CAN.REACH`) or from the eye's *Refuel with the fuel can* row on a
+vehicle. The pour drains the can in the slot it came from; a can moved out of that slot
+mid-pour pours nothing.
+
+**`open77_fuel` running too.** Two burns would empty a tank twice as fast, so with
+`STAND_DOWN` on (the default) this module stops burning and cutting while
+`open77_fuel` runs, writes every refuel through its `set` export (the bag when the
+export is not there) and reads its `capacity()`. Stations, cans, persistence and the
+gauge keep working. Asked every ten seconds, so a start or stop of either is noticed.
+
+**Persistence.** An owned car keeps its tank through a garage: `opx77_vehicles` gained
+a `fuel` column (FLOAT NULL, added by `OPX.Schema.AddColumns`), written with health and
+damage whenever `vehicles` saves or puts a car away (and at stop), and put back on the
+bag the moment it comes out, before anything yields. NULL is a car never measured
+(bought before the column existed): it comes out at `INITIAL_PERCENT`. The bag is read
+as the platform's field, so a server running `open77_fuel` without this module still
+keeps its tanks.
+
+**The gauge.** The vehicle dial (`modules/hud`, `HudVehicle.vue`) draws *FUEL* and a
+hairline gauge under the speed when the car has a tank, toned at `TONE_WARN` /
+`TONE_BAD`; `VEHICLE.FUEL = false` in `config/hud.lua` leaves it off. It reads the bag
+through the client contract (`Level`, `Percent`, `Current`), which never writes.
+
+**Stations.** ox's are Los Santos. Night City's (Sunset Motel, Rocky Ridge, Arroyo,
+Northside, Wellsprings) ship as **placeholders with no coordinates and are disabled at
+boot** with a journal line naming them -- no blip, no row, no key -- until surveyed: stand
+on the forecourt and run `/opx.fuel.capture <key> [label]`, then at each pump
+`/opx.fuel.capture <key> pump`; each prints the line to paste into `STATIONS`. Nothing is
+stored in the database: the file is the city. A station with one unsurveyed pump stays
+disabled whole.
+
+| ACL entry | what it opens |
+|---|---|
+| `command.opx.fuel.set` | `/opx.fuel.set <vehicleId\|near> <0-100>` -- `near` is the seat, else the nearest car in `STAFF_REACH`; a typed id must be in reach unless the operator holds `opx.admin.vehicle.anywhere` |
+| `command.opx.fuel.capture` | `/opx.fuel.capture <station> [pump\|label]` |
+| `command.opx.fuel.stations` | `/opx.fuel.stations`: open, unsurveyed and refused stations, and who is burning |
+
+So an operator role needs `command.opx.fuel.*`. Audit events: `fuel.refuel`, `fuel.can`,
+`fuel.buy`, `fuel.refill`, `fuel.set`, `fuel.capture`.
+
+**The client budget.** The scan measures 32 pumps a pass and keeps the near ones; the
+stations are coerced one a resume and the pump spheres registered four to an eye row,
+one row a resume. `tests/run.lua` holds a scan over 96 pumps under 3,000 instructions
+and the whole boot with them under 4,500 a resume.
+
+**Not here, deliberately:** ox's `setPaymentMethod` / `setMoneyCheck` (a function cannot
+cross a resource; the pump offers both accounts), the nozzle prop and the gardener
+animation (no such assets; `ANIMATION` takes a progress animation name), RPM-based
+consumption (no RPM on the server), and real station coordinates (unsurveyed -- see
+above). Needs in-game checking: the engine cut against a driver restarting, the eye
+spheres on real pumps, the `drop_point` sprite on the big map.
+
 ### Emotes
 
 `animations` offers **every animation the platform has** (**"toutes les animations,
@@ -581,7 +688,8 @@ error the resource ever sees.
 wherever a module owns a namespace:** `command.opx.admin` *and* `command.opx.admin.*`
 to open the panel and use it, `command.opx.garages.*`, `command.opx.dealership.*` and
 `command.opx.clothing.*` for the garage, dealer and wardrobe commands,
-`command.opx.doorlock` and `command.opx.doorlock.*` for the door panel, and
+`command.opx.doorlock` and `command.opx.doorlock.*` for the door panel,
+`command.opx.fuel.*` for the fuel commands, and
 `command.opx.weather.*`,
 `command.opx.time` and `command.opx.time.*` for the world controls.
 
@@ -755,6 +863,8 @@ local data = exports.opx_infinity:GetPlayerData(playerId)
 | `RevokeKeys(target, plate)`, `RevokeAllKeys(plate)`, `SetVehicleState(plate, 'stored'\|'impounded', garage?)` | write |
 | `GetDoor(id)`, `GetDoorFromName(name)`, `GetAllDoors()` (ox_doorlock's) | read |
 | `SetDoorState(id, state)`, `SetDoorLocked(id, locked)`, `CreateDoor(data)`, `EditDoor(id, data)`, `RemoveDoor(id)` (ox_doorlock's) | write |
+| `GetFuel(vehicleId)` (ox's `state.fuel`, in percent), `GetFuelState(vehicleId)` (`{ litres, capacity, percent, usesFuel }`) | read |
+| `SetFuel(vehicleId, percent)` (ox's `state:set('fuel', ...)`) | write |
 | `SetJob` / `SetGang(target, name, grade?)`, `RemoveJob` / `RemoveGang(target, name)`, `SetDuty(src, onDuty)` | write |
 | `GetMetadata(target, key?)`, `IsDown(src)` | read |
 | `SetMetadata(target, key, value)`, `Revive(src, reason?)` | write |
@@ -855,7 +965,9 @@ its audit line naming caller and reason) and answers its codes: `not_down`,
 source }`, `source` naming what moved them: `decay`, `use`, `staff`, `ext:<caller>`);
 `opx:on:vehicles:spawned`, `stored`;
 `opx:on:dealership:sold`; `opx:on:hauling:sold`; `opx:on:doorlock:changed` (`{ id,
-name, state, locked, by, item }`); `opx:on:character:created` / `deleted`;
+name, state, locked, by, item }`); `opx:on:fuel:changed` (`{ vehicleId, vehicleKey,
+litres, previous, percent, capacity, reason }`, `reason` one of `refuel`, `can`, `staff`,
+`empty`, `ext:<caller>` -- driving is not announced, the bag already is); `opx:on:character:created` / `deleted`;
 `opx:on:inventory:items` (`{ citizenId, changes = { { name, delta, count } } }`,
 what a bag gained and lost by item name); `opx:on:vehicles:registered` / `state`
 (an impound); `opx:on:crafting:ordered` / `collected`; `opx:on:progress:finished`.

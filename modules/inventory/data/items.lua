@@ -93,6 +93,17 @@ M.Data.ITEMS = {
 	-- and the bag has nothing to add to that.
 	door_key = { WEIGHT = 20, CATEGORY = 'tool', STACK = false, MODEL = 'crate.valuable' },
 
+	-- ox_fuel's `WEAPON_PETROLCAN`, as an item: Cyberpunk has no can to hold, so
+	-- it is used from the bag or the eye beside a vehicle (`modules/fuel`). Its
+	-- `metadata.durability` IS ITS FILL, 0..100 -- ox writes the same number to
+	-- `durability` and `ammo` -- so the bag's wear bar is the can's gauge, and two
+	-- cans are two stacks. Bought and refilled at a pump; the use consumes
+	-- nothing, the pour drains it.
+	petrolcan = {
+		WEIGHT = 2500, CATEGORY = 'tool', STACK = false, MODEL = 'container.gas_can',
+		USE = { CONSUME = 0, CLOSE = true },
+	},
+
 	-- MONEY YOU CAN HAND OVER. One unit is one eddie, and the stack is a BEARER
 	-- NOTE drawn against the EDDIES balance: `/withdraw` debits the balance and
 	-- puts the units here, using the stack destroys it and credits the balance

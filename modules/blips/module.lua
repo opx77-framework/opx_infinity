@@ -55,7 +55,7 @@ local M = OPX.Modules.Declare{
 	requires = {},
 	-- Read for their positions, never called into beyond a plain list read. Each
 	-- is handled as absent when it is absent.
-	optional = { 'garages', 'dealership', 'teleports', 'shops', 'hud' },
+	optional = { 'garages', 'dealership', 'teleports', 'shops', 'hud', 'fuel' },
 }
 
 --- The categories this module knows how to source, in the order they are built.
@@ -63,7 +63,7 @@ local M = OPX.Modules.Declare{
 -- of what survives a server that has captured more spots than the platform's
 -- 128-per-resource quota allows. Garages first because the owner named them
 -- first and a player who cannot find their own car is the loudest case.
-M.ORDER = { 'garages', 'dealership', 'shops', 'teleports', 'jobs' }
+M.ORDER = { 'garages', 'dealership', 'shops', 'teleports', 'jobs', 'fuel' }
 
 --- The vanilla HUD component whose hide also hides mappins ON THE MINIMAP.
 -- Named here rather than spelled at the call site because the boot note quotes

@@ -145,3 +145,30 @@ From #107 (#96, #101). Two clothing shops with different prices, e.g. `jinguji`
 - [ ] With too little money: refused on save with *You cannot afford that: <total> needed.*, previous look kept.
 - [ ] A long browse (5+ min) then save: never a bare *Your outfit was not saved.* without a reason the player understands.
 - Server log to watch: `[shops] the fitting room at <shop> was refused for player <id>: <why>`.
+
+---
+
+## 7. Fuel: the burn, the engine cut, a pump, the can, the gauge
+
+From the ox_fuel port (`modules/fuel`, `config/fuel.lua`). **Survey a station first**: every
+shipped station is a placeholder and is disabled. Stand on a real Night City forecourt,
+`/opx.fuel.capture test_station Test`, then at two pumps `/opx.fuel.capture test_station pump`;
+paste the printed lines into `STATIONS` and restart. Staff need `command.opx.fuel.*`.
+
+**Boot.** Server shows `[fuel] 5 station(s) disabled until surveyed (/opx.fuel.capture): ...`
+before the survey, and no `[fuel] config:` line after it. `/opx.fuel.stations` lists the
+surveyed station and `burning: this module` (or `open77_fuel` when that resource runs).
+
+- [ ] Drive a car for a minute: the dial's *FUEL* line drops; idling drops it far slower; engine off, it does not move.
+- [ ] `/opx.fuel.set near 1`, drive: at 0 the engine stops; starting it again stops it again within a second or two. Server: no `[fuel] burning ...` error line.
+- [ ] An AV shows no *FUEL* line and is never cut.
+- [ ] At a pump on foot with the car beside it: the strip reads *Refuel (<price>/L)*; `E` (and the eye's *Use the pump*) opens the menu; *Start fueling › Pay cash* puts up a bar and the gauge rises while it runs.
+- [ ] Let it finish: *Fueled to 100% - <cost>*, the cash drop equals the cost. Again with *Pay by bank*: the bank drops, not the cash.
+- [ ] Cancel the bar half-way (`X`): a partial fill, billed for what went in.
+- [ ] Walk away, or have a second player drive the car off, mid-pour: the pour stops and bills what went in.
+- [ ] From the driver's seat: *Leave the vehicle to be able to start fueling*.
+- [ ] *Buy a fuel can*: a 5 s bar, then a *Fuel can* in the bag with a full wear bar. Away from any pump, use it beside the car (bag or the eye's *Refuel with the fuel can*): the tank rises, the can's bar empties. *Refill a fuel can* at a pump fills it again.
+- [ ] Put an owned car away at a garage with a part-full tank, take it out: same level.
+- [ ] Map: the station's pin (`drop_point` sprite) is on the minimap and the fullscreen map.
+- [ ] With `open77_fuel` also running: tanks burn at one rate, not two, and a refuel still lands.
+- Server log to watch: `[fuel] ...` refusals and `fuel.refuel` / `fuel.can` audit lines.
