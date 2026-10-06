@@ -905,6 +905,25 @@ function Host.Environment(side, database)
 				vehicles.locks[#vehicles.locks + 1] = { id = id, locked = locked }
 				return true
 			end,
+			-- THE ENGINE BIT, kept in the vehicle's own `flags` (1) like the lock
+			-- above: the card says `setEngine` writes only `engineOn`, and a
+			-- snapshot reports it there, so a cut is a cut the next read sees.
+			-- Every call is recorded in `vehicles.engines`, because "the engine
+			-- was cut" and "the engine happened to be off" read alike otherwise.
+			setEngine = function(id, on)
+				local car = id ~= nil and (vehicles.byId[id] or nil)
+				if car == nil then
+					for index = 1, #vehicles.world do
+						if vehicles.world[index].id == id then car = vehicles.world[index] end
+					end
+				end
+				if car == nil then return false, 'vehicle_not_found' end
+				if type(on) ~= 'boolean' then return false, 'invalid_argument' end
+				local bits = tonumber(car.flags) or 0
+				car.flags = on and (bits | 1) or (bits & ~1)
+				vehicles.engines[#vehicles.engines + 1] = { id = id, on = on }
+				return true
+			end,
 			triggerHorn = function() return true end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
@@ -1909,9 +1928,10 @@ function Host.Environment(side, database)
 	-- -- is anything parked on this garage exit -- is a question about what those
 	-- two calls did, and a hand-written list would let a test assert an exit is
 	-- blocked by a car the runtime never created.
-	-- `locks` is every `setLocked` the runtime made, in order.
+	-- `locks` is every `setLocked` the runtime made, in order, and `engines` every
+	-- `setEngine`.
 	vehicles = { refuse = nil, snapshot = nil, byId = {}, updates = {},
-		refuseUpdate = nil, world = {}, locks = {} }
+		refuseUpdate = nil, world = {}, locks = {}, engines = {} }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 
