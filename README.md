@@ -64,7 +64,7 @@ It is built around three rules:
 - **Jobs and crafting**: crafting benches, gunsmith armouries, a hauling delivery job.
 - **Interaction**: target eye, key prompts with one owner per key, progress bars,
   emotes (every platform animation, solo and duo), holocalls and contacts, chat.
-- **Interface**: one augmented-ui page (HUD, menus, forms, panels, toasts), recoloured
+- **Interface**: one Vue page with hand-drawn chamfered shapes (HUD, menus, forms, panels, toasts), recoloured
   live from the server's theme, in **English and French**.
 - **Staff**: an F9 staff panel and eye rows, ACL-scoped commands, staff immunity,
   audit lines for every privileged action.
@@ -196,7 +196,7 @@ see the [security policy](https://github.com/opx77-framework/.github/blob/main/S
 - Built by **dop42** and the OPX//77 contributors.
 - Door locks follow [ox_doorlock](https://github.com/overextended/ox_doorlock) by Overextended;
   the documentation is modelled on the [overextended docs](https://github.com/overextended/overextended.github.io).
-- Shapes by [augmented-ui](https://github.com/propjockey/augmented-ui); fonts Rajdhani,
+- Shape geometry derived from [augmented-ui](https://github.com/propjockey/augmented-ui) (BSD-2, notice in `ui/src/design-system/shapes.css`); fonts Rajdhani,
   Saira and IBM Plex Mono via [Fontsource](https://fontsource.org).
 - Wardrobe garment pictures: see [`web/images/clothing/ATTRIBUTION.md`](web/images/clothing/ATTRIBUTION.md).
 - Runs on [Open77](https://open2077.net).
