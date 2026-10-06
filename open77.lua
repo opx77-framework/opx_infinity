@@ -37,7 +37,7 @@
 -- calls it. `Open77.players.all` still needs no permission.
 
 resource "opx_infinity"
-version "0.1.2"
+version "0.2.0"
 -- `>=0.0.1`, which is what all 29 shipped system resources and all 21 of the old
 -- opx77_* resources declare -- every resource that has ever installed on this
 -- platform. A real range with build metadata (`>=2.31.13+op77.67`) is accepted by
