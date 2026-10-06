@@ -39470,6 +39470,19 @@ do
 			and rule(holo, '.panel-edges'):find('opacity: 0.4737', 1, true) ~= nil)
 	check('the built page carries the frame and its edges',
 		built:find('panel-frame', 1, true) ~= nil and built:find('panel-edges', 1, true) ~= nil)
+
+	-- #114: the voice meter and the voice block move by transform alone.
+	local voice = slurp('ui/src/modules/hud/HudVoice.vue')
+	check('the voice meter is a translateY under a static mask, not a clip-path',
+		voice:find('clipPath', 1, true) == nil and voice:find('translateY(${', 1, true) ~= nil
+			and rule(voice, '.meter'):find('mask%-image') ~= nil
+			and rule(voice, '.fill'):find('mask%-image') == nil
+			and rule(voice, '.fill'):find('clip%-path') == nil)
+	check('and the block steps over the key strip by transform, not by bottom',
+		rule(voice, '.voice'):find('bottom var', 1, true) == nil
+			and (rule(voice, '.voice'):match('\n%s*bottom:%s*([^;]*)') or 'voice-lift'):find('voice-lift', 1, true) == nil
+			and rule(voice, '.voice'):find('translate(8px, calc(8px - var(--voice-lift', 1, true) ~= nil
+			and rule(voice, '.voice.live'):find('var(--voice-lift', 1, true) ~= nil)
 end
 
 -- ── the garages list and scan, a resume at a time ───────────────────────────
