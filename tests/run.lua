@@ -37236,7 +37236,11 @@ do
 			local spent = cost(snapshot, { epoch = 'e1', revision = 5, bucket = 0, states = states })
 			check('a 64-state snapshot page costs its handler almost nothing', spent < 600,
 				('%d instructions'):format(spent))
-			settle(control, function() return animations.Presenter.State(40).active == true end, 40)
+			-- The commit is paced too (#116): settle on the whole page, not one state.
+			settle(control, function()
+				return animations.Presenter.State(40).active == true and
+					animations.Presenter.State(65).active == true
+			end, 40)
 			check('and the page is still committed, on the worker',
 				animations.Presenter.State(40).active == true and animations.Presenter.State(65).active == true)
 		end
@@ -37285,6 +37289,137 @@ do
 			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
 			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
 		end
+	end
+end
+
+
+-- ── the animations snapshot worker, paced by weight (#116) ──────────────────
+-- The worker yielded every sixteen states whatever they carried: a page of
+-- one-step states cost about 5,700 instructions a resume, a page of
+-- sixteen-step states or the commit of a many-page bucket far more. It now
+-- charges each state its steps and yields on the tab, so the dearest resume
+-- stays under 4,000 whatever the snapshot holds -- and the mirror's revision
+-- rules hold across those yields.
+section('the animations snapshot worker stays under 4,000 instructions a resume')
+do
+	local streamed, posed = {}, {}
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.animations = env.Open77.animations or {}
+		env.Open77.animations._context = function()
+			return { generation = 1, bucket = 0, playerId = 1, players = streamed, ready = true }
+		end
+		env.Open77.animations._playProfile = function(entity, profile)
+			posed[entity] = profile
+			return true
+		end
+		env.Open77.animations.stop = function() return true end
+	end)
+	check('client boots with the presentation natives', why == nil, why)
+	if why == nil then
+		local animations = env.OPX.Modules.Get('animations')
+		local snapshot = control.netEvents['open77:animations:snapshot']
+		local live = control.netEvents['open77:animations:state']
+		local State = animations.Presenter.State
+
+		local function stateOf(playerId, revision, steps, epoch)
+			local list = {}
+			for index = 1, steps do
+				list[index] = { profile = 'profile_' .. index, clip = 'clip_' .. index, durationMs = 1000 }
+			end
+			return { epoch = epoch or 'e1', playbackId = 'p' .. playerId .. ':' .. revision,
+				revision = revision, playerId = playerId, active = true, bucket = 0, step = 0,
+				cycle = 0, steps = list }
+		end
+		local function pagesOf(id, revision, first, count, steps, perPage, epoch)
+			local pages = {}
+			local total = math.ceil(count / perPage)
+			for part = 1, total do
+				local states = {}
+				for index = 1, perPage do
+					local playerId = first + (part - 1) * perPage + index - 1
+					if playerId < first + count then
+						states[#states + 1] = stateOf(playerId, revision - 1, steps, epoch)
+					end
+				end
+				pages[part] = { epoch = epoch or 'e1', revision = revision, bucket = 0,
+					snapshotId = id, total = total, slice = part, states = states }
+			end
+			return pages
+		end
+		local function send(pages)
+			return resumeCost(env, control, function()
+				for _, page in ipairs(pages) do snapshot(page) end
+			end, 400)
+		end
+
+		local light, lightResumes = send(pagesOf('s1', 10, 2, 64, 1, 64))
+		check('a page of 64 one-step states: every resume under 4,000', light < 4000,
+			('%d instructions, %d resumes'):format(light, lightResumes))
+		check('and it is committed', State(2).active and State(65).active)
+
+		local heavy, heavyResumes = send(pagesOf('s2', 20, 2, 64, 16, 64))
+		check('a page of 64 sixteen-step states: every resume under 4,000', heavy < 4000,
+			('%d instructions, %d resumes'):format(heavy, heavyResumes))
+		check('and it is committed', State(40).active and State(40).steps == 16)
+
+		local wide, wideResumes = send(pagesOf('s3', 30, 2, 1024, 4, 64))
+		check('a 16-page snapshot of 1,024 players: every resume under 4,000, merge and commit too',
+			wide < 4000, ('%d instructions, %d resumes'):format(wide, wideResumes))
+		check('and every player is mirrored', State(2).active and State(1025).active)
+
+		-- The tick poses the bodies this client streams, not the whole bucket:
+		-- walking a 1,024-player mirror every tick was 36,000 instructions
+		-- (`OPX_BUDGET_METER` names the `animations:presenter` job when it is).
+		streamed[3], streamed['4'], streamed[5], streamed['5'] = 303, 404, 505, 999
+		control.Pump(20)
+		check('the streamed bodies are posed, a doubled key under its number',
+			posed[303] ~= nil and posed[404] ~= nil and posed[505] ~= nil and posed[999] == nil)
+		streamed[3], streamed['4'], streamed[5], streamed['5'] = nil, nil, nil, nil
+
+		-- Absence ends a playback, across the paced commit.
+		local smaller = send(pagesOf('s4', 40, 2, 100, 1, 64))
+		check('a smaller snapshot ends whoever it leaves out', State(101).active and
+			not State(102).active and not State(1025).active, smaller)
+
+		-- A live state landing while the commit is part-way through waits for it:
+		-- newer than the snapshot it survives, older it is refused.
+		local pages = pagesOf('s5', 60, 2, 1024, 4, 64)
+		local landed = false
+		local function committed()
+			local count = 0
+			for playerId = 2, 1025 do
+				if State(playerId).playbackId == 'p' .. playerId .. ':59' then count = count + 1 end
+			end
+			return count
+		end
+		local worst = resumeCost(env, control, function()
+			for _, page in ipairs(pages) do snapshot(page) end
+		end, 0)
+		for _ = 1, 400 do
+			control.Pump(1)
+			if not landed then
+				local count = committed()
+				if count > 0 and count < 1024 then
+					live(stateOf(1000, 70, 1))
+					live(stateOf(1001, 50, 1))
+					landed = true
+				end
+			end
+		end
+		check('a live state can land part-way through a commit', landed)
+		check('one newer than the snapshot is kept after it',
+			State(1000).playbackId == 'p1000:70', State(1000).playbackId)
+		check('one older than the snapshot is refused, as before',
+			State(1001).playbackId == 'p1001:59', State(1001).playbackId)
+		check('every other player is mirrored', committed() == 1023, committed())
+		check('the incoming pages still stayed inside a resume', worst < 4000, worst)
+
+		-- Another incarnation of the service still replaces the whole mirror.
+		send(pagesOf('s6', 1, 2, 10, 1, 64, 'e2'))
+		check('a snapshot from another epoch replaces the mirror',
+			State(5).active and not State(500).active and not State(1000).active)
+		live(stateOf(7, 0, 1, 'e1'))
+		check('and a live state from the old epoch is refused', State(7).playbackId == 'p7:0')
 	end
 end
 
