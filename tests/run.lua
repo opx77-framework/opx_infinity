@@ -39210,12 +39210,22 @@ do
 		return body
 	end
 	local built = slurp('web/index.html')
-	check('augmented-ui keeps the three mixins the templates use',
+	-- #112: the three augmented-ui tokens the templates use are drawn by a hand-written
+	-- block in shapes.css; the library's 130 kB core is gone from the page.
+	check('the page draws the three shape tokens the templates use',
 		built:find('[data-augmented-ui~=tr-clip]', 1, true) ~= nil
 			and built:find('[data-augmented-ui~=bl-clip]', 1, true) ~= nil
-			and built:find('[data-augmented-ui~=border]', 1, true) ~= nil)
-	check('and none of the ~700 it does not (pruned at build time)',
-		built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+			and built:find('[data-augmented-ui~=border]:after', 1, true) ~= nil)
+	check('and none of the library: no core, no unused mixin',
+		built:find('--aug__TL1_Toggle', 1, true) == nil and built:find('--aug__CORETOGGLE', 1, true) == nil
+			and built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+	check('augmented-ui is no longer a dependency, and shapes.css imports nothing',
+		slurp('package.json'):find('"augmented-ui"', 1, true) == nil
+			and slurp('ui/src/design-system/shapes.css'):find('@import', 1, true) == nil)
+	check('the build refuses a shape token shapes.css does not draw',
+		slurp('vite.config.ts'):find("new Set(['tr-clip', 'bl-clip', 'border'])", 1, true) ~= nil)
+	check('the page stays well under its 591 kB with the library', #built > 0 and #built < 520000,
+		tostring(#built))
 
 	local types = slurp('ui/src/bridge/types.ts')
 	check('lists of records are coerced per element, lookups read own keys only',
